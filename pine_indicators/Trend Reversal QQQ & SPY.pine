@@ -1,0 +1,232 @@
+//@version=6
+// =============================================================
+// STRATEGY: Trend Reversal — QQQ & SPY only
+// Recommended timeframe: 1 HOUR
+// Signal: SMA20 cross + confirmation candle + aligned trend on 15m
+//
+// This indicator is HARDCODED for QQQ and SPY only. Both tickers use
+// the optimized parameters discovered by grid-search (Python optimizer).
+// On any other symbol, an error label is displayed and no signals fire.
+//
+//   QQQ:  Chandelier 2.5 × ATR(14) | Macro SMA(50) | Cooldown 8
+//   SPY:  Chandelier 2.0 × ATR(14) | Macro SMA(100) | Cooldown 8
+//
+// Cross-based reset (CALL rearms on cross-below, PUT on cross-above)
+// Cross-validity window of 15 bars to avoid losing signals to cooldown.
+// Macro trend filter is OFF in this indicator (shows ALL reversal signals).
+// =============================================================
+
+// ============================================================
+// CONSTANTS (everything hardcoded — no user inputs)
+// ============================================================
+// Bollinger Bands + reference SMA
+BB_LEN                  = 20
+BB_MULT                 = 2.0
+
+// Pivot trend-line guides (visual only)
+PIVOT_LEFT              = 5
+PIVOT_RIGHT             = 5
+
+// 15-min confirmation
+LTF                     = "15"
+LTF_BB_LEN              = 20
+LTF_SLOPE_LOOKBACK      = 3
+
+// Cooldown filter (same value for both tickers)
+COOLDOWN_BARS           = 8
+
+// Macro trend filter — daily timeframe
+MACRO_TF                = "D"
+MACRO_SLOPE_BARS        = 5
+USE_MACRO_TREND         = false  // OFF: indicator shows ALL reversals.
+                                 // The BACKTEST forces it ON to mirror
+                                 // the validated optimal behavior.
+
+// Chandelier trailing stop (visualization). Both tickers use length 14.
+CHAND_ATR_LEN           = 14
+
+// Cross validity window (delayed signal)
+CROSS_VALIDITY_WINDOW   = 15
+
+// Numeric helpers
+PCT_SCALE               = 100
+
+// Plot styling
+SMA20_PLOT_WIDTH        = 2
+BB_BAND_TRANSPARENCY    = 50
+BB_FILL_TRANSPARENCY    = 92
+GUIDE_LINE_TRANSPARENCY = 40
+GUIDE_LINE_WIDTH        = 1
+SIGNAL_SHAPE_OPACITY    = 0
+
+// ============================================================
+// TICKER VALIDATION
+// ============================================================
+ticker         = syminfo.ticker
+isQQQ          = ticker == "QQQ"
+isSPY          = ticker == "SPY"
+isValidTicker  = isQQQ or isSPY
+
+// Per-ticker config (the only differences between QQQ and SPY).
+chandMult      = isQQQ ? 2.5 : 2.0
+// Macro SMA length: QQQ uses 50, SPY uses 100.
+
+indicator("Trend Reversal QQQ+SPY", shorttitle="TR-QS", overlay=true, max_lines_count=50)
+
+// ============================================================
+// BOLLINGER BANDS + SMA20
+// ============================================================
+basis = ta.sma(close, BB_LEN)
+dev   = BB_MULT * ta.stdev(close, BB_LEN)
+upper = basis + dev
+lower = basis - dev
+
+plot(isValidTicker ? basis : na, "SMA20", color=color.orange, linewidth=SMA20_PLOT_WIDTH)
+p1 = plot(isValidTicker ? upper : na, "BB Upper", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+p2 = plot(isValidTicker ? lower : na, "BB Lower", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+fill(p1, p2, color=color.new(color.gray, BB_FILL_TRANSPARENCY))
+
+// ============================================================
+// PIVOT TREND-LINE GUIDES (visual only)
+// ============================================================
+ph = ta.pivothigh(high, PIVOT_LEFT, PIVOT_RIGHT)
+pl = ta.pivotlow(low,  PIVOT_LEFT, PIVOT_RIGHT)
+
+var float ph1  = na
+var int   ph1x = na
+var float ph2  = na
+var int   ph2x = na
+var float pl1  = na
+var int   pl1x = na
+var float pl2  = na
+var int   pl2x = na
+
+if not na(ph)
+    ph2  := ph1
+    ph2x := ph1x
+    ph1  := ph
+    ph1x := bar_index - PIVOT_RIGHT
+
+if not na(pl)
+    pl2  := pl1
+    pl2x := pl1x
+    pl1  := pl
+    pl1x := bar_index - PIVOT_RIGHT
+
+var line trendDown = na
+bearTrendValid = not na(ph1) and not na(ph2) and ph1 < ph2
+if bearTrendValid and isValidTicker
+    line.delete(trendDown)
+    trendDown := line.new(ph2x, ph2, ph1x, ph1, color=color.new(color.red, GUIDE_LINE_TRANSPARENCY), width=GUIDE_LINE_WIDTH, style=line.style_dashed, extend=extend.right)
+
+var line trendUp = na
+bullTrendValid = not na(pl1) and not na(pl2) and pl1 > pl2
+if bullTrendValid and isValidTicker
+    line.delete(trendUp)
+    trendUp := line.new(pl2x, pl2, pl1x, pl1, color=color.new(color.green, GUIDE_LINE_TRANSPARENCY), width=GUIDE_LINE_WIDTH, style=line.style_dashed, extend=extend.right)
+
+// ============================================================
+// SIGNAL CONDITIONS
+// ============================================================
+crossAboveMM = ta.crossover(close, basis)
+crossBelowMM = ta.crossunder(close, basis)
+
+bullCandle = close > open and close > basis
+bearCandle = close < open and close < basis
+
+// ---------- 15-min confirmation (single request.security call) ----------
+[ltfBasis, ltfClose, ltfSlope] = request.security(syminfo.tickerid, LTF, [ta.sma(close, LTF_BB_LEN), close, ta.sma(close, LTF_BB_LEN) - ta.sma(close, LTF_BB_LEN)[LTF_SLOPE_LOOKBACK]], lookahead=barmerge.lookahead_off)
+
+ltfBullish = ltfClose > ltfBasis and ltfSlope > 0
+ltfBearish = ltfClose < ltfBasis and ltfSlope < 0
+
+// ---------- Macro trend filter (only the 2 lengths used: 50 & 100) ----------
+[macro50c, macro50p]   = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 50),  ta.sma(close, 50)[MACRO_SLOPE_BARS]],  lookahead=barmerge.lookahead_off)
+[macro100c, macro100p] = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 100), ta.sma(close, 100)[MACRO_SLOPE_BARS]], lookahead=barmerge.lookahead_off)
+
+macroSma     = isQQQ ? macro50c : macro100c
+macroSmaPrev = isQQQ ? macro50p : macro100p
+macroRising  = macroSma > macroSmaPrev
+macroFalling = macroSma < macroSmaPrev
+
+macroCallOk = not USE_MACRO_TREND or macroRising
+macroPutOk  = not USE_MACRO_TREND or macroFalling
+
+plot(USE_MACRO_TREND and isValidTicker ? macroSma : na, "Macro SMA", color=color.new(color.aqua, 40), linewidth=2)
+
+// ---------- Chandelier trailing stop (length 14 for both tickers) ----------
+atr14  = ta.atr(CHAND_ATR_LEN)
+high14 = ta.highest(high, CHAND_ATR_LEN)
+low14  = ta.lowest(low,  CHAND_ATR_LEN)
+
+chandelierLong  = high14 - atr14 * chandMult
+chandelierShort = low14  + atr14 * chandMult
+
+plot(isValidTicker ? chandelierLong  : na, "Chandelier LONG",  color=color.new(color.green, 50), linewidth=1)
+plot(isValidTicker ? chandelierShort : na, "Chandelier SHORT", color=color.new(color.red,   50), linewidth=1)
+
+// ============================================================
+// CROSS VALIDITY WINDOW
+// ============================================================
+// A cross event stays VALID for N bars so the signal can fire even when
+// the exact cross bar happens during cooldown or without confirmation.
+var int lastCrossAboveBar = na
+var int lastCrossBelowBar = na
+if crossAboveMM
+    lastCrossAboveBar := bar_index
+if crossBelowMM
+    lastCrossBelowBar := bar_index
+
+recentCrossAbove = not na(lastCrossAboveBar) and (bar_index - lastCrossAboveBar) <= CROSS_VALIDITY_WINDOW
+recentCrossBelow = not na(lastCrossBelowBar) and (bar_index - lastCrossBelowBar) <= CROSS_VALIDITY_WINDOW
+
+// ============================================================
+// RAW SIGNALS
+// ============================================================
+rawCall = recentCrossAbove and close > basis and bullCandle and ltfBullish
+rawPut  = recentCrossBelow and close < basis and bearCandle and ltfBearish
+
+// ============================================================
+// DUPLICATE FILTER (cooldown + cross-based reset)
+// ============================================================
+var int lastSignalBar = na
+var bool callArmed    = true
+var bool putArmed     = true
+
+// CALL rearms on any crossBelow, PUT on any crossAbove (symmetric).
+if not callArmed and crossBelowMM
+    callArmed := true
+if not putArmed and crossAboveMM
+    putArmed := true
+
+cooldownOk = na(lastSignalBar) or (bar_index - lastSignalBar) > COOLDOWN_BARS
+
+callSignal = isValidTicker and rawCall and cooldownOk and macroCallOk and callArmed
+putSignal  = isValidTicker and rawPut  and cooldownOk and macroPutOk  and putArmed
+
+if callSignal
+    lastSignalBar     := bar_index
+    callArmed         := false
+    lastCrossAboveBar := na  // consume the pending cross
+if putSignal
+    lastSignalBar     := bar_index
+    putArmed          := false
+    lastCrossBelowBar := na
+
+// ============================================================
+// PLOTS + ALERTS
+// ============================================================
+plotshape(callSignal, title="CALL", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, SIGNAL_SHAPE_OPACITY), size=size.small, text="CALL")
+plotshape(putSignal,  title="PUT",  style=shape.triangledown, location=location.abovebar, color=color.new(color.red,  SIGNAL_SHAPE_OPACITY), size=size.small, text="PUT")
+
+alertcondition(callSignal, title="CALL signal", message="Trend Reversal - CALL on {{ticker}} at {{close}}")
+alertcondition(putSignal,  title="PUT signal",  message="Trend Reversal - PUT on {{ticker}} at {{close}}")
+
+// ============================================================
+// ERROR LABEL FOR INVALID TICKERS
+// ============================================================
+var label errLabel = na
+if barstate.islast
+    label.delete(errLabel)
+    if not isValidTicker
+        errLabel := label.new(bar_index, high, "This indicator only works on QQQ or SPY", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.large)

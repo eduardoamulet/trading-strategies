@@ -1,0 +1,449 @@
+//@version=6
+// =============================================================
+// STRATEGY BACKTEST: Trend Reversal
+// Recommended timeframe: 1 HOUR
+// Same entry logic as the Trend Reversal indicator but converted
+// to strategy() so TradingView can compute backtest statistics
+// (Net Profit, Max Drawdown, Profit Factor, Win Rate, etc.).
+//
+// Use this file ONLY for backtesting. Keep the non-backtest
+// indicator loaded for live alerts and chart signals.
+//
+// AUTO-CONFIG: When "Use ticker-optimized preset" is ON, the backtest
+// automatically loads the optimal parameters discovered by the grid-search
+// optimization for the 12 validated tickers below.
+//
+// Supported tickers (auto-config applies to these):
+//   Profile A (low vol):        SPY, DIA, GLD
+//   Profile B (medium vol):     QQQ, IWM, SMH
+//   Profile C (medium-high):    AAPL, MSFT, META
+//   Profile D (high vol):       TSLA, NVDA, AMD
+//
+// For any other ticker, manual inputs apply instead.
+// =============================================================
+
+// ---------- NAMED CONSTANTS (magic numbers extracted) ----------
+// Default length for Bollinger Bands and the reference SMA.
+BB_LEN_DEFAULT          = 20
+// Default standard-deviation multiplier for the Bollinger Bands.
+BB_MULT_DEFAULT         = 2.0
+// UI step size when tweaking the BB multiplier input.
+BB_MULT_INPUT_STEP      = 0.1
+
+// Default Bollinger length used on the lower-timeframe confirmation (15 min).
+LTF_BB_LEN_DEFAULT      = 20
+// Lookback (in bars) used to measure the 15-min SMA slope for trend alignment.
+LTF_SLOPE_LOOKBACK      = 3
+
+// Default cooldown (in bars) blocking new signals right after one fires.
+COOLDOWN_BARS_DEFAULT   = 8
+
+// Minimum distance (as % of basis) that price must travel past SMA20 in the
+// OPPOSITE direction to rearm a signal.
+RESET_DISTANCE_PCT_DEFAULT = 0.3
+RESET_DISTANCE_PCT_STEP    = 0.05
+PCT_SCALE                  = 100
+
+// Backtest ----------------------------------------------------
+// Default position size in % of equity per trade.
+POSITION_SIZE_PCT_DEFAULT  = 10.0
+// Default initial capital (in the strategy base currency) used for backtest.
+INITIAL_CAPITAL_DEFAULT    = 10000
+// Default commission per trade (%).
+COMMISSION_PCT_DEFAULT     = 0.05
+// Default stop-loss distance expressed as multiples of ATR.
+SL_ATR_MULT_DEFAULT        = 2.0
+// Default take-profit distance expressed as multiples of ATR.
+TP_ATR_MULT_DEFAULT        = 4.0
+// ATR lookback used for SL/TP distance.
+ATR_LEN_DEFAULT            = 14
+
+// Macro trend filter ----------------------------------------
+// Timeframe used as the higher-TF "macro trend" reference (Daily by default).
+MACRO_TF_DEFAULT           = "D"
+// SMA length on the macro timeframe used to decide the macro direction.
+MACRO_SMA_LEN_DEFAULT      = 50
+// Number of bars back used to measure the macro SMA slope.
+MACRO_SLOPE_BARS           = 5
+
+// Trailing stop (chandelier exit) ---------------------------
+// ATR lookback specifically for the chandelier exit calculation.
+TRAIL_ATR_LEN_DEFAULT      = 22
+// ATR multiplier for the chandelier distance. Classic value is 3.0.
+TRAIL_ATR_MULT_DEFAULT     = 3.0
+
+// Plot styling -----------------------------------------------
+SMA20_PLOT_WIDTH        = 2
+BB_BAND_TRANSPARENCY    = 50
+BB_FILL_TRANSPARENCY    = 92
+SIGNAL_SHAPE_OPACITY    = 0
+
+// Metrics table styling -------------------------------------
+// Transparency of the table background.
+METRICS_BG_TRANSPARENCY   = 20
+// Transparency of the header row.
+METRICS_HEADER_TRANSPARENCY = 40
+// Transparency of positive (green) and negative (red) value backgrounds.
+METRICS_POSITIVE_BG       = 80
+METRICS_NEGATIVE_BG       = 80
+// Total rows rendered by the metrics table.
+METRICS_TABLE_ROWS        = 15
+
+strategy("Trend Reversal BACKTEST", shorttitle="Trend-BT", overlay=true,
+     initial_capital=INITIAL_CAPITAL_DEFAULT,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=POSITION_SIZE_PCT_DEFAULT,
+     commission_type=strategy.commission.percent,
+     commission_value=COMMISSION_PCT_DEFAULT,
+     process_orders_on_close=true,
+     calc_on_every_tick=false)
+
+// ---------- INPUTS ----------
+
+// ---------- Ticker Auto-Config ----------
+grpPreset = "Ticker Auto-Config (from optimization report)"
+usePreset = input.bool(true, "Use ticker-optimized preset",
+     group=grpPreset,
+     tooltip="When ON, the backtest automatically loads the optimal parameters discovered by the grid-search optimization for the following tickers:\n\nSPY, DIA, GLD, QQQ, IWM, SMH, AAPL, MSFT, META, TSLA, NVDA, AMD.\n\nThe preset forces: trailing chandelier ON, long-only, macro filter ON. If the chart's ticker is NOT in this list, the backtest falls back to the manual inputs below.")
+
+grpBB       = "Bollinger & MA"
+bbLen       = input.int(BB_LEN_DEFAULT,   "BB / MA Length", minval=2, group=grpBB)
+bbMult      = input.float(BB_MULT_DEFAULT, "BB Multiplier",  step=BB_MULT_INPUT_STEP, group=grpBB)
+
+grpLTF      = "15 min confirmation"
+ltfTF       = input.timeframe("15", "Lower timeframe", group=grpLTF)
+ltfBBLen    = input.int(LTF_BB_LEN_DEFAULT, "BB Length (15m)", group=grpLTF)
+
+grpFilter   = "Duplicate signal filter (manual)"
+cooldownBars_manual    = input.int(COOLDOWN_BARS_DEFAULT, "Cooldown bars after a signal", minval=0, group=grpFilter)
+requireReset    = input.bool(true, "Require SMA20 reset between signals", group=grpFilter)
+resetDistancePct_manual = input.float(RESET_DISTANCE_PCT_DEFAULT, "Reset distance %", minval=0.0, step=RESET_DISTANCE_PCT_STEP, group=grpFilter)
+
+grpRisk     = "Risk / Backtest"
+enableLong_manual  = input.bool(true,  "Enable LONG (CALL) trades",  group=grpRisk,
+     tooltip="On long-biased assets like QQQ, turning SHORT off and keeping only LONG usually raises profit factor dramatically.")
+enableShort_manual = input.bool(false, "Enable SHORT (PUT) trades",  group=grpRisk,
+     tooltip="Recommended OFF on QQQ / SPY / long-biased indexes. In the baseline backtest, SHORT alone lost more than LONG.")
+atrLen      = input.int(ATR_LEN_DEFAULT, "ATR length",        group=grpRisk)
+slMult      = input.float(SL_ATR_MULT_DEFAULT, "Stop-loss (ATR multiples)",   step=0.1, minval=0.0, group=grpRisk)
+tpMult      = input.float(TP_ATR_MULT_DEFAULT, "Take-profit (ATR multiples)", step=0.1, minval=0.0, group=grpRisk)
+closeOnOpp  = input.bool(false, "Close opposite position on new signal", group=grpRisk,
+     tooltip="When ON, a new opposite signal immediately closes the current trade and flips. Turn OFF to let SL/TP/trailing stop decide the exit — usually better on trending assets.")
+
+grpMacro    = "Macro trend filter (manual)"
+useMacroTrend_manual = input.bool(true, "Enable macro trend filter", group=grpMacro,
+     tooltip="Only allow LONG when the macro timeframe SMA is rising, and only allow SHORT when it is falling. Highest-impact filter on multi-year trending assets.")
+macroTF     = input.timeframe(MACRO_TF_DEFAULT, "Macro timeframe", group=grpMacro)
+macroSmaLen_manual = input.int(MACRO_SMA_LEN_DEFAULT, "Macro SMA length", minval=2, group=grpMacro)
+macroSlopeBars = input.int(MACRO_SLOPE_BARS, "Macro SMA slope lookback (bars)", minval=1, group=grpMacro)
+
+grpTrail    = "Trailing stop (chandelier, manual)"
+useTrailingStop_manual = input.bool(false, "Use trailing chandelier stop (overrides SL/TP)", group=grpTrail,
+     tooltip="Replaces the fixed SL/TP with a chandelier stop that trails the highest high (for LONG) or lowest low (for SHORT) by N ATR. Lets winners run across multi-week trends.")
+trailATRLen_manual  = input.int(TRAIL_ATR_LEN_DEFAULT, "Chandelier ATR length", minval=1, group=grpTrail)
+trailATRMult_manual = input.float(TRAIL_ATR_MULT_DEFAULT, "Chandelier ATR multiplier", step=0.1, minval=0.1, group=grpTrail)
+
+// ============================================================
+// TICKER-OPTIMIZED PRESETS (hardcoded from Strategy_Optimization_Report)
+// ============================================================
+f_preset_cooldown(string t) => t == "SPY" ? 8 : t == "DIA" ? 8 : t == "GLD" ? 5 : t == "QQQ" ? 8 : t == "IWM" ? 5 : t == "SMH" ? 8 : t == "AAPL" ? 8 : t == "MSFT" ? 5 : t == "META" ? 12 : t == "TSLA" ? 12 : t == "NVDA" ? 5 : t == "AMD" ? 8 : cooldownBars_manual
+
+f_preset_reset(string t) => t == "SPY" ? 0.5 : t == "DIA" ? 0.2 : t == "GLD" ? 0.3 : t == "QQQ" ? 0.5 : t == "IWM" ? 0.3 : t == "SMH" ? 0.2 : t == "AAPL" ? 0.5 : t == "MSFT" ? 0.2 : t == "META" ? 0.2 : t == "TSLA" ? 0.2 : t == "NVDA" ? 0.2 : t == "AMD" ? 0.5 : resetDistancePct_manual
+
+f_preset_macro_sma(string t) => t == "SPY" ? 100 : t == "DIA" ? 50 : t == "GLD" ? 200 : t == "QQQ" ? 50 : t == "IWM" ? 50 : t == "SMH" ? 50 : t == "AAPL" ? 200 : t == "MSFT" ? 100 : t == "META" ? 50 : t == "TSLA" ? 50 : t == "NVDA" ? 50 : t == "AMD" ? 50 : macroSmaLen_manual
+
+f_preset_chand_len(string t) => t == "SPY" ? 14 : t == "DIA" ? 22 : t == "GLD" ? 30 : t == "QQQ" ? 14 : t == "IWM" ? 14 : t == "SMH" ? 14 : t == "AAPL" ? 22 : t == "MSFT" ? 14 : t == "META" ? 14 : t == "TSLA" ? 22 : t == "NVDA" ? 14 : t == "AMD" ? 22 : trailATRLen_manual
+
+f_preset_chand_mult(string t) => t == "SPY" ? 2.0 : t == "DIA" ? 3.5 : t == "GLD" ? 3.5 : t == "QQQ" ? 2.5 : t == "IWM" ? 3.0 : t == "SMH" ? 1.5 : t == "AAPL" ? 2.5 : t == "MSFT" ? 3.0 : t == "META" ? 3.0 : t == "TSLA" ? 3.5 : t == "NVDA" ? 3.5 : t == "AMD" ? 3.5 : trailATRMult_manual
+
+f_is_preset_ticker(string t) => t == "SPY" or t == "DIA" or t == "GLD" or t == "QQQ" or t == "IWM" or t == "SMH" or t == "AAPL" or t == "MSFT" or t == "META" or t == "TSLA" or t == "NVDA" or t == "AMD"
+
+// Effective values: preset (when enabled AND ticker is in list) else manual inputs.
+currentTicker = syminfo.ticker
+presetActive  = usePreset and f_is_preset_ticker(currentTicker)
+
+cooldownBars     = presetActive ? f_preset_cooldown(currentTicker)   : cooldownBars_manual
+resetDistancePct = presetActive ? f_preset_reset(currentTicker)      : resetDistancePct_manual
+macroSmaLen      = presetActive ? f_preset_macro_sma(currentTicker)  : macroSmaLen_manual
+trailATRLen      = presetActive ? f_preset_chand_len(currentTicker)  : trailATRLen_manual
+trailATRMult     = presetActive ? f_preset_chand_mult(currentTicker) : trailATRMult_manual
+
+// Preset also forces: LONG-only, trailing chandelier ON, macro filter ON.
+enableLong      = presetActive ? true  : enableLong_manual
+enableShort     = presetActive ? false : enableShort_manual
+useTrailingStop = presetActive ? true  : useTrailingStop_manual
+useMacroTrend   = presetActive ? true  : useMacroTrend_manual
+
+grpMetrics  = "Metrics table"
+showMetrics = input.bool(true, "Show metrics table on chart", group=grpMetrics, tooltip="Renders a table with Net Profit, Win Rate, Profit Factor, Max Drawdown, etc. Useful for quick reading via an MCP/automation.")
+metricsPos  = input.string("top_right", "Table position", options=["top_left", "top_right", "bottom_left", "bottom_right", "middle_right"], group=grpMetrics)
+
+// ---------- BOLLINGER BANDS + SMA20 ----------
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+plot(basis, "SMA20", color=color.orange, linewidth=SMA20_PLOT_WIDTH)
+p1 = plot(upper, "BB Upper", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+p2 = plot(lower, "BB Lower", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+fill(p1, p2, color=color.new(color.gray, BB_FILL_TRANSPARENCY))
+
+// ---------- SIGNAL CONDITIONS ----------
+crossAboveMM = ta.crossover(close, basis)
+crossBelowMM = ta.crossunder(close, basis)
+
+bullCandle = close > open and close > basis
+bearCandle = close < open and close < basis
+
+// ---------- 15 MIN CONFIRMATION ----------
+ltfBasis = request.security(syminfo.tickerid, ltfTF, ta.sma(close, ltfBBLen), lookahead=barmerge.lookahead_off)
+ltfClose = request.security(syminfo.tickerid, ltfTF, close, lookahead=barmerge.lookahead_off)
+ltfSlope = request.security(syminfo.tickerid, ltfTF, ta.sma(close, ltfBBLen) - ta.sma(close, ltfBBLen)[LTF_SLOPE_LOOKBACK], lookahead=barmerge.lookahead_off)
+
+ltfBullish = ltfClose > ltfBasis and ltfSlope > 0
+ltfBearish = ltfClose < ltfBasis and ltfSlope < 0
+
+// ---------- CROSS VALIDITY WINDOW ----------
+// A cross event (close through SMA20) stays VALID for N bars. If the exact
+// cross bar happens during cooldown OR without a confirmation candle, we can
+// still fire the signal a few bars later when the rest of the filters align.
+CROSS_VALIDITY_WINDOW = 15
+
+var int lastCrossAboveBar = na
+var int lastCrossBelowBar = na
+if crossAboveMM
+    lastCrossAboveBar := bar_index
+if crossBelowMM
+    lastCrossBelowBar := bar_index
+
+recentCrossAbove = not na(lastCrossAboveBar) and (bar_index - lastCrossAboveBar) <= CROSS_VALIDITY_WINDOW
+recentCrossBelow = not na(lastCrossBelowBar) and (bar_index - lastCrossBelowBar) <= CROSS_VALIDITY_WINDOW
+
+// ---------- RAW SIGNALS ----------
+// Price must still be on the correct side of the SMA20 to fire the delayed signal.
+rawCall = recentCrossAbove and close > basis and bullCandle and ltfBullish
+rawPut  = recentCrossBelow and close < basis and bearCandle and ltfBearish
+
+// ---------- DUPLICATE SIGNAL FILTER (cooldown + SMA20 reset) ----
+var int lastSignalBar = na
+var bool callArmed    = true
+var bool putArmed     = true
+
+// Cross-based reset (symmetric): CALL rearms on any crossBelow, PUT on any crossAbove.
+if requireReset
+    if not callArmed and crossBelowMM
+        callArmed := true
+    if not putArmed and crossAboveMM
+        putArmed := true
+
+cooldownOk = na(lastSignalBar) or (bar_index - lastSignalBar) > cooldownBars
+
+callSignal = rawCall and cooldownOk and (not requireReset or callArmed)
+putSignal  = rawPut  and cooldownOk and (not requireReset or putArmed)
+
+if callSignal
+    lastSignalBar := bar_index
+    callArmed     := false
+    lastCrossAboveBar := na  // consume the pending cross
+if putSignal
+    lastSignalBar := bar_index
+    putArmed      := false
+    lastCrossBelowBar := na
+
+// ---------- MACRO TREND FILTER ----------
+// Pine v6 requires simple int for ta.sma length, so request each preset length
+// (50/100/200) plus the manual input as independent request.security calls.
+macro50c  = request.security(syminfo.tickerid, macroTF, ta.sma(close, 50),  lookahead=barmerge.lookahead_off)
+macro50p  = request.security(syminfo.tickerid, macroTF, ta.sma(close, 50)[macroSlopeBars],  lookahead=barmerge.lookahead_off)
+macro100c = request.security(syminfo.tickerid, macroTF, ta.sma(close, 100), lookahead=barmerge.lookahead_off)
+macro100p = request.security(syminfo.tickerid, macroTF, ta.sma(close, 100)[macroSlopeBars], lookahead=barmerge.lookahead_off)
+macro200c = request.security(syminfo.tickerid, macroTF, ta.sma(close, 200), lookahead=barmerge.lookahead_off)
+macro200p = request.security(syminfo.tickerid, macroTF, ta.sma(close, 200)[macroSlopeBars], lookahead=barmerge.lookahead_off)
+macroMc   = request.security(syminfo.tickerid, macroTF, ta.sma(close, macroSmaLen_manual), lookahead=barmerge.lookahead_off)
+macroMp   = request.security(syminfo.tickerid, macroTF, ta.sma(close, macroSmaLen_manual)[macroSlopeBars], lookahead=barmerge.lookahead_off)
+
+macroSma     = presetActive ? (macroSmaLen == 50 ? macro50c : macroSmaLen == 100 ? macro100c : macro200c) : macroMc
+macroSmaPrev = presetActive ? (macroSmaLen == 50 ? macro50p : macroSmaLen == 100 ? macro100p : macro200p) : macroMp
+macroRising  = macroSma > macroSmaPrev
+macroFalling = macroSma < macroSmaPrev
+
+macroCallOk = not useMacroTrend or macroRising
+macroPutOk  = not useMacroTrend or macroFalling
+
+// Visualize the macro SMA for context (faded line).
+plot(useMacroTrend ? macroSma : na, "Macro SMA", color=color.new(color.aqua, 40), linewidth=2)
+
+// ---------- STRATEGY ORDERS ----------
+// Fixed SL / TP distances from ATR so they adapt to volatility.
+atrVal = ta.atr(atrLen)
+slDist = atrVal * slMult
+tpDist = atrVal * tpMult
+
+// Chandelier (trailing) exit levels. Same simple-int constraint: precompute
+// for preset lengths (14/22/30) plus the manual input, select at runtime.
+atrT14 = ta.atr(14)
+atrT22 = ta.atr(22)
+atrT30 = ta.atr(30)
+atrTM  = ta.atr(trailATRLen_manual)
+high14 = ta.highest(high, 14)
+high22 = ta.highest(high, 22)
+high30 = ta.highest(high, 30)
+highM  = ta.highest(high, trailATRLen_manual)
+low14  = ta.lowest(low,  14)
+low22  = ta.lowest(low,  22)
+low30  = ta.lowest(low,  30)
+lowM   = ta.lowest(low,  trailATRLen_manual)
+
+atrTrail = presetActive ? (trailATRLen == 14 ? atrT14 : trailATRLen == 22 ? atrT22 : atrT30) : atrTM
+highSel  = presetActive ? (trailATRLen == 14 ? high14 : trailATRLen == 22 ? high22 : high30) : highM
+lowSel   = presetActive ? (trailATRLen == 14 ? low14  : trailATRLen == 22 ? low22  : low30)  : lowM
+
+chandelierLong  = highSel - atrTrail * trailATRMult
+chandelierShort = lowSel  + atrTrail * trailATRMult
+
+// Entries (gated by macro filter in addition to the reversal signal).
+if callSignal and enableLong and macroCallOk
+    if closeOnOpp and strategy.position_size < 0
+        strategy.close("SHORT", comment="Close SHORT (reversal)")
+    strategy.entry("LONG", strategy.long, comment="CALL")
+
+if putSignal and enableShort and macroPutOk
+    if closeOnOpp and strategy.position_size > 0
+        strategy.close("LONG", comment="Close LONG (reversal)")
+    strategy.entry("SHORT", strategy.short, comment="PUT")
+
+// Exits are registered on EVERY bar so trailing stops update. When the
+// chandelier is active it replaces the fixed SL/TP. Otherwise the fixed
+// SL/TP anchored at the entry price is used.
+entryPrice = strategy.position_avg_price
+
+if strategy.position_size > 0
+    longStop  = useTrailingStop ? chandelierLong : (slMult > 0 ? entryPrice - slDist : na)
+    longLimit = useTrailingStop ? na            : (tpMult > 0 ? entryPrice + tpDist : na)
+    if not (na(longStop) and na(longLimit))
+        strategy.exit("LONG exit", from_entry="LONG", stop=longStop, limit=longLimit)
+
+if strategy.position_size < 0
+    shortStop  = useTrailingStop ? chandelierShort : (slMult > 0 ? entryPrice + slDist : na)
+    shortLimit = useTrailingStop ? na              : (tpMult > 0 ? entryPrice - tpDist : na)
+    if not (na(shortStop) and na(shortLimit))
+        strategy.exit("SHORT exit", from_entry="SHORT", stop=shortStop, limit=shortLimit)
+
+// ---------- VISUAL SIGNALS (to compare against the indicator) ----------
+plotshape(callSignal, title="CALL", style=shape.triangleup,
+          location=location.belowbar, color=color.new(color.lime, SIGNAL_SHAPE_OPACITY), size=size.small, text="CALL")
+plotshape(putSignal, title="PUT", style=shape.triangledown,
+          location=location.abovebar, color=color.new(color.red,  SIGNAL_SHAPE_OPACITY), size=size.small, text="PUT")
+
+// ---------- METRICS TABLE (chart-readable backtest stats) -------------------
+// Rendered only on the very last bar. Lets external tooling (MCP, scripts) or
+// the user read key backtest metrics directly from the chart without opening
+// the Strategy Tester panel.
+
+f_posToTable(string p) =>
+    switch p
+        "top_left"     => position.top_left
+        "top_right"    => position.top_right
+        "bottom_left"  => position.bottom_left
+        "bottom_right" => position.bottom_right
+        "middle_right" => position.middle_right
+        =>                position.top_right
+
+f_valueBg(float v) => v > 0 ? color.new(color.green, METRICS_POSITIVE_BG) :
+                     v < 0 ? color.new(color.red,   METRICS_NEGATIVE_BG) :
+                              color.new(color.gray,  METRICS_POSITIVE_BG)
+
+var table metrics = na
+if showMetrics and barstate.islast
+    // Rebuild the table on the last bar so values are always fresh.
+    table.delete(metrics)
+    metrics := table.new(f_posToTable(metricsPos), 2, METRICS_TABLE_ROWS,
+                         bgcolor=color.new(color.black, METRICS_BG_TRANSPARENCY),
+                         border_color=color.new(color.gray, 50), border_width=1)
+
+    // Derive summary values
+    closedTrades  = strategy.closedtrades
+    wins          = strategy.wintrades
+    losses        = strategy.losstrades
+    winRate       = closedTrades > 0 ? wins / closedTrades * PCT_SCALE : 0.0
+    profitFactor  = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : 0.0
+    netProfit     = strategy.netprofit
+    netProfitPct  = strategy.initial_capital > 0 ? netProfit / strategy.initial_capital * PCT_SCALE : 0.0
+    maxDD         = strategy.max_drawdown
+    maxDDPct      = strategy.initial_capital > 0 ? maxDD / strategy.initial_capital * PCT_SCALE : 0.0
+    avgTrade      = closedTrades > 0 ? netProfit / closedTrades : 0.0
+    avgWin        = wins   > 0 ? strategy.grossprofit / wins   : 0.0
+    avgLoss       = losses > 0 ? strategy.grossloss   / losses : 0.0
+
+    // Header
+    table.cell(metrics, 0, 0, "BACKTEST METRICS", text_color=color.white,
+               bgcolor=color.new(color.blue, METRICS_HEADER_TRANSPARENCY))
+    table.cell(metrics, 1, 0, syminfo.ticker + " · " + timeframe.period,
+               text_color=color.white, bgcolor=color.new(color.blue, METRICS_HEADER_TRANSPARENCY))
+
+    // Capital rows
+    table.cell(metrics, 0, 1, "Initial Capital",   text_color=color.white)
+    table.cell(metrics, 1, 1, str.tostring(strategy.initial_capital, "#.##"), text_color=color.white)
+
+    table.cell(metrics, 0, 2, "Final Equity",      text_color=color.white)
+    table.cell(metrics, 1, 2, str.tostring(strategy.equity, "#.##"), text_color=color.white)
+
+    // Profit
+    table.cell(metrics, 0, 3, "Net Profit ($)",    text_color=color.white)
+    table.cell(metrics, 1, 3, str.tostring(netProfit, "#.##"),
+               text_color=color.white, bgcolor=f_valueBg(netProfit))
+
+    table.cell(metrics, 0, 4, "Net Profit (%)",    text_color=color.white)
+    table.cell(metrics, 1, 4, str.tostring(netProfitPct, "#.##") + "%",
+               text_color=color.white, bgcolor=f_valueBg(netProfitPct))
+
+    // Trades
+    table.cell(metrics, 0, 5, "Total Trades",      text_color=color.white)
+    table.cell(metrics, 1, 5, str.tostring(closedTrades), text_color=color.white)
+
+    table.cell(metrics, 0, 6, "Wins / Losses",     text_color=color.white)
+    table.cell(metrics, 1, 6, str.tostring(wins) + " / " + str.tostring(losses),
+               text_color=color.white)
+
+    table.cell(metrics, 0, 7, "Win Rate",          text_color=color.white)
+    table.cell(metrics, 1, 7, str.tostring(winRate, "#.##") + "%",
+               text_color=color.white,
+               bgcolor=winRate >= 50 ? color.new(color.green, METRICS_POSITIVE_BG) : color.new(color.red, METRICS_NEGATIVE_BG))
+
+    // Quality
+    table.cell(metrics, 0, 8, "Profit Factor",     text_color=color.white)
+    table.cell(metrics, 1, 8, str.tostring(profitFactor, "#.##"),
+               text_color=color.white,
+               bgcolor=profitFactor >= 1 ? color.new(color.green, METRICS_POSITIVE_BG) : color.new(color.red, METRICS_NEGATIVE_BG))
+
+    table.cell(metrics, 0, 9, "Max Drawdown ($)",  text_color=color.white)
+    table.cell(metrics, 1, 9, str.tostring(maxDD, "#.##"),
+               text_color=color.white, bgcolor=color.new(color.red, METRICS_NEGATIVE_BG))
+
+    table.cell(metrics, 0, 10, "Max Drawdown (%)", text_color=color.white)
+    table.cell(metrics, 1, 10, str.tostring(maxDDPct, "#.##") + "%",
+               text_color=color.white, bgcolor=color.new(color.red, METRICS_NEGATIVE_BG))
+
+    // Averages
+    table.cell(metrics, 0, 11, "Avg Trade ($)",    text_color=color.white)
+    table.cell(metrics, 1, 11, str.tostring(avgTrade, "#.##"),
+               text_color=color.white, bgcolor=f_valueBg(avgTrade))
+
+    table.cell(metrics, 0, 12, "Avg Win ($)",      text_color=color.white)
+    table.cell(metrics, 1, 12, str.tostring(avgWin, "#.##"), text_color=color.white)
+
+    table.cell(metrics, 0, 13, "Avg Loss ($)",     text_color=color.white)
+    table.cell(metrics, 1, 13, str.tostring(avgLoss, "#.##"), text_color=color.white)
+
+    // Config fingerprint so an MCP-driven reader can tell runs apart.
+    longStr  = enableLong  ? "L" : ""
+    shortStr = enableShort ? "S" : ""
+    macroStr = useMacroTrend ? ("macro:" + macroTF + "/" + str.tostring(macroSmaLen)) : "no-macro"
+    exitStr  = useTrailingStop ? ("trail:" + str.tostring(trailATRMult, "#.#") + "x") : ("SL/TP " + str.tostring(slMult, "#.#") + "/" + str.tostring(tpMult, "#.#"))
+    presetStr = presetActive ? ("PRESET:" + currentTicker) : "MANUAL"
+    table.cell(metrics, 0, 14, "Config",                text_color=color.white,
+               bgcolor=presetActive ? color.new(color.green, 60) : color.new(color.blue, 60))
+    table.cell(metrics, 1, 14, presetStr + " | " + longStr + shortStr + " | cd=" + str.tostring(cooldownBars) + " | " + macroStr + " | " + exitStr,
+               text_color=color.white,
+               bgcolor=presetActive ? color.new(color.green, 60) : color.new(color.blue, 60))

@@ -1,0 +1,303 @@
+//@version=6
+// =============================================================
+// STRATEGY BACKTEST: Trend Reversal — QQQ & SPY only
+// Recommended timeframe: 1 HOUR
+//
+// Backtest version of the Trend Reversal strategy. Hardcoded for QQQ
+// and SPY only. On any other symbol the chart shows an error label.
+//
+//   QQQ:  Chandelier 2.5 × ATR(14) | Macro SMA(50) | Cooldown 8
+//   SPY:  Chandelier 2.0 × ATR(14) | Macro SMA(100) | Cooldown 8
+//
+// Forced ON in this backtest (validated optimal behavior):
+//   - Macro trend filter
+//   - Trailing chandelier stop (overrides SL/TP)
+//   - Cross-based reset
+//
+// Backtest window: LAST 3 YEARS only (rolling, anchored to current date).
+// Set via BACKTEST_LOOKBACK_YEARS constant. No trades or metrics are
+// produced for bars older than that window.
+//
+// Inputs left adjustable for testing:
+//   - Enable LONG / SHORT (default: LONG only)
+//   - Initial capital, position size, commission (via strategy() call)
+// =============================================================
+
+// ============================================================
+// CONSTANTS (hardcoded — match the indicator)
+// ============================================================
+BB_LEN                  = 20
+BB_MULT                 = 2.0
+LTF                     = "15"
+LTF_BB_LEN              = 20
+LTF_SLOPE_LOOKBACK      = 3
+COOLDOWN_BARS           = 8
+MACRO_TF                = "D"
+MACRO_SLOPE_BARS        = 5
+CHAND_ATR_LEN           = 14
+CROSS_VALIDITY_WINDOW   = 15
+PCT_SCALE               = 100
+
+// Backtest-specific
+INITIAL_CAPITAL         = 10000
+POSITION_SIZE_PCT       = 10.0
+COMMISSION_PCT          = 0.05
+ATR_LEN_FOR_SLTP        = 14   // used only if user configures fixed SL/TP
+
+// Backtest date window — last 3 years only.
+// When the chart's bar timestamp is older than this, no trades fire and no
+// metrics are accumulated. Keep this in sync if you want a different window.
+BACKTEST_LOOKBACK_YEARS = 3
+BACKTEST_START_TS       = timestamp(year(timenow) - BACKTEST_LOOKBACK_YEARS, month(timenow), dayofmonth(timenow), 0, 0)
+
+// Plot styling
+SMA20_PLOT_WIDTH        = 2
+BB_BAND_TRANSPARENCY    = 50
+BB_FILL_TRANSPARENCY    = 92
+SIGNAL_SHAPE_OPACITY    = 0
+
+// Metrics table
+METRICS_BG_TRANSPARENCY     = 20
+METRICS_HEADER_TRANSPARENCY = 40
+METRICS_POSITIVE_BG         = 80
+METRICS_NEGATIVE_BG         = 80
+METRICS_TABLE_ROWS          = 15
+
+strategy("Trend Reversal QQQ+SPY BACKTEST", shorttitle="TR-QS-BT", overlay=true,
+     initial_capital=INITIAL_CAPITAL,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=POSITION_SIZE_PCT,
+     commission_type=strategy.commission.percent,
+     commission_value=COMMISSION_PCT,
+     process_orders_on_close=true,
+     calc_on_every_tick=false)
+
+// ============================================================
+// MINIMAL INPUTS (only what makes sense to vary in a backtest)
+// ============================================================
+grpRisk     = "Trade direction"
+enableLong  = input.bool(true,  "Enable LONG (CALL) trades",  group=grpRisk)
+enableShort = input.bool(false, "Enable SHORT (PUT) trades",  group=grpRisk,
+     tooltip="Recommended OFF on long-biased indexes (QQQ/SPY).")
+
+grpMetrics  = "Metrics table"
+showMetrics = input.bool(true, "Show metrics table on chart", group=grpMetrics)
+metricsPos  = input.string("top_right", "Table position", options=["top_left", "top_right", "bottom_left", "bottom_right", "middle_right"], group=grpMetrics)
+
+// ============================================================
+// TICKER VALIDATION
+// ============================================================
+ticker         = syminfo.ticker
+isQQQ          = ticker == "QQQ"
+isSPY          = ticker == "SPY"
+isValidTicker  = isQQQ or isSPY
+
+// Per-ticker config (the only differences between QQQ and SPY).
+chandMult      = isQQQ ? 2.5 : 2.0
+
+// ============================================================
+// BOLLINGER BANDS + SMA20
+// ============================================================
+basis = ta.sma(close, BB_LEN)
+dev   = BB_MULT * ta.stdev(close, BB_LEN)
+upper = basis + dev
+lower = basis - dev
+
+plot(isValidTicker ? basis : na, "SMA20", color=color.orange, linewidth=SMA20_PLOT_WIDTH)
+p1 = plot(isValidTicker ? upper : na, "BB Upper", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+p2 = plot(isValidTicker ? lower : na, "BB Lower", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+fill(p1, p2, color=color.new(color.gray, BB_FILL_TRANSPARENCY))
+
+// ============================================================
+// SIGNAL CONDITIONS
+// ============================================================
+crossAboveMM = ta.crossover(close, basis)
+crossBelowMM = ta.crossunder(close, basis)
+
+bullCandle = close > open and close > basis
+bearCandle = close < open and close < basis
+
+// 15-min confirmation (single request.security call)
+[ltfBasis, ltfClose, ltfSlope] = request.security(syminfo.tickerid, LTF, [ta.sma(close, LTF_BB_LEN), close, ta.sma(close, LTF_BB_LEN) - ta.sma(close, LTF_BB_LEN)[LTF_SLOPE_LOOKBACK]], lookahead=barmerge.lookahead_off)
+
+ltfBullish = ltfClose > ltfBasis and ltfSlope > 0
+ltfBearish = ltfClose < ltfBasis and ltfSlope < 0
+
+// Macro trend filter — only need lengths 50 (QQQ) and 100 (SPY)
+[macro50c, macro50p]   = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 50),  ta.sma(close, 50)[MACRO_SLOPE_BARS]],  lookahead=barmerge.lookahead_off)
+[macro100c, macro100p] = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 100), ta.sma(close, 100)[MACRO_SLOPE_BARS]], lookahead=barmerge.lookahead_off)
+
+macroSma     = isQQQ ? macro50c : macro100c
+macroSmaPrev = isQQQ ? macro50p : macro100p
+macroRising  = macroSma > macroSmaPrev
+macroFalling = macroSma < macroSmaPrev
+
+// Macro filter is FORCED ON in the backtest (validated behavior).
+macroCallOk = macroRising
+macroPutOk  = macroFalling
+
+plot(isValidTicker ? macroSma : na, "Macro SMA", color=color.new(color.aqua, 40), linewidth=2)
+
+// ============================================================
+// CHANDELIER TRAILING STOP (always ON in backtest)
+// ============================================================
+atr14  = ta.atr(CHAND_ATR_LEN)
+high14 = ta.highest(high, CHAND_ATR_LEN)
+low14  = ta.lowest(low,  CHAND_ATR_LEN)
+
+chandelierLong  = high14 - atr14 * chandMult
+chandelierShort = low14  + atr14 * chandMult
+
+// ============================================================
+// CROSS VALIDITY WINDOW
+// ============================================================
+var int lastCrossAboveBar = na
+var int lastCrossBelowBar = na
+if crossAboveMM
+    lastCrossAboveBar := bar_index
+if crossBelowMM
+    lastCrossBelowBar := bar_index
+
+recentCrossAbove = not na(lastCrossAboveBar) and (bar_index - lastCrossAboveBar) <= CROSS_VALIDITY_WINDOW
+recentCrossBelow = not na(lastCrossBelowBar) and (bar_index - lastCrossBelowBar) <= CROSS_VALIDITY_WINDOW
+
+// ============================================================
+// RAW SIGNALS
+// ============================================================
+rawCall = recentCrossAbove and close > basis and bullCandle and ltfBullish
+rawPut  = recentCrossBelow and close < basis and bearCandle and ltfBearish
+
+// ============================================================
+// DUPLICATE FILTER (cooldown + cross-based reset)
+// ============================================================
+var int lastSignalBar = na
+var bool callArmed    = true
+var bool putArmed     = true
+
+if not callArmed and crossBelowMM
+    callArmed := true
+if not putArmed and crossAboveMM
+    putArmed := true
+
+cooldownOk = na(lastSignalBar) or (bar_index - lastSignalBar) > COOLDOWN_BARS
+
+// Date filter: only trade in the last BACKTEST_LOOKBACK_YEARS years.
+inBacktestRange = time >= BACKTEST_START_TS
+
+callSignal = isValidTicker and inBacktestRange and rawCall and cooldownOk and macroCallOk and callArmed
+putSignal  = isValidTicker and inBacktestRange and rawPut  and cooldownOk and macroPutOk  and putArmed
+
+if callSignal
+    lastSignalBar     := bar_index
+    callArmed         := false
+    lastCrossAboveBar := na
+if putSignal
+    lastSignalBar     := bar_index
+    putArmed          := false
+    lastCrossBelowBar := na
+
+// ============================================================
+// STRATEGY ORDERS — entries
+// ============================================================
+if callSignal and enableLong
+    strategy.entry("LONG", strategy.long, comment="CALL")
+
+if putSignal and enableShort
+    strategy.entry("SHORT", strategy.short, comment="PUT")
+
+// ============================================================
+// STRATEGY ORDERS — trailing chandelier exits (every bar)
+// ============================================================
+if strategy.position_size > 0
+    strategy.exit("LONG exit", from_entry="LONG", stop=chandelierLong)
+
+if strategy.position_size < 0
+    strategy.exit("SHORT exit", from_entry="SHORT", stop=chandelierShort)
+
+// ============================================================
+// VISUAL SIGNALS
+// ============================================================
+plotshape(callSignal, title="CALL", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, SIGNAL_SHAPE_OPACITY), size=size.small, text="CALL")
+plotshape(putSignal,  title="PUT",  style=shape.triangledown, location=location.abovebar, color=color.new(color.red,  SIGNAL_SHAPE_OPACITY), size=size.small, text="PUT")
+
+// ============================================================
+// METRICS TABLE
+// ============================================================
+f_posToTable(string p) =>
+    switch p
+        "top_left"     => position.top_left
+        "top_right"    => position.top_right
+        "bottom_left"  => position.bottom_left
+        "bottom_right" => position.bottom_right
+        "middle_right" => position.middle_right
+        =>                position.top_right
+
+f_valueBg(float v) => v > 0 ? color.new(color.green, METRICS_POSITIVE_BG) : v < 0 ? color.new(color.red, METRICS_NEGATIVE_BG) : color.new(color.gray, METRICS_POSITIVE_BG)
+
+var table metrics = na
+if showMetrics and barstate.islast and isValidTicker
+    table.delete(metrics)
+    metrics := table.new(f_posToTable(metricsPos), 2, METRICS_TABLE_ROWS, bgcolor=color.new(color.black, METRICS_BG_TRANSPARENCY), border_color=color.new(color.gray, 50), border_width=1)
+
+    closedTrades = strategy.closedtrades
+    wins         = strategy.wintrades
+    losses       = strategy.losstrades
+    winRate      = closedTrades > 0 ? wins / closedTrades * PCT_SCALE : 0.0
+    profitFactor = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : 0.0
+    netProfit    = strategy.netprofit
+    netProfitPct = strategy.initial_capital > 0 ? netProfit / strategy.initial_capital * PCT_SCALE : 0.0
+    maxDD        = strategy.max_drawdown
+    maxDDPct     = strategy.initial_capital > 0 ? maxDD / strategy.initial_capital * PCT_SCALE : 0.0
+    avgTrade     = closedTrades > 0 ? netProfit / closedTrades : 0.0
+    avgWin       = wins   > 0 ? strategy.grossprofit / wins   : 0.0
+    avgLoss      = losses > 0 ? strategy.grossloss   / losses : 0.0
+
+    table.cell(metrics, 0, 0, "BACKTEST METRICS", text_color=color.white, bgcolor=color.new(color.blue, METRICS_HEADER_TRANSPARENCY))
+    table.cell(metrics, 1, 0, ticker + " · " + timeframe.period, text_color=color.white, bgcolor=color.new(color.blue, METRICS_HEADER_TRANSPARENCY))
+
+    table.cell(metrics, 0, 1, "Initial Capital", text_color=color.white)
+    table.cell(metrics, 1, 1, str.tostring(strategy.initial_capital, "#.##"), text_color=color.white)
+    table.cell(metrics, 0, 2, "Final Equity", text_color=color.white)
+    table.cell(metrics, 1, 2, str.tostring(strategy.equity, "#.##"), text_color=color.white)
+
+    table.cell(metrics, 0, 3, "Net Profit ($)", text_color=color.white)
+    table.cell(metrics, 1, 3, str.tostring(netProfit, "#.##"), text_color=color.white, bgcolor=f_valueBg(netProfit))
+    table.cell(metrics, 0, 4, "Net Profit (%)", text_color=color.white)
+    table.cell(metrics, 1, 4, str.tostring(netProfitPct, "#.##") + "%", text_color=color.white, bgcolor=f_valueBg(netProfitPct))
+
+    table.cell(metrics, 0, 5, "Total Trades", text_color=color.white)
+    table.cell(metrics, 1, 5, str.tostring(closedTrades), text_color=color.white)
+    table.cell(metrics, 0, 6, "Wins / Losses", text_color=color.white)
+    table.cell(metrics, 1, 6, str.tostring(wins) + " / " + str.tostring(losses), text_color=color.white)
+
+    table.cell(metrics, 0, 7, "Win Rate", text_color=color.white)
+    table.cell(metrics, 1, 7, str.tostring(winRate, "#.##") + "%", text_color=color.white, bgcolor=winRate >= 50 ? color.new(color.green, METRICS_POSITIVE_BG) : color.new(color.red, METRICS_NEGATIVE_BG))
+
+    table.cell(metrics, 0, 8, "Profit Factor", text_color=color.white)
+    table.cell(metrics, 1, 8, str.tostring(profitFactor, "#.##"), text_color=color.white, bgcolor=profitFactor >= 1 ? color.new(color.green, METRICS_POSITIVE_BG) : color.new(color.red, METRICS_NEGATIVE_BG))
+
+    table.cell(metrics, 0, 9, "Max Drawdown ($)", text_color=color.white)
+    table.cell(metrics, 1, 9, str.tostring(maxDD, "#.##"), text_color=color.white, bgcolor=color.new(color.red, METRICS_NEGATIVE_BG))
+    table.cell(metrics, 0, 10, "Max Drawdown (%)", text_color=color.white)
+    table.cell(metrics, 1, 10, str.tostring(maxDDPct, "#.##") + "%", text_color=color.white, bgcolor=color.new(color.red, METRICS_NEGATIVE_BG))
+
+    table.cell(metrics, 0, 11, "Avg Trade ($)", text_color=color.white)
+    table.cell(metrics, 1, 11, str.tostring(avgTrade, "#.##"), text_color=color.white, bgcolor=f_valueBg(avgTrade))
+    table.cell(metrics, 0, 12, "Avg Win ($)", text_color=color.white)
+    table.cell(metrics, 1, 12, str.tostring(avgWin, "#.##"), text_color=color.white)
+    table.cell(metrics, 0, 13, "Avg Loss ($)", text_color=color.white)
+    table.cell(metrics, 1, 13, str.tostring(avgLoss, "#.##"), text_color=color.white)
+
+    longStr  = enableLong  ? "L" : ""
+    shortStr = enableShort ? "S" : ""
+    table.cell(metrics, 0, 14, "Config", text_color=color.white, bgcolor=color.new(color.green, 60))
+    table.cell(metrics, 1, 14, ticker + " | " + longStr + shortStr + " | cd=" + str.tostring(COOLDOWN_BARS) + " | macro:D | trail:" + str.tostring(chandMult, "#.#") + "x14", text_color=color.white, bgcolor=color.new(color.green, 60))
+
+// ============================================================
+// ERROR LABEL FOR INVALID TICKERS
+// ============================================================
+var label errLabel = na
+if barstate.islast
+    label.delete(errLabel)
+    if not isValidTicker
+        errLabel := label.new(bar_index, high, "This backtest only works on QQQ or SPY", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.large)

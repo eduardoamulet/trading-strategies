@@ -1,0 +1,133 @@
+//@version=6
+// =============================================================
+// YSTRATEGY: Gap in Sideways Market
+// Timeframe: 15 MIN (mandatory)
+// Sideways low-volatility range + opening gap + price outside BB
+// Signal ONLY on the first 5 minutes (first 15m candle)
+// =============================================================
+
+// ---------- NAMED CONSTANTS (magic numbers extracted) ----------
+// Default length for the Bollinger Bands & reference SMA.
+BB_LEN_DEFAULT            = 20
+// Minimum allowed BB length in the input box.
+BB_LEN_MIN                = 2
+// Default standard-deviation multiplier for the Bollinger Bands.
+BB_MULT_DEFAULT           = 2.0
+// UI step size when tweaking the BB multiplier input.
+BB_MULT_INPUT_STEP        = 0.1
+
+// Sideways detection -----------------------------------------
+// Default number of bars analyzed to decide whether price is sideways.
+LATERAL_BARS_DEFAULT      = 20
+// Minimum sensible sideways-window length.
+LATERAL_BARS_MIN          = 5
+// If BB width (as % of basis) is below this value, the market is considered flat.
+MAX_BB_WIDTH_PCT_DEFAULT  = 3.0
+// If the high-low range (as % of basis) is below this value, the section is flat.
+MAX_RANGE_PCT_DEFAULT     = 2.5
+// UI step for the percentage inputs in the sideways detection group.
+LATERAL_PCT_STEP          = 0.1
+
+// Gap detection ----------------------------------------------
+// Minimum gap (|open - prev close| as %) required to consider a real gap.
+MIN_GAP_PCT_DEFAULT       = 1.0
+// UI step for the gap percentage input.
+GAP_PCT_STEP              = 0.1
+
+// Opening window (US equities) -------------------------------
+OPEN_HOUR_DEFAULT         = 9     // Market open hour in local exchange time
+OPEN_MIN_DEFAULT          = 30    // Market open minute
+
+// Plot styling -----------------------------------------------
+// Transparency of the Bollinger band lines (0 = opaque, 100 = invisible).
+BB_BAND_TRANSPARENCY      = 50
+// Transparency of the fill between the Bollinger bands.
+BB_FILL_TRANSPARENCY      = 92
+// Transparency of the background shade applied when sideways state is detected.
+SIDEWAYS_BG_TRANSPARENCY  = 95
+// Transparency of CALL / PUT signal triangles (0 = fully opaque).
+SIGNAL_SHAPE_OPACITY      = 0
+
+// Numeric helpers --------------------------------------------
+// Scale factor used to convert a ratio into a percentage (e.g. 0.015 -> 1.5%).
+PCT_SCALE                 = 100
+
+indicator("YC 03 - Sideways Gap (Call/Put)", shorttitle="YC_03_Gap", overlay=true)
+
+// ---------- INPUTS ----------
+grpBB      = "Bollinger"
+bbLen      = input.int(BB_LEN_DEFAULT,    "BB Length", minval=BB_LEN_MIN, group=grpBB)
+bbMult     = input.float(BB_MULT_DEFAULT, "BB Multiplier", step=BB_MULT_INPUT_STEP, group=grpBB)
+
+grpLateral = "Sideways detection"
+lateralBars = input.int(LATERAL_BARS_DEFAULT,      "Bars to analyze (sideways)", minval=LATERAL_BARS_MIN, group=grpLateral)
+maxBBWidth  = input.float(MAX_BB_WIDTH_PCT_DEFAULT, "Max BB width %  (sideways if below)", step=LATERAL_PCT_STEP, group=grpLateral)
+maxRangePct = input.float(MAX_RANGE_PCT_DEFAULT,   "Max range of the section %", step=LATERAL_PCT_STEP, group=grpLateral)
+
+grpGap     = "Gap detection"
+minGapPct  = input.float(MIN_GAP_PCT_DEFAULT, "Minimum gap vs previous close %", step=GAP_PCT_STEP, group=grpGap)
+
+grpSession = "Opening window"
+sessTZ     = input.string("America/New_York", "Market timezone", group=grpSession)
+openHour   = input.int(OPEN_HOUR_DEFAULT, "Opening hour",   group=grpSession)
+openMin    = input.int(OPEN_MIN_DEFAULT,  "Opening minute", group=grpSession)
+
+grpSig     = "Signals"
+showCall   = input.bool(true, "Show CALL signal", group=grpSig)
+showPut    = input.bool(true, "Show PUT signal",  group=grpSig)
+
+// ---------- BOLLINGER ----------
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+plot(basis, "SMA20", color=color.orange)
+p1 = plot(upper, "BB Upper", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+p2 = plot(lower, "BB Lower", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+fill(p1, p2, color=color.new(color.gray, BB_FILL_TRANSPARENCY))
+
+// ---------- SIDEWAYS DETECTION ----------
+bbWidthPct    = (upper - lower) / basis * PCT_SCALE
+rangePct      = (ta.highest(high, lateralBars) - ta.lowest(low, lateralBars)) / basis * PCT_SCALE
+isLateral     = bbWidthPct[1] < maxBBWidth and rangePct[1] < maxRangePct
+
+// ---------- FIRST CANDLE OF THE SESSION ----------
+// Local time of the symbol
+curH = hour(time, sessTZ)
+curM = minute(time, sessTZ)
+prevH = hour(time[1], sessTZ)
+prevM = minute(time[1], sessTZ)
+
+isFirstBar = (curH == openHour and curM == openMin) and not (prevH == openHour and prevM == openMin)
+
+// ---------- GAP DETECTION ----------
+// Compare current open vs previous close (last candle of previous session)
+prevClose = close[1]
+gapPct    = (open - prevClose) / prevClose * PCT_SCALE
+gapUp     = gapPct >=  minGapPct
+gapDown   = gapPct <= -minGapPct
+
+// ---------- PRICE OUTSIDE BAND ----------
+outsideUpper = low  > upper  // Whole candle above upper band
+outsideLower = high < lower  // Whole candle below lower band
+
+// ---------- SIGNALS ----------
+// Strategy 5: gap up outside upper BB (overbought) => PUT
+putSignal  = isFirstBar and isLateral and gapUp   and outsideUpper
+// Strategy 6: gap down outside lower BB (oversold) => CALL
+callSignal = isFirstBar and isLateral and gapDown and outsideLower
+
+plotshape(showCall and callSignal, title="CALL Gap",
+          style=shape.triangleup, location=location.belowbar,
+          color=color.new(color.lime, SIGNAL_SHAPE_OPACITY), size=size.normal, text="CALL")
+plotshape(showPut and putSignal, title="PUT Gap",
+          style=shape.triangledown, location=location.abovebar,
+          color=color.new(color.red, SIGNAL_SHAPE_OPACITY), size=size.normal, text="PUT")
+
+// Visual shading of sideways state
+bgcolor(isLateral ? color.new(color.blue, SIDEWAYS_BG_TRANSPARENCY) : na, title="Sideways BG")
+
+// ---------- ALERTS ----------
+alertcondition(callSignal, title="CALL Gap signal (Strategy 6)", message="YC Strategy 6 - CALL Gap on {{ticker}} at {{close}}")
+alertcondition(putSignal,  title="PUT Gap signal (Strategy 5)",  message="YC Strategy 5 - PUT Gap on {{ticker}} at {{close}}")

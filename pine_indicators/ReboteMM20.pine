@@ -1,0 +1,122 @@
+//@version=6
+// =============================================================
+// STRATEGY: Daily SMA20 Bounce
+// Recommended timeframe: 1 HOUR
+// Reference: DAILY SMA20 acts as support/resistance
+// Price touches it but does NOT cross + confirmation candle
+// =============================================================
+
+// ---------- NAMED CONSTANTS (magic numbers extracted) ----------
+// Default length of the current-TF Bollinger Bands & reference SMA.
+BB_LEN_DEFAULT            = 20
+// Minimum allowed BB length in the input box.
+BB_LEN_MIN                = 2
+// Default standard-deviation multiplier for the Bollinger Bands.
+BB_MULT_DEFAULT           = 2.0
+// UI step size when tweaking the BB multiplier input.
+BB_MULT_INPUT_STEP        = 0.1
+
+// Default length of the DAILY SMA used as support/resistance midpoint.
+DAILY_SMA_LEN_DEFAULT     = 20
+// Default % tolerance for considering price "touching" the daily SMA20.
+TOUCH_PCT_DEFAULT         = 0.3
+// UI step when tuning the touch tolerance.
+TOUCH_PCT_STEP            = 0.05
+
+// Default bars used to confirm a valid trend on the current timeframe.
+TREND_LEN_DEFAULT         = 50
+// Minimum sensible trend length.
+TREND_LEN_MIN             = 2
+
+// SMA length used on the 15-min bounce confirmation.
+LTF_SMA_LEN               = 20
+// Ratio (0..1) that defines the "strong half" of a candle body when
+// checking bullish / bearish confirmation candles (0.5 = middle).
+CANDLE_MID_RATIO          = 0.5
+
+// Plot styling -----------------------------------------------
+// Transparency of the current-TF SMA20 line.
+SMA_TF_TRANSPARENCY       = 50
+// Transparency of the Bollinger band lines.
+BB_BAND_TRANSPARENCY      = 60
+// Transparency of the fill between the Bollinger bands.
+BB_FILL_TRANSPARENCY      = 93
+// Line width of the daily SMA20 midpoint plot.
+DAILY_MM_LINEWIDTH        = 3
+// Transparency of CALL / PUT signal triangles (0 = fully opaque).
+SIGNAL_SHAPE_OPACITY      = 0
+
+// Numeric helpers --------------------------------------------
+// Scale factor used to convert a ratio into a percentage.
+PCT_SCALE                 = 100
+
+indicator("YC 02 - Daily SMA20 Bounce (Call/Put)", shorttitle="YC_02_Bounce", overlay=true)
+
+// ---------- INPUTS ----------
+grpBB      = "Bollinger & MA"
+bbLen      = input.int(BB_LEN_DEFAULT,    "BB / MA Length", minval=BB_LEN_MIN, group=grpBB)
+bbMult     = input.float(BB_MULT_DEFAULT, "BB Multiplier",  step=BB_MULT_INPUT_STEP, group=grpBB)
+
+grpDaily   = "Daily reference (midpoint)"
+dailyTF    = input.timeframe("D", "Daily timeframe", group=grpDaily)
+dailyLen   = input.int(DAILY_SMA_LEN_DEFAULT, "Daily SMA20", minval=BB_LEN_MIN, group=grpDaily)
+touchPct   = input.float(TOUCH_PCT_DEFAULT,   "Touch tolerance %", step=TOUCH_PCT_STEP, minval=0.0, group=grpDaily)
+
+grpTrend   = "Trend on 1h (context)"
+trendLen   = input.int(TREND_LEN_DEFAULT, "Bars to confirm hourly trend", minval=TREND_LEN_MIN, group=grpTrend)
+
+grpLTF     = "15 min confirmation"
+ltfTF      = input.timeframe("15", "Lower timeframe", group=grpLTF)
+
+grpSig     = "Signals"
+showCall   = input.bool(true, "Show CALL signal", group=grpSig)
+showPut    = input.bool(true, "Show PUT signal",  group=grpSig)
+
+// ---------- BOLLINGER BANDS CURRENT TF ----------
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+plot(basis, "SMA20 (current TF)", color=color.new(color.orange, SMA_TF_TRANSPARENCY))
+p1 = plot(upper, "BB Upper", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+p2 = plot(lower, "BB Lower", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+fill(p1, p2, color=color.new(color.gray, BB_FILL_TRANSPARENCY))
+
+// ---------- DAILY SMA20 (MIDPOINT) ----------
+dailyMM = request.security(syminfo.tickerid, dailyTF, ta.sma(close, dailyLen), lookahead=barmerge.lookahead_off)
+plot(dailyMM, "Daily SMA20 (Midpoint)", color=color.fuchsia, linewidth=DAILY_MM_LINEWIDTH, style=plot.style_line)
+
+// ---------- TREND CONTEXT ON CURRENT TF ----------
+lowestClose  = ta.lowest(close,  trendLen)
+highestClose = ta.highest(close, trendLen)
+
+bearContext = basis < basis[trendLen] and lowestClose  < lowestClose[trendLen]
+bullContext = basis > basis[trendLen] and highestClose > highestClose[trendLen]
+
+// ---------- DAILY SMA20 TOUCH ----------
+tol = dailyMM * touchPct / PCT_SCALE
+
+touchFromAbove = low  <= dailyMM + tol and low  >= dailyMM - tol and close > dailyMM
+touchFromBelow = high >= dailyMM - tol and high <= dailyMM + tol and close < dailyMM
+
+// ---------- CONFIRMATION CANDLES ----------
+bullConfirm = close > open and close > low  + (high - low) * CANDLE_MID_RATIO
+bearConfirm = close < open and close < high - (high - low) * CANDLE_MID_RATIO
+
+// ---------- 15m BOUNCE CONFIRMATION ----------
+ltfClose = request.security(syminfo.tickerid, ltfTF, close, lookahead=barmerge.lookahead_off)
+ltfBasis = request.security(syminfo.tickerid, ltfTF, ta.sma(close, LTF_SMA_LEN), lookahead=barmerge.lookahead_off)
+ltfBullRebound = ltfClose > ltfBasis
+ltfBearRebound = ltfClose < ltfBasis
+
+// ---------- SIGNALS ----------
+callSignal = bearContext and touchFromAbove and bullConfirm and ltfBullRebound
+putSignal  = bullContext and touchFromBelow and bearConfirm and ltfBearRebound
+
+plotshape(showCall and callSignal, title="CALL Bounce", style=shape.triangleup,   location=location.belowbar, color=color.new(color.lime, SIGNAL_SHAPE_OPACITY), size=size.small, text="CALL")
+plotshape(showPut  and putSignal,  title="PUT Bounce",  style=shape.triangledown, location=location.abovebar, color=color.new(color.red,  SIGNAL_SHAPE_OPACITY), size=size.small, text="PUT")
+
+// ---------- ALERTS ----------
+alertcondition(callSignal, title="CALL Bounce (Strategy 3)", message="YC Strategy 3 - CALL Bounce on {{ticker}} at {{close}}")
+alertcondition(putSignal,  title="PUT Bounce (Strategy 4)",  message="YC Strategy 4 - PUT Bounce on {{ticker}} at {{close}}")

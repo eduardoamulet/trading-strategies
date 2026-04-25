@@ -1,0 +1,142 @@
+//@version=6
+// =============================================================
+// STRATEGY: Magnet Effect
+// Timeframe: 15 MIN (execution) + 1 HOUR (context)
+// Strong trend + extreme gap far from hourly SMA20
+// + first 15m candle FULLY outside BB + Worden Stochastics cross
+// =============================================================
+
+// ---------- NAMED CONSTANTS (magic numbers extracted) ----------
+// Default length for the 15-min Bollinger Bands & reference SMA.
+BB_LEN_DEFAULT           = 20
+// Minimum allowed BB length in the input box (avoids nonsense values).
+BB_LEN_MIN               = 2
+// Default standard-deviation multiplier for the Bollinger Bands.
+BB_MULT_DEFAULT          = 2.0
+// UI step size when tweaking the BB multiplier input.
+BB_MULT_INPUT_STEP       = 0.1
+
+// Default fast / slow SMA lengths on the hourly context chart.
+MM_FAST_DEFAULT          = 20
+MM_SLOW_DEFAULT          = 40
+
+// Default number of hourly bars that must maintain a continuous trend
+// before the "strong trend" flag is considered valid.
+TREND_DAYS_DEFAULT       = 5
+// Minimum continuous trend bars that make sense.
+TREND_DAYS_MIN           = 2
+// Minimum percentage distance between price and the hourly SMA20
+// required to treat the gap as "extreme".
+MIN_DIST_PCT_DEFAULT     = 1.5
+// UI step size when tuning the distance % input.
+MIN_DIST_PCT_STEP        = 0.1
+
+// Worden Stochastics (approximated by a Full Stochastic).
+STOCH_K_LEN_DEFAULT      = 12   // %K length
+STOCH_D_SMOOTH_DEFAULT   = 3    // %D smoothing (red line)
+
+// Plot styling ------------------------------------------------
+// Transparency of the Bollinger band lines (0 = opaque, 100 = invisible).
+BB_BAND_TRANSPARENCY     = 50
+// Transparency of the fill between the Bollinger bands.
+BB_FILL_TRANSPARENCY     = 92
+// Line width of the hourly moving averages drawn on the chart.
+HTF_MA_PLOT_WIDTH        = 2
+// Transparency of CALL / PUT signal triangles (0 = fully opaque).
+SIGNAL_SHAPE_OPACITY     = 0
+
+// Numeric helpers --------------------------------------------
+// Scale factor used to convert a ratio into a percentage (e.g. 0.015 -> 1.5%).
+PCT_SCALE                = 100
+
+indicator("Magnet Effect (Call/Put)", shorttitle="Magnet", overlay=true)
+
+// ---------- INPUTS ----------
+grpBB      = "Bollinger 15m"
+bbLen      = input.int(BB_LEN_DEFAULT,  "BB Length", minval=BB_LEN_MIN, group=grpBB)
+bbMult     = input.float(BB_MULT_DEFAULT, "BB Multiplier", step=BB_MULT_INPUT_STEP, group=grpBB)
+
+grpHTF     = "Hourly moving averages"
+htfTF      = input.timeframe("60", "Upper timeframe (context)", group=grpHTF)
+mmFast     = input.int(MM_FAST_DEFAULT, "Fast MA (yellow)", group=grpHTF)
+mmSlow     = input.int(MM_SLOW_DEFAULT, "Slow MA (red)",    group=grpHTF)
+
+grpTrend   = "Trend strength"
+trendDays  = input.int(TREND_DAYS_DEFAULT, "Hourly bars of continuous trend", minval=TREND_DAYS_MIN, group=grpTrend)
+minDistPct = input.float(MIN_DIST_PCT_DEFAULT, "Minimum distance to hourly SMA20 %", step=MIN_DIST_PCT_STEP, group=grpTrend)
+
+grpStoch   = "Worden Stochastics (12,3)"
+stochLen   = input.int(STOCH_K_LEN_DEFAULT,    "%K length", group=grpStoch)
+stochSmooth= input.int(STOCH_D_SMOOTH_DEFAULT, "%D smoothing (red line)", group=grpStoch)
+
+grpSig     = "Signals"
+showCall   = input.bool(true, "Show CALL signal", group=grpSig)
+showPut    = input.bool(true, "Show PUT signal",  group=grpSig)
+
+// ---------- 15m BOLLINGER (current TF) ----------
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+plot(basis, "SMA20 15m", color=color.orange)
+p1 = plot(upper, "BB Upper", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+p2 = plot(lower, "BB Lower", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+fill(p1, p2, color=color.new(color.gray, BB_FILL_TRANSPARENCY))
+
+// ---------- HOURLY SMA20 AND SMA40 ----------
+htfMM20  = request.security(syminfo.tickerid, htfTF, ta.sma(close, mmFast), lookahead=barmerge.lookahead_off)
+htfMM40  = request.security(syminfo.tickerid, htfTF, ta.sma(close, mmSlow), lookahead=barmerge.lookahead_off)
+htfClose = request.security(syminfo.tickerid, htfTF, close, lookahead=barmerge.lookahead_off)
+
+plot(htfMM20, "Hourly SMA20", color=color.yellow, linewidth=HTF_MA_PLOT_WIDTH)
+plot(htfMM40, "Hourly SMA40", color=color.red,    linewidth=HTF_MA_PLOT_WIDTH)
+
+// ---------- STRONG TREND (MULTI-DAY) ----------
+htfMM20Slope = request.security(syminfo.tickerid, htfTF,
+     ta.sma(close, mmFast) - ta.sma(close, mmFast)[trendDays],
+     lookahead=barmerge.lookahead_off)
+htfMM40Slope = request.security(syminfo.tickerid, htfTF,
+     ta.sma(close, mmSlow) - ta.sma(close, mmSlow)[trendDays],
+     lookahead=barmerge.lookahead_off)
+
+strongBear = htfMM20Slope < 0 and htfMM40Slope < 0 and htfMM20 < htfMM40
+strongBull = htfMM20Slope > 0 and htfMM40Slope > 0 and htfMM20 > htfMM40
+
+// ---------- DISTANCE TO HOURLY SMA20 (EXTREME GAP) ----------
+distPct   = math.abs(close - htfMM20) / htfMM20 * PCT_SCALE
+farFromMM = distPct >= minDistPct
+
+// Gap direction (current bar vs hourly SMA20)
+farBelow = close < htfMM20 and farFromMM
+farAbove = close > htfMM20 and farFromMM
+
+// ---------- WHOLE CANDLE OUTSIDE 15m BOLLINGER ----------
+candleOutsideLower = high < lower  // whole candle below lower BB
+candleOutsideUpper = low  > upper  // whole candle above upper BB
+
+// ---------- WORDEN STOCHASTICS (approximation: Full Stoch) ----------
+kRaw  = ta.stoch(close, high, low, stochLen)
+kFast = ta.sma(kRaw,  stochSmooth)  // green line / smoothed %K
+dSlow = ta.sma(kFast, stochSmooth)  // red line / %D
+
+// Bullish cross: %K crosses above %D (red line)
+stochCrossUp   = ta.crossover(kFast,  dSlow)
+stochCrossDown = ta.crossunder(kFast, dSlow)
+
+// ---------- SIGNALS ----------
+// Bearish trend + extreme gap down + candle outside lower BB + bullish stoch cross => CALL
+callSignal = strongBear and farBelow and candleOutsideLower and stochCrossUp
+// Bullish trend + extreme gap up + candle outside upper BB + bearish stoch cross => PUT
+putSignal  = strongBull and farAbove and candleOutsideUpper and stochCrossDown
+
+plotshape(showCall and callSignal, title="CALL Magnet",
+          style=shape.triangleup, location=location.belowbar,
+          color=color.new(color.lime, SIGNAL_SHAPE_OPACITY), size=size.normal, text="CALL")
+plotshape(showPut and putSignal, title="PUT Magnet",
+          style=shape.triangledown, location=location.abovebar,
+          color=color.new(color.red,  SIGNAL_SHAPE_OPACITY), size=size.normal, text="PUT")
+
+// ---------- ALERTS ----------
+alertcondition(callSignal, title="CALL signal", message="Strategy Magnet Effect - CALL on {{ticker}} at {{close}}")
+alertcondition(putSignal,  title="PUT signal",  message="Strategy Magnet Effect - PUT on {{ticker}} at {{close}}")

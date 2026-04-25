@@ -1,0 +1,310 @@
+//@version=6
+// =============================================================
+// STRATEGY: Trend Reversal
+// Recommended timeframe: 1 HOUR
+// Pivot trend lines are GUIDES only - draw your own line manually.
+// Signal: SMA20 cross + confirmation candle + aligned trend on 15m
+//
+// AUTO-CONFIG: When "Use ticker-optimized config" is ON, the indicator
+// automatically loads the optimal parameters discovered by the grid-search
+// optimization for the 12 validated tickers below.
+//
+// Supported tickers (auto-config applies to these):
+//   Profile A (low vol):        SPY, DIA, GLD
+//   Profile B (medium vol):     QQQ, IWM, SMH
+//   Profile C (medium-high):    AAPL, MSFT, META
+//   Profile D (high vol):       TSLA, NVDA, AMD
+//
+// For any other ticker, manual inputs apply instead.
+// =============================================================
+
+// ---------- NAMED CONSTANTS (magic numbers extracted) ----------
+MAX_LINES_HISTORY       = 50
+
+BB_LEN_DEFAULT          = 20
+BB_MULT_DEFAULT         = 2.0
+BB_MULT_INPUT_STEP      = 0.1
+
+PIVOT_DEFAULT_LEFT      = 5
+PIVOT_DEFAULT_RIGHT     = 5
+
+LTF_BB_LEN_DEFAULT      = 20
+LTF_SLOPE_LOOKBACK      = 3
+
+COOLDOWN_BARS_DEFAULT   = 8
+RESET_DISTANCE_PCT_DEFAULT = 0.3
+RESET_DISTANCE_PCT_STEP    = 0.05
+PCT_SCALE                  = 100
+
+// Macro trend filter defaults
+MACRO_TF_DEFAULT        = "D"
+MACRO_SMA_LEN_DEFAULT   = 50
+MACRO_SLOPE_BARS        = 5
+
+// Chandelier (trailing stop) defaults - visualized only
+CHANDELIER_ATR_LEN_DEFAULT  = 22
+CHANDELIER_ATR_MULT_DEFAULT = 2.5
+
+// Plot styling
+SMA20_PLOT_WIDTH        = 2
+BB_BAND_TRANSPARENCY    = 50
+BB_FILL_TRANSPARENCY    = 92
+GUIDE_LINE_TRANSPARENCY = 40
+GUIDE_LINE_WIDTH        = 1
+SIGNAL_SHAPE_OPACITY    = 0
+
+indicator("Trend Reversal (Call/Put)", shorttitle="Trend", overlay=true, max_lines_count=MAX_LINES_HISTORY)
+
+// ============================================================
+// CONFIGURATION — all values are HARDCODED (no user inputs).
+// Ticker-optimized presets still apply automatically when the chart's
+// symbol matches one of the 12 validated tickers.
+// ============================================================
+
+// Ticker auto-config: always enabled.
+usePreset       = true
+
+// Bollinger Bands
+bbLen           = BB_LEN_DEFAULT
+bbMult          = BB_MULT_DEFAULT
+
+// Trend line guide (pivots) — visible by default
+showGuides      = true
+pivLeft         = PIVOT_DEFAULT_LEFT
+pivRight        = PIVOT_DEFAULT_RIGHT
+
+// 15 min confirmation
+ltfTF           = "15"
+ltfBBLen        = LTF_BB_LEN_DEFAULT
+
+// Signal display — both visible
+showCall        = true
+showPut         = true
+
+// Duplicate signal filter (fallback for tickers NOT in preset list)
+cooldownBars_manual     = COOLDOWN_BARS_DEFAULT
+requireReset            = true
+resetDistancePct_manual = RESET_DISTANCE_PCT_DEFAULT
+
+// Macro trend filter — OFF so the indicator shows ALL reversal signals
+// (turn on only via code if you want to mirror the BACKTEST's validated behavior)
+useMacroTrend           = false
+macroTF                 = MACRO_TF_DEFAULT
+macroSmaLen_manual      = MACRO_SMA_LEN_DEFAULT
+macroSlopeBars          = MACRO_SLOPE_BARS
+
+// Chandelier stop visualization (fallback for tickers NOT in preset list)
+showChandelier          = true
+chandAtrLen_manual      = CHANDELIER_ATR_LEN_DEFAULT
+chandAtrMult_manual     = CHANDELIER_ATR_MULT_DEFAULT
+
+// ============================================================
+// TICKER-OPTIMIZED PRESETS (hardcoded from Strategy_Optimization_Report)
+// Based on grid-search over 405 combos per ticker (2020-2026 data).
+// Validated on TradingView (2014-2026) for AMD, NVDA, META.
+// ============================================================
+
+// Preset lookup via ternary chains. Each returns the optimal value for the
+// given ticker, falling back to the manual input when not in the preset list.
+f_preset_cooldown(string t) => t == "SPY" ? 8 : t == "DIA" ? 8 : t == "GLD" ? 5 : t == "QQQ" ? 8 : t == "IWM" ? 5 : t == "SMH" ? 8 : t == "AAPL" ? 8 : t == "MSFT" ? 5 : t == "META" ? 12 : t == "TSLA" ? 12 : t == "NVDA" ? 5 : t == "AMD" ? 8 : cooldownBars_manual
+
+f_preset_reset(string t) => t == "SPY" ? 0.5 : t == "DIA" ? 0.2 : t == "GLD" ? 0.3 : t == "QQQ" ? 0.5 : t == "IWM" ? 0.3 : t == "SMH" ? 0.2 : t == "AAPL" ? 0.5 : t == "MSFT" ? 0.2 : t == "META" ? 0.2 : t == "TSLA" ? 0.2 : t == "NVDA" ? 0.2 : t == "AMD" ? 0.5 : resetDistancePct_manual
+
+f_preset_macro_sma(string t) => t == "SPY" ? 100 : t == "DIA" ? 50 : t == "GLD" ? 200 : t == "QQQ" ? 50 : t == "IWM" ? 50 : t == "SMH" ? 50 : t == "AAPL" ? 200 : t == "MSFT" ? 100 : t == "META" ? 50 : t == "TSLA" ? 50 : t == "NVDA" ? 50 : t == "AMD" ? 50 : macroSmaLen_manual
+
+f_preset_chand_len(string t) => t == "SPY" ? 14 : t == "DIA" ? 22 : t == "GLD" ? 30 : t == "QQQ" ? 14 : t == "IWM" ? 14 : t == "SMH" ? 14 : t == "AAPL" ? 22 : t == "MSFT" ? 14 : t == "META" ? 14 : t == "TSLA" ? 22 : t == "NVDA" ? 14 : t == "AMD" ? 22 : chandAtrLen_manual
+
+f_preset_chand_mult(string t) => t == "SPY" ? 2.0 : t == "DIA" ? 3.5 : t == "GLD" ? 3.5 : t == "QQQ" ? 2.5 : t == "IWM" ? 3.0 : t == "SMH" ? 1.5 : t == "AAPL" ? 2.5 : t == "MSFT" ? 3.0 : t == "META" ? 3.0 : t == "TSLA" ? 3.5 : t == "NVDA" ? 3.5 : t == "AMD" ? 3.5 : chandAtrMult_manual
+
+f_is_preset_ticker(string t) => t == "SPY" or t == "DIA" or t == "GLD" or t == "QQQ" or t == "IWM" or t == "SMH" or t == "AAPL" or t == "MSFT" or t == "META" or t == "TSLA" or t == "NVDA" or t == "AMD"
+
+// Effective values: preset (if enabled AND ticker is in list) else manual input.
+currentTicker = syminfo.ticker
+presetActive  = usePreset and f_is_preset_ticker(currentTicker)
+
+cooldownBars     = presetActive ? f_preset_cooldown(currentTicker)   : cooldownBars_manual
+resetDistancePct = presetActive ? f_preset_reset(currentTicker)      : resetDistancePct_manual
+macroSmaLen      = presetActive ? f_preset_macro_sma(currentTicker)  : macroSmaLen_manual
+chandAtrLen      = presetActive ? f_preset_chand_len(currentTicker)  : chandAtrLen_manual
+chandAtrMult     = presetActive ? f_preset_chand_mult(currentTicker) : chandAtrMult_manual
+
+// ============================================================
+// INDICATOR LOGIC
+// ============================================================
+
+// ---------- BOLLINGER BANDS + SMA20 ----------
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+plot(basis, "SMA20", color=color.orange, linewidth=SMA20_PLOT_WIDTH)
+p1 = plot(upper, "BB Upper", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+p2 = plot(lower, "BB Lower", color=color.new(color.gray, BB_BAND_TRANSPARENCY))
+fill(p1, p2, color=color.new(color.gray, BB_FILL_TRANSPARENCY))
+
+// ---------- PIVOTS (VISUAL GUIDE ONLY) ----------
+ph = ta.pivothigh(high, pivLeft, pivRight)
+pl = ta.pivotlow(low,  pivLeft, pivRight)
+
+var float ph1  = na
+var int   ph1x = na
+var float ph2  = na
+var int   ph2x = na
+var float pl1  = na
+var int   pl1x = na
+var float pl2  = na
+var int   pl2x = na
+
+if not na(ph)
+    ph2  := ph1
+    ph2x := ph1x
+    ph1  := ph
+    ph1x := bar_index - pivRight
+
+if not na(pl)
+    pl2  := pl1
+    pl2x := pl1x
+    pl1  := pl
+    pl1x := bar_index - pivRight
+
+var line trendDown = na
+bearTrendValid = not na(ph1) and not na(ph2) and ph1 < ph2
+if bearTrendValid and showGuides
+    line.delete(trendDown)
+    trendDown := line.new(ph2x, ph2, ph1x, ph1, color=color.new(color.red, GUIDE_LINE_TRANSPARENCY), width=GUIDE_LINE_WIDTH, style=line.style_dashed, extend=extend.right)
+
+var line trendUp = na
+bullTrendValid = not na(pl1) and not na(pl2) and pl1 > pl2
+if bullTrendValid and showGuides
+    line.delete(trendUp)
+    trendUp := line.new(pl2x, pl2, pl1x, pl1, color=color.new(color.green, GUIDE_LINE_TRANSPARENCY), width=GUIDE_LINE_WIDTH, style=line.style_dashed, extend=extend.right)
+
+// ---------- SIGNAL CONDITIONS ----------
+crossAboveMM = ta.crossover(close, basis)
+crossBelowMM = ta.crossunder(close, basis)
+
+bullCandle = close > open and close > basis
+bearCandle = close < open and close < basis
+
+// ---------- 15 MIN CONFIRMATION ----------
+ltfBasis = request.security(syminfo.tickerid, ltfTF, ta.sma(close, ltfBBLen), lookahead=barmerge.lookahead_off)
+ltfClose = request.security(syminfo.tickerid, ltfTF, close, lookahead=barmerge.lookahead_off)
+ltfSlope = request.security(syminfo.tickerid, ltfTF, ta.sma(close, ltfBBLen) - ta.sma(close, ltfBBLen)[LTF_SLOPE_LOOKBACK], lookahead=barmerge.lookahead_off)
+
+ltfBullish = ltfClose > ltfBasis and ltfSlope > 0
+ltfBearish = ltfClose < ltfBasis and ltfSlope < 0
+
+// ---------- MACRO TREND FILTER ----------
+// Pine v6 requires simple int for ta.sma length, so request each preset length
+// (50/100/200) plus the manual input as independent request.security calls.
+macro50c  = request.security(syminfo.tickerid, macroTF, ta.sma(close, 50),  lookahead=barmerge.lookahead_off)
+macro50p  = request.security(syminfo.tickerid, macroTF, ta.sma(close, 50)[macroSlopeBars],  lookahead=barmerge.lookahead_off)
+macro100c = request.security(syminfo.tickerid, macroTF, ta.sma(close, 100), lookahead=barmerge.lookahead_off)
+macro100p = request.security(syminfo.tickerid, macroTF, ta.sma(close, 100)[macroSlopeBars], lookahead=barmerge.lookahead_off)
+macro200c = request.security(syminfo.tickerid, macroTF, ta.sma(close, 200), lookahead=barmerge.lookahead_off)
+macro200p = request.security(syminfo.tickerid, macroTF, ta.sma(close, 200)[macroSlopeBars], lookahead=barmerge.lookahead_off)
+macroMc   = request.security(syminfo.tickerid, macroTF, ta.sma(close, macroSmaLen_manual), lookahead=barmerge.lookahead_off)
+macroMp   = request.security(syminfo.tickerid, macroTF, ta.sma(close, macroSmaLen_manual)[macroSlopeBars], lookahead=barmerge.lookahead_off)
+
+macroSma     = presetActive ? (macroSmaLen == 50 ? macro50c : macroSmaLen == 100 ? macro100c : macro200c) : macroMc
+macroSmaPrev = presetActive ? (macroSmaLen == 50 ? macro50p : macroSmaLen == 100 ? macro100p : macro200p) : macroMp
+macroRising  = macroSma > macroSmaPrev
+macroFalling = macroSma < macroSmaPrev
+
+macroCallOk = not useMacroTrend or macroRising
+macroPutOk  = not useMacroTrend or macroFalling
+
+plot(useMacroTrend ? macroSma : na, "Macro SMA", color=color.new(color.aqua, 40), linewidth=2)
+
+// ---------- CHANDELIER TRAILING STOP (visualization only) ----------
+// Same issue: ta.atr needs simple int. Precompute for preset lengths (14/22/30)
+// plus the manual input, then select at runtime.
+atr14 = ta.atr(14)
+atr22 = ta.atr(22)
+atr30 = ta.atr(30)
+atrM  = ta.atr(chandAtrLen_manual)
+high14 = ta.highest(high, 14)
+high22 = ta.highest(high, 22)
+high30 = ta.highest(high, 30)
+highM  = ta.highest(high, chandAtrLen_manual)
+low14  = ta.lowest(low,  14)
+low22  = ta.lowest(low,  22)
+low30  = ta.lowest(low,  30)
+lowM   = ta.lowest(low,  chandAtrLen_manual)
+
+atrTrail = presetActive ? (chandAtrLen == 14 ? atr14  : chandAtrLen == 22 ? atr22  : atr30)  : atrM
+highSel  = presetActive ? (chandAtrLen == 14 ? high14 : chandAtrLen == 22 ? high22 : high30) : highM
+lowSel   = presetActive ? (chandAtrLen == 14 ? low14  : chandAtrLen == 22 ? low22  : low30)  : lowM
+
+chandelierLong  = highSel - atrTrail * chandAtrMult
+chandelierShort = lowSel  + atrTrail * chandAtrMult
+
+plot(showChandelier ? chandelierLong  : na, "Chandelier LONG",  color=color.new(color.green, 50), linewidth=1, style=plot.style_line)
+plot(showChandelier ? chandelierShort : na, "Chandelier SHORT", color=color.new(color.red,   50), linewidth=1, style=plot.style_line)
+
+// ---------- CROSS VALIDITY WINDOW ----------
+// A cross event (close through SMA20) stays VALID for N bars. This way, if
+// the exact cross bar happens during cooldown OR without a confirmation
+// candle, we can still fire the signal a few bars later when the rest of
+// the filters align. Without this, most crosses during strong trends are
+// missed because the reversal happens too fast for the cooldown.
+CROSS_VALIDITY_WINDOW = 15
+
+var int lastCrossAboveBar = na
+var int lastCrossBelowBar = na
+if crossAboveMM
+    lastCrossAboveBar := bar_index
+if crossBelowMM
+    lastCrossBelowBar := bar_index
+
+recentCrossAbove = not na(lastCrossAboveBar) and (bar_index - lastCrossAboveBar) <= CROSS_VALIDITY_WINDOW
+recentCrossBelow = not na(lastCrossBelowBar) and (bar_index - lastCrossBelowBar) <= CROSS_VALIDITY_WINDOW
+
+// ---------- RAW SIGNALS ----------
+// Price must still be on the correct side of the SMA20 when we fire the
+// delayed signal (i.e., we don't want to fire a CALL if price already went
+// back below the SMA20 between the cross and now).
+rawCall = recentCrossAbove and close > basis and bullCandle and ltfBullish
+rawPut  = recentCrossBelow and close < basis and bearCandle and ltfBearish
+
+// ---------- DUPLICATE SIGNAL FILTER (cooldown + SMA20 reset) ----------
+var int lastSignalBar = na
+var bool callArmed    = true
+var bool putArmed     = true
+
+// Cross-based reset (symmetric):
+//   CALL rearms whenever close CROSSES BELOW SMA20 (any downward cross).
+//   PUT  rearms whenever close CROSSES ABOVE SMA20 (any upward cross).
+if requireReset
+    if not callArmed and crossBelowMM
+        callArmed := true
+    if not putArmed and crossAboveMM
+        putArmed := true
+
+cooldownOk = na(lastSignalBar) or (bar_index - lastSignalBar) > cooldownBars
+
+callSignal = rawCall and cooldownOk and macroCallOk and (not requireReset or callArmed)
+putSignal  = rawPut  and cooldownOk and macroPutOk  and (not requireReset or putArmed)
+
+if callSignal
+    lastSignalBar := bar_index
+    callArmed     := false
+    // Consume the pending cross so it can't fire again
+    lastCrossAboveBar := na
+if putSignal
+    lastSignalBar := bar_index
+    putArmed      := false
+    lastCrossBelowBar := na
+
+plotshape(showCall and callSignal, title="CALL", style=shape.triangleup,
+          location=location.belowbar, color=color.new(color.lime, SIGNAL_SHAPE_OPACITY), size=size.small, text="CALL")
+plotshape(showPut and putSignal, title="PUT", style=shape.triangledown,
+          location=location.abovebar, color=color.new(color.red,  SIGNAL_SHAPE_OPACITY), size=size.small, text="PUT")
+
+// ---------- ALERTS ----------
+alertcondition(callSignal, title="CALL signal", message="Strategy Trend Reversal - CALL on {{ticker}} at {{close}}")
+alertcondition(putSignal,  title="PUT signal",  message="Strategy Trend Reversal - PUT on {{ticker}} at {{close}}")
+
+// NOTE: The ACTIVE CONFIG table has been intentionally removed to keep the
+// chart clean. The preset still applies automatically based on the ticker.
