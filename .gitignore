@@ -37,6 +37,9 @@ Thumbs.db
 desktop.ini
 *.swp
 
+# ===== Claude Code session files =====
+.claude/
+
 # ===== Logs / temp =====
 *.log
 *.tmp

@@ -4,20 +4,21 @@
 // Recommended timeframe: 1 HOUR
 // Signal: SMA20 cross + confirmation candle + aligned trend on 15m
 //
-// This indicator is HARDCODED for QQQ and SPY only. Both tickers use
-// the optimized parameters discovered by grid-search (Python optimizer).
-// On any other symbol, an error label is displayed and no signals fire.
+// HARDCODED for QQQ and SPY using the optimized parameters discovered
+// by an exhaustive grid-search (Python optimizer) with walk-forward
+// validation on the last 3 years. On any other symbol, an error label
+// is displayed and no signals fire.
 //
-//   QQQ:  Chandelier 2.5 × ATR(14) | Macro SMA(50) | Cooldown 8
-//   SPY:  Chandelier 2.0 × ATR(14) | Macro SMA(100) | Cooldown 8
+//   QQQ:  Chandelier 2.5 × ATR(26) | Macro SMA(200) | Cooldown 20 | CrossWin 5
+//   SPY:  Chandelier 1.5 × ATR(22) | Macro SMA(150) | Cooldown 15 | CrossWin 8
 //
-// Cross-based reset (CALL rearms on cross-below, PUT on cross-above)
-// Cross-validity window of 15 bars to avoid losing signals to cooldown.
+// Cross-based reset (CALL rearms on cross-below, PUT on cross-above).
 // Macro trend filter is OFF in this indicator (shows ALL reversal signals).
+// The BACKTEST forces the macro filter ON (validated optimal behavior).
 // =============================================================
 
 // ============================================================
-// CONSTANTS (everything hardcoded — no user inputs)
+// CONSTANTS (shared across QQQ & SPY)
 // ============================================================
 // Bollinger Bands + reference SMA
 BB_LEN                  = 20
@@ -32,21 +33,12 @@ LTF                     = "15"
 LTF_BB_LEN              = 20
 LTF_SLOPE_LOOKBACK      = 3
 
-// Cooldown filter (same value for both tickers)
-COOLDOWN_BARS           = 8
-
 // Macro trend filter — daily timeframe
 MACRO_TF                = "D"
 MACRO_SLOPE_BARS        = 5
 USE_MACRO_TREND         = false  // OFF: indicator shows ALL reversals.
                                  // The BACKTEST forces it ON to mirror
                                  // the validated optimal behavior.
-
-// Chandelier trailing stop (visualization). Both tickers use length 14.
-CHAND_ATR_LEN           = 14
-
-// Cross validity window (delayed signal)
-CROSS_VALIDITY_WINDOW   = 15
 
 // Numeric helpers
 PCT_SCALE               = 100
@@ -67,9 +59,15 @@ isQQQ          = ticker == "QQQ"
 isSPY          = ticker == "SPY"
 isValidTicker  = isQQQ or isSPY
 
-// Per-ticker config (the only differences between QQQ and SPY).
-chandMult      = isQQQ ? 2.5 : 2.0
-// Macro SMA length: QQQ uses 50, SPY uses 100.
+// Per-ticker optimized config (from walk-forward grid search).
+chandMult              = isQQQ ? 2.5 : 1.5
+// Other ticker-specific values are referenced via isQQQ ? ... below.
+// Macro SMA length: 200 for QQQ, 150 for SPY.
+// Chandelier ATR length: 26 for QQQ, 22 for SPY.
+// Cooldown bars: 20 for QQQ, 15 for SPY.
+// Cross validity window: 5 for QQQ, 8 for SPY.
+COOLDOWN_BARS          = isQQQ ? 20 : 15
+CROSS_VALIDITY_WINDOW  = isQQQ ? 5  : 8
 
 indicator("Trend Reversal QQQ+SPY", shorttitle="TR-QS", overlay=true, max_lines_count=50)
 
@@ -140,12 +138,12 @@ bearCandle = close < open and close < basis
 ltfBullish = ltfClose > ltfBasis and ltfSlope > 0
 ltfBearish = ltfClose < ltfBasis and ltfSlope < 0
 
-// ---------- Macro trend filter (only the 2 lengths used: 50 & 100) ----------
-[macro50c, macro50p]   = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 50),  ta.sma(close, 50)[MACRO_SLOPE_BARS]],  lookahead=barmerge.lookahead_off)
-[macro100c, macro100p] = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 100), ta.sma(close, 100)[MACRO_SLOPE_BARS]], lookahead=barmerge.lookahead_off)
+// ---------- Macro trend filter (QQQ uses 200, SPY uses 150) ----------
+[macro150c, macro150p] = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 150), ta.sma(close, 150)[MACRO_SLOPE_BARS]], lookahead=barmerge.lookahead_off)
+[macro200c, macro200p] = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 200), ta.sma(close, 200)[MACRO_SLOPE_BARS]], lookahead=barmerge.lookahead_off)
 
-macroSma     = isQQQ ? macro50c : macro100c
-macroSmaPrev = isQQQ ? macro50p : macro100p
+macroSma     = isQQQ ? macro200c : macro150c
+macroSmaPrev = isQQQ ? macro200p : macro150p
 macroRising  = macroSma > macroSmaPrev
 macroFalling = macroSma < macroSmaPrev
 
@@ -154,13 +152,21 @@ macroPutOk  = not USE_MACRO_TREND or macroFalling
 
 plot(USE_MACRO_TREND and isValidTicker ? macroSma : na, "Macro SMA", color=color.new(color.aqua, 40), linewidth=2)
 
-// ---------- Chandelier trailing stop (length 14 for both tickers) ----------
-atr14  = ta.atr(CHAND_ATR_LEN)
-high14 = ta.highest(high, CHAND_ATR_LEN)
-low14  = ta.lowest(low,  CHAND_ATR_LEN)
+// ---------- Chandelier trailing stop (QQQ length 26, SPY length 22) ----------
+// ta.atr requires simple int, so precompute both lengths and select.
+atr22  = ta.atr(22)
+atr26  = ta.atr(26)
+high22 = ta.highest(high, 22)
+high26 = ta.highest(high, 26)
+low22  = ta.lowest(low,  22)
+low26  = ta.lowest(low,  26)
 
-chandelierLong  = high14 - atr14 * chandMult
-chandelierShort = low14  + atr14 * chandMult
+atrTrail = isQQQ ? atr26  : atr22
+highSel  = isQQQ ? high26 : high22
+lowSel   = isQQQ ? low26  : low22
+
+chandelierLong  = highSel - atrTrail * chandMult
+chandelierShort = lowSel  + atrTrail * chandMult
 
 plot(isValidTicker ? chandelierLong  : na, "Chandelier LONG",  color=color.new(color.green, 50), linewidth=1)
 plot(isValidTicker ? chandelierShort : na, "Chandelier SHORT", color=color.new(color.red,   50), linewidth=1)

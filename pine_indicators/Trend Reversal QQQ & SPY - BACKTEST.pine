@@ -6,8 +6,8 @@
 // Backtest version of the Trend Reversal strategy. Hardcoded for QQQ
 // and SPY only. On any other symbol the chart shows an error label.
 //
-//   QQQ:  Chandelier 2.5 × ATR(14) | Macro SMA(50) | Cooldown 8
-//   SPY:  Chandelier 2.0 × ATR(14) | Macro SMA(100) | Cooldown 8
+//   QQQ:  Chandelier 2.5 × ATR(26) | Macro SMA(200) | Cooldown 20 | CrossWin 5
+//   SPY:  Chandelier 1.5 × ATR(22) | Macro SMA(150) | Cooldown 15 | CrossWin 8
 //
 // Forced ON in this backtest (validated optimal behavior):
 //   - Macro trend filter
@@ -24,18 +24,15 @@
 // =============================================================
 
 // ============================================================
-// CONSTANTS (hardcoded — match the indicator)
+// CONSTANTS (shared — ticker-specific values are below in TICKER section)
 // ============================================================
 BB_LEN                  = 20
 BB_MULT                 = 2.0
 LTF                     = "15"
 LTF_BB_LEN              = 20
 LTF_SLOPE_LOOKBACK      = 3
-COOLDOWN_BARS           = 8
 MACRO_TF                = "D"
 MACRO_SLOPE_BARS        = 5
-CHAND_ATR_LEN           = 14
-CROSS_VALIDITY_WINDOW   = 15
 PCT_SCALE               = 100
 
 // Backtest-specific
@@ -85,15 +82,19 @@ showMetrics = input.bool(true, "Show metrics table on chart", group=grpMetrics)
 metricsPos  = input.string("top_right", "Table position", options=["top_left", "top_right", "bottom_left", "bottom_right", "middle_right"], group=grpMetrics)
 
 // ============================================================
-// TICKER VALIDATION
+// TICKER VALIDATION + per-ticker optimized config
 // ============================================================
 ticker         = syminfo.ticker
 isQQQ          = ticker == "QQQ"
 isSPY          = ticker == "SPY"
 isValidTicker  = isQQQ or isSPY
 
-// Per-ticker config (the only differences between QQQ and SPY).
-chandMult      = isQQQ ? 2.5 : 2.0
+// Per-ticker optimized config (from walk-forward grid search):
+//   QQQ: Chandelier 2.5 × ATR(26) | Macro SMA(200) | Cooldown 20 | CrossWin 5
+//   SPY: Chandelier 1.5 × ATR(22) | Macro SMA(150) | Cooldown 15 | CrossWin 8
+chandMult              = isQQQ ? 2.5 : 1.5
+COOLDOWN_BARS          = isQQQ ? 20  : 15
+CROSS_VALIDITY_WINDOW  = isQQQ ? 5   : 8
 
 // ============================================================
 // BOLLINGER BANDS + SMA20
@@ -123,12 +124,12 @@ bearCandle = close < open and close < basis
 ltfBullish = ltfClose > ltfBasis and ltfSlope > 0
 ltfBearish = ltfClose < ltfBasis and ltfSlope < 0
 
-// Macro trend filter — only need lengths 50 (QQQ) and 100 (SPY)
-[macro50c, macro50p]   = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 50),  ta.sma(close, 50)[MACRO_SLOPE_BARS]],  lookahead=barmerge.lookahead_off)
-[macro100c, macro100p] = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 100), ta.sma(close, 100)[MACRO_SLOPE_BARS]], lookahead=barmerge.lookahead_off)
+// Macro trend filter — QQQ uses 200, SPY uses 150
+[macro150c, macro150p] = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 150), ta.sma(close, 150)[MACRO_SLOPE_BARS]], lookahead=barmerge.lookahead_off)
+[macro200c, macro200p] = request.security(syminfo.tickerid, MACRO_TF, [ta.sma(close, 200), ta.sma(close, 200)[MACRO_SLOPE_BARS]], lookahead=barmerge.lookahead_off)
 
-macroSma     = isQQQ ? macro50c : macro100c
-macroSmaPrev = isQQQ ? macro50p : macro100p
+macroSma     = isQQQ ? macro200c : macro150c
+macroSmaPrev = isQQQ ? macro200p : macro150p
 macroRising  = macroSma > macroSmaPrev
 macroFalling = macroSma < macroSmaPrev
 
@@ -139,14 +140,22 @@ macroPutOk  = macroFalling
 plot(isValidTicker ? macroSma : na, "Macro SMA", color=color.new(color.aqua, 40), linewidth=2)
 
 // ============================================================
-// CHANDELIER TRAILING STOP (always ON in backtest)
+// CHANDELIER TRAILING STOP (QQQ length 26, SPY length 22 — always ON)
 // ============================================================
-atr14  = ta.atr(CHAND_ATR_LEN)
-high14 = ta.highest(high, CHAND_ATR_LEN)
-low14  = ta.lowest(low,  CHAND_ATR_LEN)
+// ta.atr requires simple int, so precompute both lengths and select.
+atr22  = ta.atr(22)
+atr26  = ta.atr(26)
+high22 = ta.highest(high, 22)
+high26 = ta.highest(high, 26)
+low22  = ta.lowest(low,  22)
+low26  = ta.lowest(low,  26)
 
-chandelierLong  = high14 - atr14 * chandMult
-chandelierShort = low14  + atr14 * chandMult
+atrTrail = isQQQ ? atr26  : atr22
+highSel  = isQQQ ? high26 : high22
+lowSel   = isQQQ ? low26  : low22
+
+chandelierLong  = highSel - atrTrail * chandMult
+chandelierShort = lowSel  + atrTrail * chandMult
 
 // ============================================================
 // CROSS VALIDITY WINDOW
