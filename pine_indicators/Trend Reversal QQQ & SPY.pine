@@ -6,11 +6,11 @@
 //
 // HARDCODED for QQQ and SPY using the optimized parameters discovered
 // by an exhaustive grid-search (Python optimizer) with walk-forward
-// validation on the last 3 years. On any other symbol, an error label
-// is displayed and no signals fire.
+// validation on the last 3 years. Configs ranked by NET PROFIT.
+// On any other symbol, an error label is displayed and no signals fire.
 //
-//   QQQ:  Chandelier 2.5 × ATR(26) | Macro SMA(200) | Cooldown 20 | CrossWin 5
-//   SPY:  Chandelier 1.5 × ATR(22) | Macro SMA(150) | Cooldown 15 | CrossWin 8
+//   QQQ:  Chandelier 4.0 × ATR(26) | Macro SMA(200) | Cooldown 5  | CrossWin 8
+//   SPY:  Chandelier 2.0 × ATR(10) | Macro SMA(150) | Cooldown 15 | CrossWin 8
 //
 // Cross-based reset (CALL rearms on cross-below, PUT on cross-above).
 // Macro trend filter is OFF in this indicator (shows ALL reversal signals).
@@ -59,15 +59,12 @@ isQQQ          = ticker == "QQQ"
 isSPY          = ticker == "SPY"
 isValidTicker  = isQQQ or isSPY
 
-// Per-ticker optimized config (from walk-forward grid search).
-chandMult              = isQQQ ? 2.5 : 1.5
-// Other ticker-specific values are referenced via isQQQ ? ... below.
-// Macro SMA length: 200 for QQQ, 150 for SPY.
-// Chandelier ATR length: 26 for QQQ, 22 for SPY.
-// Cooldown bars: 20 for QQQ, 15 for SPY.
-// Cross validity window: 5 for QQQ, 8 for SPY.
-COOLDOWN_BARS          = isQQQ ? 20 : 15
-CROSS_VALIDITY_WINDOW  = isQQQ ? 5  : 8
+// Per-ticker optimized config (walk-forward grid search, ranked by NET PROFIT):
+//   QQQ: chandMult 4.0, ATR(26), Macro 200, CD 5,  CrossWin 8
+//   SPY: chandMult 2.0, ATR(10), Macro 150, CD 15, CrossWin 8
+chandMult              = isQQQ ? 4.0 : 2.0
+COOLDOWN_BARS          = isQQQ ? 5   : 15
+CROSS_VALIDITY_WINDOW  = isQQQ ? 8   : 8
 
 indicator("Trend Reversal QQQ+SPY", shorttitle="TR-QS", overlay=true, max_lines_count=50)
 
@@ -152,18 +149,18 @@ macroPutOk  = not USE_MACRO_TREND or macroFalling
 
 plot(USE_MACRO_TREND and isValidTicker ? macroSma : na, "Macro SMA", color=color.new(color.aqua, 40), linewidth=2)
 
-// ---------- Chandelier trailing stop (QQQ length 26, SPY length 22) ----------
+// ---------- Chandelier trailing stop (QQQ length 26, SPY length 10) ----------
 // ta.atr requires simple int, so precompute both lengths and select.
-atr22  = ta.atr(22)
+atr10  = ta.atr(10)
 atr26  = ta.atr(26)
-high22 = ta.highest(high, 22)
+high10 = ta.highest(high, 10)
 high26 = ta.highest(high, 26)
-low22  = ta.lowest(low,  22)
+low10  = ta.lowest(low,  10)
 low26  = ta.lowest(low,  26)
 
-atrTrail = isQQQ ? atr26  : atr22
-highSel  = isQQQ ? high26 : high22
-lowSel   = isQQQ ? low26  : low22
+atrTrail = isQQQ ? atr26  : atr10
+highSel  = isQQQ ? high26 : high10
+lowSel   = isQQQ ? low26  : low10
 
 chandelierLong  = highSel - atrTrail * chandMult
 chandelierShort = lowSel  + atrTrail * chandMult
