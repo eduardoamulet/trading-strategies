@@ -39,10 +39,12 @@ minDropPct = input.float(1.0, "Drop mínimo entre pivots (%)", group=grpRule1, m
 requireBelowBasis = input.bool(true, "Requerir close < BB basis entre pivots", group=grpRule1,
      tooltip="Valida un downtrend REAL: el precio tuvo que cerrar debajo de SMA20 al menos una vez entre los 2 pivots. (Filtro A)")
 
-grpViz    = "Visualización"
-showLine  = input.bool(true, "Dibujar línea de tendencia", group=grpViz)
-showPiv   = input.bool(true, "Mostrar marcadores de pivots", group=grpViz)
-showTable = input.bool(true, "Mostrar tabla de reglas", group=grpViz)
+grpViz       = "Visualización"
+showLine     = input.bool(true, "Dibujar línea de tendencia", group=grpViz)
+showPiv      = input.bool(true, "Mostrar marcadores de pivots", group=grpViz)
+showTable    = input.bool(true, "Mostrar tabla de reglas", group=grpViz)
+showBBLabels = input.bool(true, "Mostrar etiquetas BB en escala de precios", group=grpViz,
+     tooltip="Si lo desactivas, los textos 'TR-Build:BB upper', 'BB basis', 'BB lower' dejan de aparecer en la escala de precios derecha del chart. Las bandas siguen visibles, solo se ocultan las etiquetas.")
 
 // ============================================================
 // TIMEFRAME HELPER — Convierte timeframe.period a string humano
@@ -62,9 +64,14 @@ dev   = bbMult * ta.stdev(close, bbLen)
 upper = basis + dev
 lower = basis - dev
 
-plot(basis, "BB basis", color=color.orange, linewidth=2)
-p1 = plot(upper, "BB upper", color=color.new(color.gray, 50))
-p2 = plot(lower, "BB lower", color=color.new(color.gray, 50))
+// Toggle: cuando showBBLabels = false, ocultamos las etiquetas en la escala
+// de precios (display.price_scale) pero mantenemos las líneas visibles en el
+// chart, status line y data window.
+bbDisplay = showBBLabels ? display.all : display.pane + display.status_line + display.data_window
+
+plot(basis, "BB basis", color=color.orange, linewidth=2, display=bbDisplay)
+p1 = plot(upper, "BB upper", color=color.new(color.gray, 50), display=bbDisplay)
+p2 = plot(lower, "BB lower", color=color.new(color.gray, 50), display=bbDisplay)
 fill(p1, p2, color=color.new(color.gray, 92))
 
 // ============================================================
