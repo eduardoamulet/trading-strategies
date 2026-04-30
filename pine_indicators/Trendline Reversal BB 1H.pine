@@ -25,7 +25,8 @@
 
 indicator("Trendline Reversal — Construcción", shorttitle="TR-Build",
      overlay=true,
-     max_lines_count=50)
+     max_lines_count=50,
+     max_labels_count=500)
 
 // ============================================================
 // INPUTS
@@ -44,12 +45,14 @@ minDropPct = input.float(1.0, "Drop mínimo entre pivots (%)", group=grpRule1, m
 requireBelowBasis = input.bool(true, "Requerir close < BB basis entre pivots", group=grpRule1,
      tooltip="Valida un downtrend REAL: el precio tuvo que cerrar debajo de SMA20 al menos una vez entre los 2 pivots. (Filtro A)")
 
-grpViz       = "Visualización"
-showLine     = input.bool(true, "Dibujar línea de tendencia", group=grpViz)
-showPiv      = input.bool(true, "Mostrar marcadores de pivots", group=grpViz)
-showTable    = input.bool(true, "Mostrar tabla de reglas", group=grpViz)
-showBBLabels = input.bool(true, "Mostrar etiquetas BB en escala de precios", group=grpViz,
+grpViz           = "Visualización"
+showLine         = input.bool(true,  "Dibujar línea de tendencia", group=grpViz)
+showPiv          = input.bool(true,  "Mostrar marcadores de pivots", group=grpViz)
+showTable        = input.bool(true,  "Mostrar tabla de reglas", group=grpViz)
+showBBLabels     = input.bool(true,  "Mostrar etiquetas BB en escala de precios", group=grpViz,
      tooltip="Si lo desactivas, los textos 'TR-Build:BB upper', 'BB basis', 'BB lower' dejan de aparecer en la escala de precios derecha del chart. Las bandas siguen visibles, solo se ocultan las etiquetas.")
+showHoverTooltip = input.bool(false, "Tooltips por vela (últimas 500)", group=grpViz,
+     tooltip="Agrega un puntito gris debajo de cada vela. Pasa el mouse sobre el puntito para ver el estado de las reglas EN ESA VELA específica.\n\nLimitado a las últimas 500 velas (límite del API Pine de TradingView).\n\nNota UX: tienes que pasar el mouse sobre el puntito gris debajo de la vela, no sobre el cuerpo de la vela en sí — Pine no permite hover-on-candle directo.")
 
 // ============================================================
 // TIMEFRAME HELPER — Convierte timeframe.period a string humano
@@ -192,6 +195,12 @@ if showLine and not snapValid and not na(trendDown)
     line.delete(trendDown)
     trendDown := na
 
+// Plot continuo del snapshot trendline — muestra el VALOR REAL de la línea
+// en cada bar mientras el snapshot esté vigente. Complemento al line.new que
+// puede proyectarse off-screen con extend.right en bajistas pronunciadas.
+plot(showLine and snapValid ? trendlineNow : na, "Snapshot trendline",
+     color=color.new(color.red, 30), style=plot.style_linebr, linewidth=1)
+
 // Marcadores de pivots highs
 plotshape(showPiv and not na(ph), title="Pivot High",
      style=shape.triangledown, location=location.abovebar,
@@ -201,6 +210,25 @@ plotshape(showPiv and not na(ph), title="Pivot High",
 plotshape(breakoutEvent, title="Breakout",
      style=shape.triangleup, location=location.belowbar,
      color=color.new(color.lime, 0), size=size.small, text="↑")
+
+// ============================================================
+// TOOLTIPS POR VELA — Hover sobre puntito gris para ver estado
+// ============================================================
+// Pine v6 NO soporta hover-on-candle directo. Workaround: añadir un
+// puntito gris pequeño debajo de cada vela; al pasar el mouse SOBRE
+// EL PUNTITO aparece un tooltip con el estado de las reglas en esa
+// vela específica. Limitado a las últimas 500 velas (max_labels_count).
+if showHoverTooltip
+    // Helpers para formatear los valores de diagnóstico
+    ph1Str        = na(ph1) ? "—" : str.tostring(ph1, "#.##") + " (hace " + str.tostring(bar_index - ph1x) + " velas)"
+    ph2Str        = na(ph2) ? "—" : str.tostring(ph2, "#.##") + " (hace " + str.tostring(bar_index - ph2x) + " velas)"
+    dropStr       = hasTwoPivots ? str.tostring(pivotDropPct, "#.##") + "% (min " + str.tostring(minDropPct, "#.##") + "%)" : "—"
+    belowBasisStr = hasTwoPivots ? (wasBelowBasisLastPair ? "SÍ ✓" : "NO ✗") : "—"
+    trendStr      = snapValid and not na(trendlineNow) ? str.tostring(trendlineNow, "#.##") : "—"
+    snapAgeStr    = na(snapBornBar) ? "—" : str.tostring(snapAge) + " velas (max " + str.tostring(recentBars) + ")"
+    crossStr      = (snapValid and not na(trendlineNow)) ? (close > trendlineNow ? "SÍ ✓" : "NO ✗") : "—"
+    tooltipTxt = str.format_time(time, "yyyy-MM-dd HH:mm") + " • close=" + str.tostring(close, "#.##") + " • basis=" + str.tostring(basis, "#.##") + "\n─────────\n" + "1. Tendencia bajista: " + (rule1 ? "☑" : "☐") + "\n   ph1 = " + ph1Str + "\n   ph2 = " + ph2Str + "\n   Drop: " + dropStr + "\n   Close < basis entre pivots: " + belowBasisStr + "\n─────────\n" + "2. Ruptura de línea: " + (rule2 ? "☑" : "☐") + "\n   Trendline (snapshot): " + trendStr + "\n   close > trendline: " + crossStr + "\n   Snap age: " + snapAgeStr
+    label.new(bar_index, high, "", tooltip=tooltipTxt, yloc=yloc.abovebar, color=color.new(color.gray, 70), style=label.style_circle, size=size.tiny, textcolor=color.new(color.white, 100))
 
 // ============================================================
 // TABLA DE REGLAS
