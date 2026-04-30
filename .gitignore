@@ -20,6 +20,9 @@ pine_indicators/Backtesting TradingView files/
 !Strategy_Optimization_Report.xlsx
 !Listado_Compañias_Mas_Rapidas.xlsx
 
+# ===== Reference PDFs (strategy books, notes — keep local) =====
+*.pdf
+
 # ===== Python =====
 __pycache__/
 *.py[cod]
