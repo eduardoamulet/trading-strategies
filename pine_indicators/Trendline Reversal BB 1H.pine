@@ -34,6 +34,10 @@ pivotLen   = input.int(5, "Sensibilidad de pivots (left/right)", group=grpRule1,
      tooltip="Velas a cada lado que deben ser menores que el pivot. Mayor = más estricto, menos pivots.")
 recentBars = input.int(60, "Máx velas desde el pivot más antiguo", group=grpRule1, minval=5,
      tooltip="El pivot MÁS VIEJO debe estar dentro de este rango (en barras de la TF actual).")
+minDropPct = input.float(1.0, "Drop mínimo entre pivots (%)", group=grpRule1, minval=0.0, step=0.5,
+     tooltip="El pivot viejo debe ser ≥ X% más alto que el nuevo. Filtra micro-decrecientes en uptrends. (Filtro B)")
+requireBelowBasis = input.bool(true, "Requerir close < BB basis entre pivots", group=grpRule1,
+     tooltip="Valida un downtrend REAL: el precio tuvo que cerrar debajo de SMA20 al menos una vez entre los 2 pivots. (Filtro A)")
 
 grpViz    = "Visualización"
 showLine  = input.bool(true, "Dibujar línea de tendencia", group=grpViz)
@@ -66,6 +70,12 @@ fill(p1, p2, color=color.new(color.gray, 92))
 // ============================================================
 // REGLA 1 — Detección de tendencia bajista previa
 // (evalúa en la TF actual del chart)
+// ─────────────────────────────────────────────
+// Sub-condiciones requeridas:
+//   (1) 2 pivot highs decrecientes
+//   (2) Fresh: pivot viejo dentro de `recentBars` velas
+//   (3) Filtro B: drop entre pivots ≥ `minDropPct` %
+//   (4) Filtro A: close < BB basis al menos 1 vez entre los 2 pivots
 // ============================================================
 ph = ta.pivothigh(high, pivotLen, pivotLen)
 
@@ -74,17 +84,34 @@ var int   ph1x  = na
 var float ph2   = na
 var int   ph2x  = na
 
+// Filtro A — track si close cerró por debajo del basis entre los 2 pivots.
+// Solo se re-evalúa cuando llega un pivot NUEVO (no cada bar) — eficiente.
+var bool wasBelowBasisLastPair = false
+
 if not na(ph)
     ph2  := ph1
     ph2x := ph1x
     ph1  := ph
-    ph1x := bar_index - pivotLen   // pivot ocurrió hace `pivotLen` velas
+    ph1x := bar_index - pivotLen
 
-hasTwoPivots = not na(ph1) and not na(ph2)
-isDecreasing = hasTwoPivots and ph1 < ph2
-isFresh      = hasTwoPivots and (bar_index - ph2x) <= recentBars
+    // Escaneo Filtro A: ¿hubo close < basis entre ph2x y ph1x?
+    if not na(ph2)
+        wasBelowBasisLastPair := false
+        startOff = bar_index - ph1x   // offset del pivot nuevo (más reciente)
+        endOff   = bar_index - ph2x   // offset del pivot viejo (más antiguo)
+        for i = startOff to endOff
+            if close[i] < basis[i]
+                wasBelowBasisLastPair := true
+                break
 
-rule1 = isDecreasing and isFresh
+hasTwoPivots      = not na(ph1) and not na(ph2)
+isDecreasing      = hasTwoPivots and ph1 < ph2
+isFresh           = hasTwoPivots and (bar_index - ph2x) <= recentBars
+pivotDropPct      = hasTwoPivots ? (ph2 - ph1) / ph2 * 100 : 0.0
+isSignificantDrop = hasTwoPivots and pivotDropPct >= minDropPct          // Filtro B
+realDowntrend     = (not requireBelowBasis) or wasBelowBasisLastPair     // Filtro A
+
+rule1 = isDecreasing and isFresh and isSignificantDrop and realDowntrend
 
 // ============================================================
 // VISUALIZACIÓN
