@@ -185,9 +185,6 @@ trendlineNow = snapValid ? snapP2 + slope * (bar_index - snapP2x) : na
 // Rule 2: close cierra arriba del último trendline válido (snapshot)
 rule2 = snapValid and not na(trendlineNow) and close > trendlineNow
 
-// Evento de ruptura: transición de false → true (one-shot marker visual)
-breakoutEvent = rule2 and not rule2[1]
-
 // ============================================================
 // REGLA 3 — Confirmación con Bollinger Bands (TF actual)
 // ─────────────────────────────────────────────
@@ -207,6 +204,30 @@ bullishCandle = close > open                                               // 3b
 bodyOk        = (not useBodyFilter) or (candleBody >= bodyAtrMult * atr14) // 3c
 
 rule3 = aboveBasis and bullishCandle and bodyOk
+
+// ============================================================
+// SEÑAL COMPLETA — TODAS las reglas alineadas (interpretación estricta)
+// ─────────────────────────────────────────────
+// `fullSignal = rule1 AND rule2 AND rule3` — exige que el patrón
+// bajista esté VIGENTE al momento del breakout (rule1 ☑ ahora).
+//
+// Trade-off conocido: pierde reversals violentos donde el rally forma
+// nuevos pivots ascendentes que invalidan rule1 antes de que close
+// cruce la trendline. Esos casos quedan filtrados deliberadamente.
+//
+// Razón: el usuario prefiere la interpretación estricta de la spec
+// original ("Tendencia bajista PREVIA" + "Ruptura" simultáneamente),
+// aunque eso reduzca cantidad de señales. Mejor pocas señales con
+// patrón vigente que muchas con patrón ya roto.
+//
+// Cuando agreguemos Rule 4, se incorporará al AND:
+//   fullSignal = rule1 AND rule2 AND rule3 AND rule4
+//
+// `breakoutEvent` dispara una sola vez al transicionar fullSignal de
+// false → true. Es lo que pinta el ▲ verde en el chart.
+// ============================================================
+fullSignal    = rule1 and rule2 and rule3
+breakoutEvent = fullSignal and not fullSignal[1]
 
 // ============================================================
 // VISUALIZACIÓN
