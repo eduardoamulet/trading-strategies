@@ -61,6 +61,8 @@ showPiv          = input.bool(true,  "Mostrar marcadores de pivots", group=grpVi
 showTable        = input.bool(true,  "Mostrar tabla de reglas", group=grpViz)
 showBBLabels     = input.bool(true,  "Mostrar etiquetas BB en escala de precios", group=grpViz,
      tooltip="Si lo desactivas, los textos 'TR-Build:BB upper', 'BB basis', 'BB lower' dejan de aparecer en la escala de precios derecha del chart. Las bandas siguen visibles, solo se ocultan las etiquetas.")
+showSnapLabel    = input.bool(true,  "Mostrar etiqueta de Snapshot trendline en escala de precios", group=grpViz,
+     tooltip="Si lo desactivas, el texto 'TR-Build:Snapshot trendline' deja de aparecer en la escala de precios derecha del chart. La línea sigue visible, solo se oculta la etiqueta.")
 showHoverTooltip = input.bool(false, "Tooltips por vela (últimas 500)", group=grpViz,
      tooltip="Agrega un puntito gris debajo de cada vela. Pasa el mouse sobre el puntito para ver el estado de las reglas EN ESA VELA específica.\n\nLimitado a las últimas 500 velas (límite del API Pine de TradingView).\n\nNota UX: tienes que pasar el mouse sobre el puntito gris debajo de la vela, no sobre el cuerpo de la vela en sí — Pine no permite hover-on-candle directo.")
 
@@ -249,8 +251,11 @@ if showLine and not snapValid and not na(trendDown)
 // Plot continuo del snapshot trendline — muestra el VALOR REAL de la línea
 // en cada bar mientras el snapshot esté vigente. Complemento al line.new que
 // puede proyectarse off-screen con extend.right en bajistas pronunciadas.
+// El toggle showSnapLabel oculta solo la etiqueta del price scale; la línea
+// sigue visible en el chart.
+snapDisplay = showSnapLabel ? display.all : display.pane + display.status_line + display.data_window
 plot(showLine and snapValid ? trendlineNow : na, "Snapshot trendline",
-     color=color.new(color.red, 30), style=plot.style_linebr, linewidth=1)
+     color=color.new(color.red, 30), style=plot.style_linebr, linewidth=1, display=snapDisplay)
 
 // Marcadores de pivots highs
 plotshape(showPiv and not na(ph), title="Pivot High",
