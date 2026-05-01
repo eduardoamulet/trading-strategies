@@ -15,8 +15,12 @@
 //    - Modo "sticky": ☑ se mantiene mientras close siga arriba de la línea
 //    - Marcador visual one-shot (▲ verde) en la vela del cruce
 //
+// ✅ Regla 3: Confirmación con Bollinger Bands (1H)
+//    - close > BB basis (precio arriba de SMA20)
+//    - Vela alcista (close > open)
+//    - Cuerpo significativo (≥ X × ATR(14)) — toggle opcional
+//
 // ⏳ Pendientes (próximas iteraciones):
-//    3. Confirmación con Bollinger Bands
 //    4. Confirmación en TF inferior (15m si chart=1H, etc.)
 //
 // Funciona con CUALQUIER ticker y CUALQUIER timeframe.
@@ -44,6 +48,12 @@ minDropPct = input.float(1.0, "Drop mínimo entre pivots (%)", group=grpRule1, m
      tooltip="El pivot viejo debe ser ≥ X% más alto que el nuevo. Filtra micro-decrecientes en uptrends. (Filtro B)")
 requireBelowBasis = input.bool(true, "Requerir close < BB basis entre pivots", group=grpRule1,
      tooltip="Valida un downtrend REAL: el precio tuvo que cerrar debajo de SMA20 al menos una vez entre los 2 pivots. (Filtro A)")
+
+grpRule3      = "Regla 3 — Confirmación BB"
+useBodyFilter = input.bool(true, "Filtro de cuerpo de vela", group=grpRule3,
+     tooltip="Si está ON, la vela de breakout debe tener cuerpo |close-open| ≥ bodyAtrMult × ATR(14). Filtra rupturas con velas pequeñas/dudosas.")
+bodyAtrMult   = input.float(0.5, "Body mínimo / ATR(14)", group=grpRule3, minval=0.1, step=0.1,
+     tooltip="Múltiplo de ATR(14) que el cuerpo de la vela debe alcanzar. Solo aplica si el filtro está ON. Mayor = más estricto, menos señales.")
 
 grpViz           = "Visualización"
 showLine         = input.bool(true,  "Dibujar línea de tendencia", group=grpViz)
@@ -179,6 +189,26 @@ rule2 = snapValid and not na(trendlineNow) and close > trendlineNow
 breakoutEvent = rule2 and not rule2[1]
 
 // ============================================================
+// REGLA 3 — Confirmación con Bollinger Bands (TF actual)
+// ─────────────────────────────────────────────
+// Sub-condiciones requeridas (TODAS deben cumplirse):
+//   (3a) close > basis      — precio arriba de la SMA20
+//   (3b) close > open       — vela alcista
+//   (3c) body filter (opc.) — |close-open| ≥ bodyAtrMult × ATR(14)
+//
+// Esta regla es el filtro que mata los falsos breakouts dentro del
+// downtrend (donde close < basis típicamente). En el reversal real,
+// price sale arriba del basis y la vela suele tener cuerpo significativo.
+// ============================================================
+atr14         = ta.atr(14)
+candleBody    = math.abs(close - open)
+aboveBasis    = close > basis                                              // 3a
+bullishCandle = close > open                                               // 3b
+bodyOk        = (not useBodyFilter) or (candleBody >= bodyAtrMult * atr14) // 3c
+
+rule3 = aboveBasis and bullishCandle and bodyOk
+
+// ============================================================
 // VISUALIZACIÓN
 // ============================================================
 // Línea de tendencia bajista — refleja el snapshot del último trendline válido.
@@ -227,7 +257,11 @@ if showHoverTooltip
     trendStr      = snapValid and not na(trendlineNow) ? str.tostring(trendlineNow, "#.##") : "—"
     snapAgeStr    = na(snapBornBar) ? "—" : str.tostring(snapAge) + " velas (max " + str.tostring(recentBars) + ")"
     crossStr      = (snapValid and not na(trendlineNow)) ? (close > trendlineNow ? "SÍ ✓" : "NO ✗") : "—"
-    tooltipTxt = str.format_time(time, "yyyy-MM-dd HH:mm") + " • close=" + str.tostring(close, "#.##") + " • basis=" + str.tostring(basis, "#.##") + "\n─────────\n" + "1. Tendencia bajista: " + (rule1 ? "☑" : "☐") + "\n   ph1 = " + ph1Str + "\n   ph2 = " + ph2Str + "\n   Drop: " + dropStr + "\n   Close < basis entre pivots: " + belowBasisStr + "\n─────────\n" + "2. Ruptura de línea: " + (rule2 ? "☑" : "☐") + "\n   Trendline (snapshot): " + trendStr + "\n   close > trendline: " + crossStr + "\n   Snap age: " + snapAgeStr
+    aboveBasisStr = aboveBasis ? "SÍ ✓" : "NO ✗"
+    bullStr       = bullishCandle ? "SÍ ✓" : "NO ✗"
+    bodyDetailStr = "body=" + str.tostring(candleBody, "#.##") + " atr=" + str.tostring(atr14, "#.##") + " min=" + str.tostring(bodyAtrMult * atr14, "#.##")
+    bodyStr       = useBodyFilter ? ((candleBody >= bodyAtrMult * atr14) ? "SÍ ✓ (" + bodyDetailStr + ")" : "NO ✗ (" + bodyDetailStr + ")") : "OFF (filtro desactivado)"
+    tooltipTxt = str.format_time(time, "yyyy-MM-dd HH:mm") + " • close=" + str.tostring(close, "#.##") + " • basis=" + str.tostring(basis, "#.##") + "\n─────────\n" + "1. Tendencia bajista: " + (rule1 ? "☑" : "☐") + "\n   ph1 = " + ph1Str + "\n   ph2 = " + ph2Str + "\n   Drop: " + dropStr + "\n   Close < basis entre pivots: " + belowBasisStr + "\n─────────\n" + "2. Ruptura línea tendencia: " + (rule2 ? "☑" : "☐") + "\n   Trendline (snapshot): " + trendStr + "\n   close > trendline: " + crossStr + "\n   Snap age: " + snapAgeStr + "\n─────────\n" + "3. Confirmación BB: " + (rule3 ? "☑" : "☐") + "\n   close > basis: " + aboveBasisStr + "\n   Vela alcista: " + bullStr + "\n   Body filter: " + bodyStr
     label.new(bar_index, high, "", tooltip=tooltipTxt, yloc=yloc.abovebar, color=color.new(color.gray, 70), style=label.style_circle, size=size.tiny, textcolor=color.new(color.white, 100))
 
 // ============================================================
@@ -239,7 +273,7 @@ f_bg(bool b)    => b ? color.new(color.green, 60) : color.new(color.red, 70)
 var table tbl = na
 if showTable and barstate.islast
     table.delete(tbl)
-    tbl := table.new(position.top_right, 2, 3,
+    tbl := table.new(position.top_right, 2, 4,
          bgcolor=color.new(color.black, 20),
          border_color=color.new(color.gray, 50),
          border_width=1)
@@ -258,7 +292,13 @@ if showTable and barstate.islast
          text_color=color.white, bgcolor=f_bg(rule1))
 
     // Regla 2 — Ruptura de la línea
-    table.cell(tbl, 0, 2, "2. Ruptura de línea",
+    table.cell(tbl, 0, 2, "2. Ruptura línea de tendencia",
          text_color=color.white, text_halign=text.align_left)
     table.cell(tbl, 1, 2, f_check(rule2),
          text_color=color.white, bgcolor=f_bg(rule2))
+
+    // Regla 3 — Confirmación con Bollinger Bands
+    table.cell(tbl, 0, 3, "3. Confirmación BB (" + tfHuman + ")",
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 3, f_check(rule3),
+         text_color=color.white, bgcolor=f_bg(rule3))
