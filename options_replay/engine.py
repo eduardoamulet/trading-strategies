@@ -641,6 +641,7 @@ def run_next_iteration(
     call_stop_loss_pct: float = -1.0,
     put_exit_threshold_pct: float = 0.10,
     put_stop_loss_pct: float = -1.0,
+    exit_plus_threshold_pct: float = 0.50,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -690,6 +691,7 @@ def run_next_iteration(
         call_stop_loss_pct=call_stop_loss_pct,
         put_exit_threshold_pct=put_exit_threshold_pct,
         put_stop_loss_pct=put_stop_loss_pct,
+        exit_plus_threshold_pct=exit_plus_threshold_pct,
     )
 
 
@@ -719,6 +721,7 @@ def _run_one_iteration(
     call_stop_loss_pct: float = -1.0,
     put_exit_threshold_pct: float = 0.10,
     put_stop_loss_pct: float = -1.0,
+    exit_plus_threshold_pct: float = 0.50,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -848,6 +851,67 @@ def _run_one_iteration(
             exit_reason = "session_end"
             call_exit_reason = put_exit_reason = "session_end"
             merged = merged.reset_index(drop=True)
+    elif mode == "call_or_put_plus":
+        # ----- CALL o PUT (plus): umbral de salida + recuperar inversión total -----
+        # 1) La PRIMERA pierna (A) que alcanza `exit_plus_threshold_pct` se vende y
+        #    banca su valor: proceeds_A = invest_A × (1 + pct_A_al_salir).
+        # 2) La otra (B) se vende cuando proceeds_A + valor_B >= inversión TOTAL
+        #    (invest_call + invest_put): entre lo bancado de A y el valor actual de B
+        #    se recupera la inversión inicial.
+        # 3) Si ninguna alcanza el umbral, o B nunca recupera → cierran a EOD.
+        TARGET_A = float(exit_plus_threshold_pct)
+        T_total = invest_call + invest_put
+        call_hit = _first_pos(pct_call >= TARGET_A)
+        put_hit = _first_pos(pct_put >= TARGET_A)
+
+        if call_hit is None and put_hit is None:
+            # Ninguna pierna llegó al umbral → ambas cierran a EOD.
+            exit_reason = "session_end"
+            call_exit_reason = put_exit_reason = "session_end"
+            merged = merged.reset_index(drop=True)
+        else:
+            # A = primera pierna en alcanzar el umbral; B = la otra.
+            a_is_call = call_hit is not None and (put_hit is None or call_hit <= put_hit)
+            a_idx = call_hit if a_is_call else put_hit
+            if a_is_call:
+                invest_A, invest_B, pct_A, pct_B = invest_call, invest_put, pct_call, pct_put
+                a_col = "call_px"
+            else:
+                invest_A, invest_B, pct_A, pct_B = invest_put, invest_call, pct_put, pct_call
+                a_col = "put_px"
+
+            proceeds_A = invest_A * (1.0 + float(pct_A.iloc[a_idx]))   # valor de A al vender
+            need_B = T_total - proceeds_A                              # lo que falta recuperar
+            value_B = invest_B * (1.0 + pct_B)                         # serie de valor de B
+
+            b_recover = (value_B >= need_B)
+            if a_idx > 0:
+                b_recover.iloc[:a_idx] = False   # B sólo puede salir desde que A salió
+            b_idx = _first_pos(b_recover)
+            if b_idx is None:
+                # B nunca recupera la inversión → cierra a EOD (condición no cumplida).
+                b_idx = len(merged) - 1
+                b_reason = "session_end"
+                exit_reason = "session_end"
+            else:
+                b_reason = "100%_threshold"
+                exit_reason = "100%_threshold"
+
+            end_pos = b_idx  # b_idx >= a_idx siempre
+            # Truncar a end_pos y CONGELAR la pierna A desde su salida (ya vendida).
+            merged = merged.iloc[: end_pos + 1].copy()
+            if a_idx < end_pos:
+                merged.loc[a_idx + 1:, a_col] = float(merged.loc[a_idx, a_col])
+            merged["total"] = merged["call_px"] + merged["put_px"]
+            merged = merged.reset_index(drop=True)
+
+            # Marcas verdes: A salió por umbral en a_idx; B recuperó la inversión en b_idx.
+            if a_is_call:
+                call_exit_idx, call_exit_reason = a_idx, "100%_threshold"
+                put_exit_idx, put_exit_reason = b_idx, b_reason
+            else:
+                put_exit_idx, put_exit_reason = a_idx, "100%_threshold"
+                call_exit_idx, call_exit_reason = b_idx, b_reason
     else:
         # ----- Salida combinada / single-leg (modos existentes) -----
         if exit_metric == "call":

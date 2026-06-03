@@ -1188,7 +1188,7 @@ with st.sidebar.container(border=True):
 
         _straddle_mode = st.radio(
             "Modo",
-            options=["CALL y PUT", "Sólo CALL", "Sólo PUT", "CALL o PUT"],
+            options=["CALL y PUT", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)"],
             index=0,
             horizontal=True,
             key="straddle_mode_radio",
@@ -1196,20 +1196,24 @@ with st.sidebar.container(border=True):
             label_visibility="collapsed",
             help=(
                 "CALL y PUT: salida combinada por ROI total. · Sólo CALL / Sólo PUT: "
-                "una pierna. · CALL o PUT: ambas piernas con salida INDEPENDIENTE — "
-                "cada una se vende al alcanzar su propio Umbral de ROI (o stop); la "
-                "iteración termina cuando ambas se vendieron o al cierre del día."
+                "una pierna. · CALL o PUT: se venden AMBAS cuando cualquiera llega a "
+                "+100%. · CALL o PUT (plus): la 1ª pierna que alcanza el 'Umbral de "
+                "salida (%)' se vende; la otra se vende cuando entre lo bancado y su "
+                "valor se recupera la inversión total."
             ),
         )
         only_call_now = _straddle_mode == "Sólo CALL"
         only_put_now = _straddle_mode == "Sólo PUT"
         is_call_or_put = _straddle_mode == "CALL o PUT"
+        is_call_or_put_plus = _straddle_mode == "CALL o PUT (plus)"
         if only_call_now:
             engine_mode = "call_only"
         elif only_put_now:
             engine_mode = "put_only"
         elif is_call_or_put:
             engine_mode = "call_or_put"
+        elif is_call_or_put_plus:
+            engine_mode = "call_or_put_plus"
         else:
             engine_mode = "both"
 
@@ -1366,14 +1370,16 @@ with st.sidebar.container(border=True):
         # cambia la predicción — no necesitamos el messenger _pending_roi_threshold.
         if "umbral_roi_pct" not in st.session_state:
             st.session_state["umbral_roi_pct"] = 10.0
-        # Defaults de los 4 params por pierna (modo "CALL o PUT").
+        # Defaults de params por pierna ("CALL o PUT") y del umbral de salida ("plus").
         for _k, _v in (("call_roi_pct", 10.0), ("call_stop_pct", -100.0),
-                       ("put_roi_pct", 10.0), ("put_stop_pct", -100.0)):
+                       ("put_roi_pct", 10.0), ("put_stop_pct", -100.0),
+                       ("exit_plus_pct", 50.0)):
             if _k not in st.session_state:
                 st.session_state[_k] = _v
 
         # El cierre por umbral siempre se evalúa sobre el ROI (%) total.
         exit_metric = "total"
+        exit_plus_threshold_pct = 0.50  # default; solo se usa en "CALL o PUT (plus)"
 
         if is_call_or_put:
             # CALL o PUT: salida COMBINADA al +100%. Se venden AMBAS piernas cuando
@@ -1384,10 +1390,29 @@ with st.sidebar.container(border=True):
                 "en cuanto **cualquiera alcanza +100%** (se duplica). No depende de "
                 "Umbral de ROI ni Stop loss. Termina al +100% o al **cierre del día**."
             )
-            # Valores fijos (el engine ignora umbral/stop en este modo).
             exit_threshold_pct = 1.0          # +100% (solo referencia de estilo)
             stop_loss_pct = -1.0
             call_exit_threshold_pct = put_exit_threshold_pct = 1.0
+            call_stop_loss_pct = put_stop_loss_pct = -1.0
+        elif is_call_or_put_plus:
+            # CALL o PUT (plus): la 1ª pierna que alcanza el "Umbral de salida (%)" se
+            # vende y banca su ganancia; la otra se vende cuando, sumando lo bancado +
+            # su valor, se recupera la inversión TOTAL. Si no, cierran al fin del día.
+            st.info(
+                "🎯 **CALL o PUT (plus)** — la **1ª pierna** que alcanza el **Umbral de "
+                "salida (%)** se vende y banca su ganancia. La **otra** se vende cuando, "
+                "sumando lo bancado + su valor, se **recupera la inversión total** "
+                "(CALL + PUT). Si no se cumple, cierran al **fin del día**."
+            )
+            cps, _cps2 = st.columns(2)
+            exit_plus_threshold_pct = cps.number_input(
+                "Umbral de salida (%)", key="exit_plus_pct",
+                step=5.0, min_value=1.0, format="%.2f",
+                help="ROI% al que se vende la PRIMERA pierna (la que llegue primero al umbral).",
+            ) / 100.0
+            exit_threshold_pct = exit_plus_threshold_pct   # referencia de estilo
+            stop_loss_pct = -1.0
+            call_exit_threshold_pct = put_exit_threshold_pct = exit_plus_threshold_pct
             call_stop_loss_pct = put_stop_loss_pct = -1.0
         else:
             c7, c8 = st.columns(2)
@@ -1498,6 +1523,7 @@ if btn_iniciar:
                         call_stop_loss_pct=float(call_stop_loss_pct),
                         put_exit_threshold_pct=float(put_exit_threshold_pct),
                         put_stop_loss_pct=float(put_stop_loss_pct),
+                        exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1575,6 +1601,7 @@ if btn_iniciar:
                         call_stop_loss_pct=float(call_stop_loss_pct),
                         put_exit_threshold_pct=float(put_exit_threshold_pct),
                         put_stop_loss_pct=float(put_stop_loss_pct),
+                        exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                     )
                     day_runs.append({
                         "date": date_str,
@@ -1667,6 +1694,7 @@ elif btn_proxima:
                         call_stop_loss_pct=float(call_stop_loss_pct),
                         put_exit_threshold_pct=float(put_exit_threshold_pct),
                         put_stop_loss_pct=float(put_stop_loss_pct),
+                        exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1840,9 +1868,9 @@ def _style_display_df(display_df: pd.DataFrame, threshold: float, exit_metric: s
     total_styler = _make_total_pct_styler(threshold, stop_loss=stop_loss, is_metric=total_is_metric)
     metric_col = METRIC_COLUMN.get(exit_metric, "ROI (%)")
 
-    # Modo "CALL o PUT": cada pierna marca su propia celda de venta (verde oscuro =
-    # alcanzó su Umbral de ROI). La columna ROI combinada NO marca umbral.
-    if getattr(it, "mode", "") == "call_or_put":
+    # Modos "CALL o PUT" / "(plus)": cada pierna marca su propia celda de venta
+    # (verde oscuro). La columna ROI combinada NO marca umbral.
+    if getattr(it, "mode", "") in ("call_or_put", "call_or_put_plus"):
         call_styler = _make_leg_exit_styler(
             getattr(it, "call_exit_idx", None), getattr(it, "call_exit_reason", ""))
         put_styler = _make_leg_exit_styler(
