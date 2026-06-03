@@ -8,6 +8,17 @@ import pandas as pd
 import requests
 
 
+INDEX_TICKERS = {"SPX", "VIX", "NDX", "RUT", "DJX", "XSP"}
+
+
+def _aggs_ticker(ticker: str) -> str:
+    """Polygon aggregates require the 'I:' prefix for indices (SPX, VIX, etc.)
+    but the chain/contracts endpoint uses the bare ticker. Helper for the
+    underlying-aggregates path only."""
+    t = ticker.upper().strip()
+    return f"I:{t}" if t in INDEX_TICKERS else t
+
+
 class PolygonAdapter:
     BASE = "https://api.polygon.io"
 
@@ -20,24 +31,43 @@ class PolygonAdapter:
         self._timeout = timeout
         self._last_call = 0.0
 
-    def _get(self, path_or_url: str, params: Optional[dict] = None) -> dict:
-        elapsed = time.time() - self._last_call
-        if elapsed < self._min_interval:
-            time.sleep(self._min_interval - elapsed)
-
+    def _get(self, path_or_url: str, params: Optional[dict] = None, max_retries: int = 4) -> dict:
         params = dict(params or {})
         params["apiKey"] = self._key
         url = path_or_url if path_or_url.startswith("http") else self.BASE + path_or_url
-        r = self._session.get(url, params=params, timeout=self._timeout)
-        self._last_call = time.time()
-        r.raise_for_status()
-        return r.json()
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_retries):
+            elapsed = time.time() - self._last_call
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+            try:
+                r = self._session.get(url, params=params, timeout=self._timeout)
+                self._last_call = time.time()
+                if r.status_code >= 500:
+                    last_exc = requests.HTTPError(f"server {r.status_code} on {url}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    r.raise_for_status()
+                r.raise_for_status()
+                return r.json()
+            except (requests.Timeout, requests.ConnectionError) as e:
+                self._last_call = time.time()
+                last_exc = e
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # 1s, 2s, 4s, 8s
+                    continue
+                raise
+        raise last_exc if last_exc is not None else RuntimeError("max_retries exhausted")
 
     # ---------- underlying ----------
 
     def underlying_minute_bars(self, ticker: str, date: str) -> pd.DataFrame:
-        """1-min OHLCV for the underlying on `date` (YYYY-MM-DD), in America/New_York tz."""
-        path = f"/v2/aggs/ticker/{ticker}/range/1/minute/{date}/{date}"
+        """1-min OHLCV for the underlying on `date` (YYYY-MM-DD), in America/New_York tz.
+        Index tickers (SPX, VIX, ...) get prefixed with 'I:' as Polygon requires."""
+        polygon_ticker = _aggs_ticker(ticker)
+        path = f"/v2/aggs/ticker/{polygon_ticker}/range/1/minute/{date}/{date}"
         data = self._get(path, {"adjusted": "true", "sort": "asc", "limit": 50000})
         return self._bars_to_df(data.get("results", []))
 
@@ -96,6 +126,37 @@ class PolygonAdapter:
         data = self._get(path, {"adjusted": "true", "sort": "asc", "limit": 50000})
         return self._bars_to_df(data.get("results", []))
 
+    # ---------- option NBBO quote (bid/ask) ----------
+
+    def option_quote_at(self, occ_symbol: str, entry_ts: pd.Timestamp) -> dict:
+        """NBBO (bid/ask) vigente AL momento de entrada `entry_ts` (tz-aware).
+        Trae el último quote con sip_timestamp <= entry_ts.
+        Devuelve dict con bid, ask, bid_size, ask_size, spread (o None si no hay).
+        Requiere plan Polygon con Options Quotes habilitado."""
+        ns = int(pd.Timestamp(entry_ts).value)  # epoch ns (tz-aware → UTC ns)
+        path = f"/v3/quotes/{occ_symbol}"
+        data = self._get(path, {
+            "timestamp.lte": ns,
+            "order": "desc",
+            "sort": "timestamp",
+            "limit": 1,
+        })
+        results = data.get("results", [])
+        if not results:
+            return {"bid": None, "ask": None, "bid_size": None,
+                    "ask_size": None, "spread": None}
+        q = results[0]
+        bid = q.get("bid_price")
+        ask = q.get("ask_price")
+        spread = (ask - bid) if (bid is not None and ask is not None) else None
+        return {
+            "bid": bid,
+            "ask": ask,
+            "bid_size": q.get("bid_size"),
+            "ask_size": q.get("ask_size"),
+            "spread": spread,
+        }
+
     # ---------- helpers ----------
 
     @staticmethod
@@ -118,4 +179,9 @@ class PolygonAdapter:
             .dt.tz_convert("America/New_York")
         )
         df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
+        # Los índices (NDX, RUT, etc.) no tienen volumen — Polygon devuelve la
+        # respuesta sin la clave `v`. Para mantener un esquema uniforme con
+        # ETFs/stocks, defaulteamos a 0.
+        if "volume" not in df.columns:
+            df["volume"] = 0
         return df[["timestamp", "open", "high", "low", "close", "volume"]].reset_index(drop=True)

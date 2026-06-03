@@ -1,0 +1,5 @@
+{
+  "_comment": "Horario de mercado (ET) usado como ventana de sesión. 'default' aplica a todos los tickers; agregá entradas en 'overrides' por ticker si alguno tiene horario distinto (ej. futuros, sesiones extendidas). Formato HH:MM 24h.",
+  "default": {"open": "09:30", "close": "16:00"},
+  "overrides": {}
+}

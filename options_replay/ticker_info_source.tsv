@@ -1,0 +1,51 @@
+TICKER	RANGO ÓPTIMO	MÍNIMO Y MÁXIMO	FECHA DE ANÁLISIS	Bloque Sector	Sectores	Indice	Nombre
+AMZN	$140 - $230	MIN $130 MAX $240	5/19/2026	TECHNOLOGY	Consumer Cyclical | Internet Retrail	NASD	Amazon.com, Inc.
+AAPL	$35 - $90	MIN $40 MAX $100	5/19/2026	TECHNOLOGY	Technology | Consumer Electronics	NASD	Apple Inc.
+GOOG	$60 - $170	MIN $50 MAX $170	5/19/2026	TECHNOLOGY	Communication Services | Internet Content & Information	NASD	Alphabet Inc.
+META	$150 - $210	MIN $145 MAX $220	5/19/2026	TECHNOLOGY	Communication Services | Internet Content & Information	NASD	Meta Platforms, Inc.
+MSFT	$60 - $120	MIN $50 MAX $130	5/19/2026	TECHNOLOGY	Technology | Software - Infrastructure	NASD	Microsoft Corporation
+NFLX	$40 - $80	MIN $35 MAX $85	5/19/2026	TECHNOLOGY	Communication Services | Entertainment	NASD	Netflix, Inc.
+TSLA	$100 - $250	MIN $90 MAX $250	5/19/2026	TECHNOLOGY	Consumer Cyclical | Auto Manufacturers	NASD	Tesla, Inc.
+PLTR	$140 - $300	MIN $135 MAX $ 310	5/19/2026	TECHNOLOGY	Technology | Software - Infrastructure	NASD	PLTR - Palantir Technologies Inc Stock Price and Quote
+ORCL	$80 - $130	MIN $70 MAX $140	5/19/2026	TECHNOLOGY	Technology | Software - Infrastructure	NASD	ORCL - Oracle Corp Stock Price and Quote
+AMD	$150 - $235	MIN $140 MAX $240	5/19/2026	SEMICONDUCTORS	Technology | Semiconductors	NASD	Advanced Micro Devices, Inc.
+MU	$400 - $600	MIN $400 MAX $650	5/19/2026	SEMICONDUCTORS	Technology | Semiconductors	NASD	Micron Technology, Inc.
+NVDA	$80 - $170	MIN $75 MAX $175	2/17/2026	SEMICONDUCTORS	Technology | Semiconductors	NASD	NVIDIA Corporation
+QCOM	$80 - $160	MIN $70 MAX $170	5/19/2026	SEMICONDUCTORS	Technology | Semiconductors	NASD	QCOM - Qualcomm, Inc Stock Price and Quote
+AVGO	$70 - $140	MIN $ 65 MAX $145	5/19/2026	SEMICONDUCTORS	Technology | Semiconductors	NASD	AVGO - Broadcom Inc Stock Price and Quote
+SOXL	$150 - $240	MIN $120 MAX $250	5/19/2026	SEMICONDUCTORS	Technology | Semiconductors	NASD	SOXL - Direxion Daily Semiconductor Bull 3X Shares Stock Price and Quote
+DASH	$160 - $240	MIN $155 MAX $245	5/19/2026	SOFTWARE - APP	Communication Services | Internet Content & Information	NYSE	DoorDash, Inc.
+LYFT	$25 - $50	MIN $25 MAX $55	5/19/2026	SOFTWARE - APP	Technology | Software - Application	NASD	Lyft, Inc.
+UBER	$35 - $60	MIN $30 MAX $65	5/19/2026	SOFTWARE - APP	Technology | Software - Application	NYSE	Uber Technologies, Inc.
+HD	$120 - $240	MIN $120 MAX $240	5/19/2026	CONSUMER	Consumer Cyclical | Home Improvement Retail	NYSE	The Home Depot, Inc.
+LOW	$120 - $220	MIN $110 MAX $225	5/19/2026	CONSUMER	Consumer Cyclical | Home Improvement Retail	NYSE	Lowe's Companies, Inc.
+WMT	$60 - $110	MIN $55 MAX $115	2/17/2026	CONSUMER	Consumer Defensive | Discount Stores	NYSE	Walmart Inc.
+DIA	$100 - $200	MIN $95 MAX $210	5/19/2026	INDEX - USA	Financial | Exchange Traded Fund	NYSE	SPDR Dow Jones Industrial Average ETF Trust
+QQQ	$35 - $55	MIN $30 MAX $60	5/19/2026	INDEX - USA	Financial | Exchange Traded Fund	NASD	Invesco QQQ Trust
+SPY	$30 - $45	MIN $25 MAX $50	5/19/2026	INDEX - USA	Financial | Exchange Traded Fund	NYSE	SPDR S&P 500 ETF Trust
+SPX	$400 - $600	MIN $380 MAX $620	5/19/2026	INDEX - USA	Financial | Exchange Traded Fund	NYSE	SPDR S&P 500 ETF Trust
+IWM	$40 - $70	MIN $35 MAX $70	5/19/2026	INDEX - USA	Financial | Exchange Traded Fund	NYSE	iShares Russell 2000 ETF
+TNA	$40 - $90	MIN $40 MAX $100	5/19/2026	INDEX - USA	Financial | Exchange Traded Fund	NYSE	Direxion Daily Small Cap Bull 3X Shares
+AXP	$85 - $190	MIN $80 MAX $195	5/19/2026	CARDS	Financial | Credit Services	NYSE	American Express Company
+C	$50 - $140	MIN $45 MAX $150	5/19/2026	CARDS	Financial | Credit Services	NYSE
+MA	$90 - $175	MIN $85 MAX $180	5/19/2026	CARDS	Financial | Credit Services	NYSE	Mastercard Incorporated
+PYPL	$50 - $80	MIN $40 MAX $90	5/19/2026	CARDS	Financial | Credit Services	NASD	PayPal Holdings, Inc.
+V	$60 - $170	MIN $55 MAX $175	5/19/2026	CARDS	Financial | Credit Services	NYSE	Visa Inc.
+BABA	$40 - $60	MIN $40 MAX $70	5/19/2026	CHINA	Consumer Cyclical | Internet Retrail	NYSE	Alibaba Group Holding Limited
+LI	$25 - $60	MIN $25MAX $70	5/19/2026	CHINA	Consumer Cyclical | Auto Manufacturers	NASD	Li Auto Inc.
+NIO	$30 - $75	MIN $25 MAX $75	5/19/2026	CHINA	Consumer Cyclical | Auto Manufacturers	NYSE	NIO Inc.
+XPEV	$50 - 70	MIN $45 MAX $75	5/19/2026	CHINA	Consumer Cyclical | Auto Manufacturers	NYSE	XPeng Inc.
+GLD	$40 - $80	MIN $40 MAX $90	5/19/2026	COMMODITY	Financial | Closed-End Fund - Equity	NYSE	The GDL Fund
+SLV	$40 - $75	MIN $35 MAX $80	5/19/2026	COMMODITY	Financial | Exchange Traded Fund	NYSE	iShares Silver Trust
+USO	$50 - $80	MIN $45 MAX $90	5/19/2026	COMMODITY	Financial | Exchange Traded Fund	NYSE	United States Oil Fund, LP
+COIN	$200 - $300	MIN $195 MAX $310	5/19/2026	FINANCIAL / DATA	Financial | Financial Data & Stock Exchanges	NASD	Coinbase Global, Inc.
+HOOD	$100 - $150	MIN $90 MAX $ 160	5/19/2026	FINANCIAL / DATA	Financial | Financial Data & Stock Exchanges	NASD	HOOD - Robinhood Markets Inc Stock Price and Quote
+CVS	$60 - $120	MIN $55 MAX $130	5/19/2026	HEALTCARE	Healthcare | Healthcare Plans	NYSE	CVS Health Corporation
+MRNA	$50 - $130	MIN $50 MAX $130	5/19/2026	HEALTCARE	Healthcare | Biotechnology	NASD	Moderna, Inc.
+PFE	$30 - $70	MIN $25 MAX $75	5/19/2026	HEALTCARE	Healthcare | Drug Manufacturers - General	NYSE	Pfizer Inc.
+BA	$60 - $170	MIN $50 MAX $180	5/19/2026	INDUSTRIALS	Industrials | Aerospace & Defense	NYSE	The Boeing Company
+URA	$55 - $80	MIN $55 MAX $85	5/19/2026	NUCLEAR ENERGY	Financial | Exchange Traded Fund	NYSE	URA - Global X Uranium ETF Stock Price and Quote
+CCL	$40 -$60	MIN $35 MAX $65	5/19/2026	CRUISES	Consumer Cyclical | Travel Services	NYSE	Carnival Corporation & plc
+RCL	$80 - $150	MIN $ 75 MAX 155	5/19/2026	CRUISES	Consumer Cyclical | Travel Services	NYSE	Royal Caribbean Cruises Ltd.
+AAL	$40 - $70	MIN $30 MAX $70	5/19/2026	AERONAUTICAL	Industrials | Airlines	NYSE	American Airlines Group Inc.
+DAL	$40 - $65	MIN $35 MAX $70	5/19/2026	AERONAUTICAL	Consumer Cyclical | Travel Services	NYSE	Delta Air Lines, Inc.

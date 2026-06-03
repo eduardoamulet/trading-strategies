@@ -1,0 +1,401 @@
+//@version=6
+// =============================================================
+// INDICATOR: Trendline Reversal con Bollinger Bands - AUTO
+//
+// 🎯 ARQUITECTURA: Linea de tendencia AUTO-DETECTADA
+//
+// Detecta pivot highs y traza lineas bajistas cortas conectando
+// pares descendentes consecutivos. Cada linea se extiende forward
+// N bars y luego expira. La linea mas reciente es la que se usa
+// para evaluar el breakout (Regla 2).
+//
+// Reglas:
+//   R1: Linea bajista activa (no expirada)
+//   R2: close > linea de tendencia (ruptura)
+//   R3: close > BB basis + vela alcista + body filter
+//   R4: TF inferior (15m) con momentum positivo + close > SMA
+//   Filtro: solo dispara si veniamos de bajista (close < basis reciente)
+//
+// Senal completa = R1 AND R2 AND R3 AND R4 AND filtro de transicion
+// =============================================================
+
+indicator("Trendline Reversal - Auto", shorttitle="TR-Auto",
+     overlay=true,
+     max_lines_count=500,
+     max_labels_count=500)
+
+// =============================================================
+// IDIOMA / LANGUAGE
+// =============================================================
+grpLang = "Idioma / Language"
+lang    = input.string("Espanol", "Idioma / Language", options=["Espanol", "English"], group=grpLang,
+     tooltip="ES: Selecciona idioma para textos del chart (tooltips, tabla, alertas). Los nombres de inputs siempre se muestran en espanol por limitacion de Pine Script.\n\nEN: Select language for chart text. Input names always shown in Spanish (Pine Script limitation).")
+
+isES = lang == "Espanol"
+
+// Traducciones / Translations
+t_strategy   = isES ? "  CAMBIO DE TENDENCIA AL ALZA\nEN 1 HORA CON BOLLINGER BANDS" : "    BULLISH TREND REVERSAL\nIN 1 HOUR WITH BOLLINGER BANDS"
+// Nota: el mensaje de alertcondition debe ser const string (limitacion de Pine).
+t_strict     = isES ? "ESTRICTO" : "STRICT"
+t_normal     = isES ? "normal" : "normal"
+t_status     = isES ? "Estado" : "Status"
+t_times      = isES ? "Veces"  : "Times"
+t_rule1      = isES ? "1. Linea bajista" : "1. Bearish trendline"
+t_rule2      = isES ? "2. close > linea" : "2. close > line"
+t_rule3      = isES ? "3. Confirmacion BB" : "3. BB confirmation"
+t_signals    = isES ? "Senales (U)" : "Signals (U)"
+
+// =============================================================
+// INPUTS
+// =============================================================
+
+// Bollinger Bands
+grpBB  = "Bollinger Bands"
+bbLen  = input.int(20,  "Periodo BB",     group=grpBB, minval=2)
+bbMult = input.float(2.0, "Desviacion BB", group=grpBB, minval=0.1, step=0.1)
+
+// Linea de tendencia auto-detectada
+grpLine        = "Linea de tendencia (auto-detectada)"
+pivotLen       = input.int(3, "Pivot strength (left/right)", group=grpLine, minval=1, maxval=20,
+     tooltip="Velas a cada lado para confirmar pivot high. Menor = mas pivots, mas sensible. Default 3 para 1H.")
+maxBarsForward = input.int(25, "Extension forward (bars)", group=grpLine, minval=5, maxval=200,
+     tooltip="Cuantas velas hacia adelante se extiende cada linea desde el ultimo pivot. Despues de eso la linea expira y R1 vuelve a false hasta que aparezca otro par descendente. Default 25 = ~3.5 dias en 1H.")
+maxLinesKeep   = input.int(50, "Max lineas dibujadas (historico)", group=grpLine, minval=10, maxval=500,
+     tooltip="Cuantas lineas historicas se conservan en el chart. Las mas viejas se eliminan automaticamente para no saturar. Default 50.")
+
+// Activacion individual de cada regla (para pruebas one-by-one)
+grpToggles    = "Activacion de reglas (para pruebas)"
+useRule1      = input.bool(true, "Activar Regla 1 (linea de tendencia)", group=grpToggles,
+     tooltip="OFF: la regla no bloquea la senal. UTIL para probar las otras reglas independientemente.")
+useRule2      = input.bool(true, "Activar Regla 2 (close > linea)", group=grpToggles,
+     tooltip="OFF: la regla no bloquea la senal. Tambien neutraliza el modo estricto.")
+useRule3      = input.bool(true, "Activar Regla 3 (Confirmacion BB)", group=grpToggles)
+useRule4      = input.bool(true, "Activar Regla 4 (Confirmacion 15m)", group=grpToggles)
+useStrictMode = input.bool(true, "Modo estricto (1 senal por ciclo cruce)", group=grpToggles,
+     tooltip="ON (default): usa logica armed/disarmed. La linea se ARMA con cada cruce arriba y se DESARMA con cruce abajo o tras disparar. Solo permite UNA senal por ciclo.")
+cooldownBars  = input.int(0, "Cooldown entre senales (bars)", group=grpToggles, minval=0, maxval=200,
+     tooltip="Minimo de bars entre dos senales consecutivas. 0 = sin cooldown.")
+useExitFilter = input.bool(true, "Filtro: solo saliendo de bajista", group=grpToggles,
+     tooltip="ON: la senal SOLO dispara si en los ultimos N bars el close estuvo por debajo del basis. Bloquea senales durante un rally ya establecido.")
+maxBarsExit   = input.int(15, "Bars max desde close < basis", group=grpToggles, minval=1, maxval=200,
+     tooltip="Cuantos bars hacia atras se considera 'reciente' el estado bajista. Default 15.")
+showPrePostSignals = input.bool(false, "Mostrar senales en premarket/postmarket", group=grpToggles,
+     tooltip="OFF (default): las senales solo se muestran durante la sesion regular del mercado (ej. 9:30-16:00 ET para US stocks). ON: las senales tambien pueden aparecer en premarket y postmarket.")
+
+// Regla 3 - Confirmacion BB
+grpR3         = "Regla 3 - Confirmacion BB"
+useBodyFilter = input.bool(true, "Filtro de cuerpo de vela", group=grpR3,
+     tooltip="Si esta ON, la vela del cruce debe tener cuerpo |close-open| >= bodyAtrMult x ATR(14).")
+bodyAtrMult   = input.float(0.5, "Body minimo / ATR(14)", group=grpR3, minval=0.1, step=0.1)
+
+// Regla 4 - Confirmacion en TF inferior
+grpR4        = "Regla 4 - Confirmacion TF inferior"
+ltfTF        = input.timeframe("15", "TF inferior", group=grpR4,
+     tooltip="Default 15m.")
+ltfSmaLen    = input.int(20, "SMA del TF inferior", group=grpR4, minval=2)
+ltfSlopeBars = input.int(3, "Lookback de momentum 15m (bars)", group=grpR4, minval=1,
+     tooltip="Cuantos bars atras del TF inferior comparar para detectar momentum positivo (close > close[N]).")
+
+// Visualizacion
+grpViz          = "Visualizacion"
+showLines       = input.bool(true,  "Mostrar lineas de tendencia",      group=grpViz)
+onlySignalLines = input.bool(true,  "Solo lineas que dispararon senal", group=grpViz,
+     tooltip="ON: solo se dibuja la linea cuando dispara una senal (▲ verde). OFF: se dibujan TODAS las lineas detectadas. Util OFF para debug visual del algoritmo, ON para limpieza del chart.")
+showPivots      = input.bool(false, "Mostrar marcadores de pivots",     group=grpViz)
+showTable       = input.bool(false, "Mostrar tabla de reglas",          group=grpViz)
+showBBLabels    = input.bool(false, "Mostrar etiquetas BB en la escala", group=grpViz,
+     tooltip="Si lo desactivas, los textos 'BB upper/basis/lower' dejan de aparecer en la escala de precios.")
+showTooltip     = input.bool(false, "Tooltips por vela (ultimas 500)",  group=grpViz)
+
+// =============================================================
+// BOLLINGER BANDS (1H, contexto + filtro Regla 3)
+// =============================================================
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+bbDisplay = showBBLabels ? display.all : display.pane + display.status_line + display.data_window
+plot(basis, "BB basis", color=color.orange, linewidth=2, display=bbDisplay)
+p1 = plot(upper, "BB upper", color=color.new(color.gray, 50), display=bbDisplay)
+p2 = plot(lower, "BB lower", color=color.new(color.gray, 50), display=bbDisplay)
+fill(p1, p2, color=color.new(color.gray, 92))
+
+// =============================================================
+// REGLA 1 - Linea de tendencia auto-detectada
+// =============================================================
+// Detecta pivot highs y traza una linea bajista corta cada vez
+// que aparece un par de pivots descendentes consecutivos. La linea
+// se extiende `maxBarsForward` bars hacia adelante y luego expira.
+//
+// Estado del LATEST trendline (consumido por R2):
+//   lineStartPrice/Bar : punto izquierdo (pivot mas viejo del par)
+//   lineSlope          : pendiente (precio/bar)
+//   lineEndBar         : bar donde la linea expira
+// =============================================================
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+
+var float prevHigh = na
+var int   prevBar  = na
+
+var float lineStartPrice = na
+var int   lineStartBar   = na
+var float lineSlope      = na
+var int   lineEndBar     = na
+
+// Linea ACTUAL (siempre visible - la mas reciente detectada)
+var line currentLine     = na
+var bool currentHadSignal = false
+
+// Lineas historicas (solo las que dispararon senal se conservan)
+var array<line> visualLines = array.new<line>()
+
+newLineCreated = false
+
+if not na(ph)
+    currentHigh = ph
+    currentBar  = bar_index - pivotLen
+
+    // Par descendente -> nueva linea bajista
+    if not na(prevHigh) and currentHigh < prevHigh
+        barsDistance = currentBar - prevBar
+        slope        = (currentHigh - prevHigh) / float(barsDistance)
+        futureBar    = currentBar + maxBarsForward
+        futurePrice  = currentHigh + slope * maxBarsForward
+
+        // Actualizar parametros de la linea ACTIVA (la consume R2)
+        lineStartPrice := prevHigh
+        lineStartBar   := prevBar
+        lineSlope      := slope
+        lineEndBar     := futureBar
+        newLineCreated := true
+
+        if showLines
+            // Decidir que hacer con la linea anterior (currentLine):
+            //   - Si disparo senal o el toggle pide ver todas -> al historico
+            //   - Si no disparo senal -> borrar (era solo tracking sin valor)
+            if not na(currentLine)
+                if currentHadSignal or not onlySignalLines
+                    array.push(visualLines, currentLine)
+                    if array.size(visualLines) > maxLinesKeep
+                        oldLine = array.shift(visualLines)
+                        line.delete(oldLine)
+                else
+                    line.delete(currentLine)
+
+            // Dibujar la NUEVA linea actual (siempre visible)
+            currentLine      := line.new(prevBar, prevHigh, futureBar, futurePrice,
+                 extend=extend.none,
+                 color=color.new(color.red, 0),
+                 width=2,
+                 style=line.style_dashed)
+            currentHadSignal := false
+
+    prevHigh := currentHigh
+    prevBar  := currentBar
+
+// Pivot markers (opcional)
+plotshape(showPivots and not na(ph), title="Pivot High",
+     style=shape.circle, location=location.abovebar,
+     color=color.new(color.yellow, 0), size=size.tiny,
+     offset=-pivotLen)
+
+// Valor de la trendline en el bar actual (extrapolando desde lineStart)
+trendlineActive = not na(lineStartPrice) and not na(lineEndBar) and bar_index <= lineEndBar
+trendlineNow    = trendlineActive ? lineStartPrice + lineSlope * (bar_index - lineStartBar) : na
+
+// R1 = hay una linea bajista activa (no expirada)
+rule1 = trendlineActive
+
+// =============================================================
+// REGLA 2 - Ruptura de la linea (close > trendline)
+// =============================================================
+rule2 = rule1 and not na(trendlineNow) and close > trendlineNow
+
+// =============================================================
+// REGLA 3 - Confirmacion con Bollinger Bands (TF actual)
+// =============================================================
+atr14         = ta.atr(14)
+candleBody    = math.abs(close - open)
+aboveBasis    = close > basis
+bullishCandle = close > open
+bodyOk        = (not useBodyFilter) or (candleBody >= bodyAtrMult * atr14)
+rule3         = aboveBasis and bullishCandle and bodyOk
+
+// =============================================================
+// REGLA 4 - Confirmacion en TF inferior (15m por default)
+// =============================================================
+[ltfBasis, ltfClose, ltfClosePrev] = request.security(syminfo.tickerid, ltfTF,
+     [ta.sma(close, ltfSmaLen), close, close[ltfSlopeBars]],
+     lookahead=barmerge.lookahead_off)
+
+ltfPriceRising = ltfClose > ltfClosePrev
+rule4          = not na(ltfClose) and not na(ltfBasis) and ltfClose > ltfBasis and ltfPriceRising
+
+// =============================================================
+// SENAL COMPLETA - Toggles + modo estricto + cooldown + exit filter
+// =============================================================
+
+// Estado armed/disarmed (solo aplica si useStrictMode = ON)
+var bool armed = false
+
+// Reset cuando se crea una nueva linea (rearmable con cada nuevo cruce)
+if newLineCreated
+    armed := false
+
+// Cruces de la linea (siempre evaluados, fuera de if para state historico)
+crossUp   = ta.crossover(close, trendlineNow)
+crossDown = ta.crossunder(close, trendlineNow)
+
+if rule1 and crossUp
+    armed := true
+if rule1 and crossDown
+    armed := false
+
+// Filtro de transicion: bars desde que close estuvo bajo basis
+barsSinceBearish = ta.barssince(close < basis)
+exitingBearish   = not na(barsSinceBearish) and barsSinceBearish <= maxBarsExit
+effExit          = (not useExitFilter) or exitingBearish
+
+// Valores efectivos para el AND
+effR1 = (not useRule1) or rule1
+effR2 = (not useRule2) or (useStrictMode ? armed : rule2)
+effR3 = (not useRule3) or rule3
+effR4 = (not useRule4) or rule4
+
+fullSignal  = effR1 and effR2 and effR3 and effR4 and effExit
+breakoutRaw = fullSignal and not fullSignal[1]
+
+// Cooldown: bloquea senales muy proximas
+var int lastSignalBar = na
+withinCooldown = cooldownBars > 0 and not na(lastSignalBar) and (bar_index - lastSignalBar) < cooldownBars
+// Filtro de sesion: por default bloquea senales en premarket/postmarket
+inAllowedSession = showPrePostSignals or session.ismarket
+breakoutEvent    = breakoutRaw and not withinCooldown and inAllowedSession
+
+if breakoutEvent
+    lastSignalBar := bar_index
+
+// En modo estricto, desarmar tras disparar
+if breakoutEvent and useStrictMode
+    armed := false
+
+// Marcar la linea actual como "disparo senal" -> cuando llegue una linea
+// nueva, esta se conserva en el historico en lugar de borrarse.
+if breakoutEvent
+    currentHadSignal := true
+
+// =============================================================
+// CONTADORES - cuantas veces cada regla pasa de false a true
+// =============================================================
+var int countR1     = 0
+var int countR2     = 0
+var int countR3     = 0
+var int countR4     = 0
+var int countSignal = 0
+
+if rule1 and not rule1[1]
+    countR1 += 1
+if rule2 and not rule2[1]
+    countR2 += 1
+if rule3 and not rule3[1]
+    countR3 += 1
+if rule4 and not rule4[1]
+    countR4 += 1
+if breakoutEvent
+    countSignal += 1
+
+plotshape(breakoutEvent, title="Breakout",
+     style=shape.triangleup, location=location.belowbar,
+     color=color.new(color.lime, 0), size=size.small)
+
+// Texto "UP" via label.new para soportar tooltip nativo en hover.
+if breakoutEvent
+    label.new(bar_index, low, "UP",
+         yloc=yloc.belowbar,
+         style=label.style_none,
+         textcolor=color.new(color.lime, 0),
+         size=size.small,
+         tooltip=t_strategy)
+
+alertcondition(breakoutEvent, title="Breakout signal", message="TR-Auto breakout / ruptura {{ticker}} @ {{close}}")
+
+// =============================================================
+// TABLA DE REGLAS (esquina superior derecha)
+// =============================================================
+f_check(bool b) => b ? "[X]" : "[ ]"
+f_bg(bool b)    => b ? color.new(color.green, 60) : color.new(color.gray, 70)
+
+var table tbl = na
+if showTable and barstate.islast
+    table.delete(tbl)
+    tbl := table.new(position.top_right, 3, 7,
+         bgcolor=color.new(color.black, 20),
+         border_color=color.new(color.gray, 50),
+         border_width=1)
+
+    // Header
+    table.cell(tbl, 0, 0, "TR-AUTO",
+         text_color=color.white, bgcolor=color.new(color.blue, 30),
+         text_halign=text.align_left)
+    table.cell(tbl, 1, 0, t_status,
+         text_color=color.white, bgcolor=color.new(color.blue, 30))
+    table.cell(tbl, 2, 0, t_times,
+         text_color=color.white, bgcolor=color.new(color.blue, 30))
+
+    // Symbol info
+    table.cell(tbl, 0, 1, syminfo.ticker,
+         text_color=color.gray, bgcolor=color.new(color.black, 50),
+         text_halign=text.align_left)
+    table.cell(tbl, 1, 1, useStrictMode ? t_strict : t_normal,
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+    table.cell(tbl, 2, 1, "",
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+
+    // Reglas
+    table.cell(tbl, 0, 2, t_rule1,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 2, f_check(rule1),
+         text_color=color.white, bgcolor=f_bg(rule1))
+    table.cell(tbl, 2, 2, str.tostring(countR1),
+         text_color=color.white)
+
+    table.cell(tbl, 0, 3, t_rule2,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 3, f_check(rule2),
+         text_color=color.white, bgcolor=f_bg(rule2))
+    table.cell(tbl, 2, 3, str.tostring(countR2),
+         text_color=color.white)
+
+    table.cell(tbl, 0, 4, t_rule3,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 4, f_check(rule3),
+         text_color=color.white, bgcolor=f_bg(rule3))
+    table.cell(tbl, 2, 4, str.tostring(countR3),
+         text_color=color.white)
+
+    table.cell(tbl, 0, 5, (isES ? "4. Confirmacion " : "4. Confirmation ") + ltfTF + "m",
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 5, f_check(rule4),
+         text_color=color.white, bgcolor=f_bg(rule4))
+    table.cell(tbl, 2, 5, str.tostring(countR4),
+         text_color=color.white)
+
+    // Total senales
+    table.cell(tbl, 0, 6, t_signals,
+         text_color=color.white, bgcolor=color.new(color.green, 70),
+         text_halign=text.align_left)
+    table.cell(tbl, 1, 6, "",
+         text_color=color.white, bgcolor=color.new(color.green, 70))
+    table.cell(tbl, 2, 6, str.tostring(countSignal),
+         text_color=color.white, bgcolor=color.new(color.green, 50))
+
+// =============================================================
+// TOOLTIP POR VELA - Diagnostico
+// =============================================================
+if showTooltip
+    trendStr = na(trendlineNow) ? "n/a" : str.tostring(trendlineNow, "#.##")
+    txt = str.format_time(time, "yyyy-MM-dd HH:mm") + " close=" + str.tostring(close, "#.##") + " trendline=" + trendStr + "\nR1=" + f_check(rule1) + " R2=" + f_check(rule2) + " R3=" + f_check(rule3) + " R4=" + f_check(rule4) + " SIGNAL=" + f_check(fullSignal)
+    label.new(bar_index, high, "", tooltip=txt, yloc=yloc.abovebar,
+         color=color.new(color.gray, 70), style=label.style_circle, size=size.tiny,
+         textcolor=color.new(color.white, 100))

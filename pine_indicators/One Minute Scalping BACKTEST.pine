@@ -1,0 +1,285 @@
+//@version=6
+// =============================================================
+// STRATEGY (BACKTEST): One-Minute Scalping
+// Recommended timeframe: 1m  (also valid on 5m)
+// Asset class: Stocks intraday — first 2 hours of NY session
+//
+// This is the BACKTEST counterpart of "One Minute Scalping.pine".
+// The signal logic is identical to the indicator — this version
+// adds:
+//   - strategy() execution engine with realistic costs
+//   - Two-stage exit: 50% at TP1 (1:2 R:R), 50% at TP2 (PDH/PDL)
+//   - Forced exit at session end (11:30 EST)
+//   - Risk-based position sizing (% of equity per trade)
+//   - Per-trade CSV export via log.info() (Pine Logs panel)
+//
+// HOW TO READ RESULTS:
+//   1. Open Strategy Tester at the bottom of the chart
+//      → Performance Summary, List of Trades, Equity Curve
+//   2. Open Pine Logs panel (right side, "Pine Logs")
+//      → Each closed trade is logged as a CSV row.
+//        Copy-paste the lines to a .csv / Excel.
+//
+// OPTIONS PROXY:
+//   This backtest runs on the underlying stock. To estimate the
+//   options P&L, multiply each row's profit by an option-leverage
+//   factor (typical 5-15x for ATM 0DTE) in Excel. If the edge is
+//   not positive on stock, options will not save it.
+// =============================================================
+
+// ---------- NAMED CONSTANTS — STRATEGY LOGIC ----------
+ATR_LEN                    = 14
+DISPLACEMENT_ATR_MULT      = 0.5
+RETEST_TOLERANCE_ATR       = 0.25
+RETEST_MAX_BARS            = 30
+SL_BUFFER_ATR              = 0.1
+CONFIRM_BODY_RATIO         = 0.4
+RR_PARTIAL                 = 2.0
+NY_OPEN_HOUR               = 9
+NY_OPEN_MIN                = 30
+SESSION_RANGE              = "0930-1130"
+SESSION_END_HOUR           = 11
+SESSION_END_MIN            = 30
+
+// ---------- BACKTEST PARAMETERS ----------
+INITIAL_CAPITAL            = 25000.0     // PDT-compliant baseline
+RISK_PER_TRADE_PCT         = 1.0         // % of equity at risk per trade
+PARTIAL_QTY_PCT            = 50          // % of position closed at TP1
+COMMISSION_PCT             = 0.01        // 0.01% per fill (≈ liquid US stock)
+SLIPPAGE_TICKS             = 2
+
+// Plot styling
+LEVEL_LINE_WIDTH           = 2
+PDH_COLOR                  = color.new(color.red,     30)
+PDL_COLOR                  = color.new(color.lime,    30)
+ORH_COLOR                  = color.new(color.aqua,    30)
+ORL_COLOR                  = color.new(color.fuchsia, 30)
+
+strategy("One Minute Scalping BACKTEST", shorttitle="1mScalp BT",
+     overlay=true,
+     initial_capital=INITIAL_CAPITAL,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     commission_type=strategy.commission.percent,
+     commission_value=COMMISSION_PCT,
+     slippage=SLIPPAGE_TICKS,
+     process_orders_on_close=true,
+     calc_on_every_tick=false,
+     pyramiding=0,
+     close_entries_rule="ANY")
+
+// ============================================================
+// TIMEFRAME GUARD — only 1m and 5m are supported
+// ============================================================
+tfSec = timeframe.in_seconds()
+if tfSec != 60 and tfSec != 300
+    runtime.error("One Minute Scalping BACKTEST is designed for 1-minute or 5-minute charts only. Switch the chart timeframe to 1m or 5m.")
+
+// ============================================================
+// SESSION GATE & DAY RESET
+// ============================================================
+inSession = not na(time(timeframe.period, SESSION_RANGE, "America/New_York"))
+isNYOpen  = (hour == NY_OPEN_HOUR and minute == NY_OPEN_MIN)
+newDay    = ta.change(time("D")) != 0
+atr       = ta.atr(ATR_LEN)
+
+isSessionEnd = (hour == SESSION_END_HOUR and minute >= SESSION_END_MIN) or hour > SESSION_END_HOUR
+
+// ============================================================
+// STEP 1 — PDH / PDL from previous day's RTH (9:30-16:00 EST)
+// ============================================================
+isRTH = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+
+var float curRTH_high = na
+var float curRTH_low  = na
+var float pdh = na
+var float pdl = na
+
+if isNYOpen
+    pdh         := curRTH_high
+    pdl         := curRTH_low
+    curRTH_high := high
+    curRTH_low  := low
+else if isRTH
+    curRTH_high := na(curRTH_high) ? high : math.max(curRTH_high, high)
+    curRTH_low  := na(curRTH_low)  ? low  : math.min(curRTH_low,  low)
+
+// ============================================================
+// STEP 2 — Opening Range
+// ============================================================
+var float orHigh = na
+var float orLow  = na
+if newDay
+    orHigh := na
+    orLow  := na
+if isNYOpen
+    orHigh := high
+    orLow  := low
+
+// ============================================================
+// HOD / LOD intraday
+// ============================================================
+var float hod = na
+var float lod = na
+if newDay
+    hod := high
+    lod := low
+else
+    hod := math.max(nz(hod, high), high)
+    lod := math.min(nz(lod, low),  low)
+
+// ============================================================
+// STEP 3 — Break with displacement, retest, confirmation
+// ============================================================
+var bool orHighBrokenUp  = false
+var int  orHighBreakBar  = na
+var bool orLowBrokenDown = false
+var int  orLowBreakBar   = na
+
+if newDay
+    orHighBrokenUp  := false
+    orHighBreakBar  := na
+    orLowBrokenDown := false
+    orLowBreakBar   := na
+
+if not na(orHigh) and close > orHigh + DISPLACEMENT_ATR_MULT * atr and not orHighBrokenUp
+    orHighBrokenUp := true
+    orHighBreakBar := bar_index
+if not na(orLow) and close < orLow - DISPLACEMENT_ATR_MULT * atr and not orLowBrokenDown
+    orLowBrokenDown := true
+    orLowBreakBar   := bar_index
+
+candleRange = high - low
+candleBody  = math.abs(close - open)
+strongBody  = candleRange > 0 and (candleBody / candleRange) >= CONFIRM_BODY_RATIO
+bullConfirm = strongBody and close > open
+bearConfirm = strongBody and close < open
+
+withinLongWindow  = orHighBrokenUp  and (bar_index - orHighBreakBar)  <= RETEST_MAX_BARS
+withinShortWindow = orLowBrokenDown and (bar_index - orLowBreakBar)   <= RETEST_MAX_BARS
+
+retestLong  = withinLongWindow  and low  <= orHigh + RETEST_TOLERANCE_ATR * atr and close > orHigh
+retestShort = withinShortWindow and high >= orLow  - RETEST_TOLERANCE_ATR * atr and close < orLow
+
+// Two-candle confirmation (Bar N-1 + Bar N both strong directional)
+twoBarLongConfirm  = retestLong[1]  and bullConfirm[1] and close > orHigh and bullConfirm
+twoBarShortConfirm = retestShort[1] and bearConfirm[1] and close < orLow  and bearConfirm
+
+longSignal  = inSession and twoBarLongConfirm
+shortSignal = inSession and twoBarShortConfirm
+
+// ============================================================
+// POSITION SIZING (risk-based)
+// ============================================================
+calcQty(entryPx, slPx) =>
+    risk_per_share = math.abs(entryPx - slPx)
+    risk_dollars   = strategy.equity * RISK_PER_TRADE_PCT / 100.0
+    risk_per_share > 0 ? math.max(1, math.floor(risk_dollars / risk_per_share)) : 0
+
+// ============================================================
+// TRADE EXECUTION
+// ============================================================
+// Track SL per trade for CSV export (R-multiple analysis)
+var array<float> tradeSLs = array.new<float>()
+
+if longSignal and strategy.position_size == 0
+    sl   = orHigh - SL_BUFFER_ATR * atr
+    risk = close - sl
+    if risk > 0
+        tp1 = close + risk * RR_PARTIAL
+        tp2 = pdh
+        qty = calcQty(close, sl)
+        array.push(tradeSLs, sl)
+        strategy.entry("Long", strategy.long, qty=qty, comment="L-Entry")
+        strategy.exit("L-TP1/SL", from_entry="Long", qty_percent=PARTIAL_QTY_PCT,
+             limit=tp1, stop=sl, comment_loss="L-SL", comment_profit="L-TP1")
+        strategy.exit("L-TP2/SL", from_entry="Long",
+             limit=tp2, stop=sl, comment_loss="L-SL", comment_profit="L-TP2")
+
+if shortSignal and strategy.position_size == 0
+    sl   = orLow + SL_BUFFER_ATR * atr
+    risk = sl - close
+    if risk > 0
+        tp1 = close - risk * RR_PARTIAL
+        tp2 = pdl
+        qty = calcQty(close, sl)
+        array.push(tradeSLs, sl)
+        strategy.entry("Short", strategy.short, qty=qty, comment="S-Entry")
+        strategy.exit("S-TP1/SL", from_entry="Short", qty_percent=PARTIAL_QTY_PCT,
+             limit=tp1, stop=sl, comment_loss="S-SL", comment_profit="S-TP1")
+        strategy.exit("S-TP2/SL", from_entry="Short",
+             limit=tp2, stop=sl, comment_loss="S-SL", comment_profit="S-TP2")
+
+// Force-close at session end
+if isSessionEnd and strategy.position_size != 0
+    strategy.close_all(comment="EOS")
+
+// ============================================================
+// CSV EXPORT (Pine Logs)
+// ============================================================
+if barstate.isfirst
+    log.info("trade_num,entry_time_NY,exit_time_NY,side,entry_px,exit_px,sl_px,qty,profit_$,bars_held,risk_$,r_multiple")
+
+if strategy.closedtrades > nz(strategy.closedtrades[1])
+    idx     = strategy.closedtrades - 1
+    et      = str.format_time(strategy.closedtrades.entry_time(idx),
+                              "yyyy-MM-dd HH:mm:ss", "America/New_York")
+    xt      = str.format_time(strategy.closedtrades.exit_time(idx),
+                              "yyyy-MM-dd HH:mm:ss", "America/New_York")
+    sz      = strategy.closedtrades.size(idx)
+    side    = sz > 0 ? "LONG" : "SHORT"
+    qty     = math.abs(sz)
+    ep      = strategy.closedtrades.entry_price(idx)
+    xp      = strategy.closedtrades.exit_price(idx)
+    pnl     = strategy.closedtrades.profit(idx)
+    bars    = strategy.closedtrades.exit_bar_index(idx) - strategy.closedtrades.entry_bar_index(idx)
+    sl      = idx < array.size(tradeSLs) ? array.get(tradeSLs, idx) : na
+    risk_$  = na(sl) ? na : math.abs(ep - sl) * qty
+    r_mult  = (na(risk_$) or risk_$ == 0) ? na : pnl / risk_$
+    log.info(str.tostring(idx + 1) + "," + et + "," + xt + "," + side + "," +
+         str.tostring(ep, "#.####") + "," + str.tostring(xp, "#.####") + "," +
+         str.tostring(sl, "#.####") + "," + str.tostring(qty) + "," +
+         str.tostring(pnl, "#.##") + "," + str.tostring(bars) + "," +
+         str.tostring(risk_$, "#.##") + "," + str.tostring(r_mult, "#.###"))
+
+// ============================================================
+// PLOTS — Levels (visual only)
+// ============================================================
+plot(pdh,    "PDH",     color=PDH_COLOR, style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(pdl,    "PDL",     color=PDL_COLOR, style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(orHigh, "OR High", color=ORH_COLOR, style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(orLow,  "OR Low",  color=ORL_COLOR, style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+
+bgcolor(not inSession ? color.new(color.gray, 95) : na, title="Outside session window")
+
+// ============================================================
+// ON-CHART SUMMARY TABLE
+// ============================================================
+var table stats = table.new(position.top_right, 2, 8, border_width=1)
+
+if barstate.islast
+    wins      = strategy.wintrades
+    losses    = strategy.losstrades
+    total     = strategy.closedtrades
+    winRate   = total > 0 ? wins / total * 100 : 0.0
+    pf        = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+    netP      = strategy.netprofit
+    maxDD     = strategy.max_drawdown
+    avgTrade  = total > 0 ? netP / total : 0.0
+
+    table.cell(stats, 0, 0, "1m Scalp Backtest", bgcolor=color.new(color.blue, 50), text_color=color.white)
+    table.cell(stats, 1, 0, syminfo.ticker,        bgcolor=color.new(color.blue, 50), text_color=color.white)
+    table.cell(stats, 0, 1, "Trades")
+    table.cell(stats, 1, 1, str.tostring(total))
+    table.cell(stats, 0, 2, "Win Rate")
+    table.cell(stats, 1, 2, str.tostring(winRate, "#.#") + "%")
+    table.cell(stats, 0, 3, "Profit Factor")
+    table.cell(stats, 1, 3, na(pf) ? "—" : str.tostring(pf, "#.##"))
+    table.cell(stats, 0, 4, "Net Profit $")
+    table.cell(stats, 1, 4, str.tostring(netP, "#.##"))
+    table.cell(stats, 0, 5, "Max Drawdown $")
+    table.cell(stats, 1, 5, str.tostring(maxDD, "#.##"))
+    table.cell(stats, 0, 6, "Avg / Trade $")
+    table.cell(stats, 1, 6, str.tostring(avgTrade, "#.##"))
+    table.cell(stats, 0, 7, "Equity $")
+    table.cell(stats, 1, 7, str.tostring(strategy.equity, "#.##"))

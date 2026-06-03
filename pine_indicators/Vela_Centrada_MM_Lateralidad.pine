@@ -1,0 +1,101 @@
+//@version=5
+indicator("Vela Centrada en MM (Lateralidad)", overlay=true, max_labels_count=500)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+grpMA = "Media Móvil"
+maType = input.string("SMA", "Tipo MA", options=["SMA", "EMA", "WMA", "RMA", "HMA"], group=grpMA)
+maLen  = input.int(20, "Período MA", minval=2, group=grpMA)
+maSrc  = input.source(close, "Fuente", group=grpMA)
+showMA = input.bool(true, "Mostrar MA en gráfico", group=grpMA)
+
+grpDetect = "Detección de Vela Centrada"
+tolerance     = input.float(0.25, "Tolerancia de centrado", minval=0.0, maxval=1.0, step=0.05, group=grpDetect, tooltip="Cuán cerca del centro del cuerpo debe estar la MA. 0.00 = exacto en el centro (casi nunca dispara). 0.25 = MA en el 50% central del cuerpo (default). 0.50 = MA en el 100% central (=cualquier parte del cuerpo). 1.00 = cualquier parte del cuerpo.")
+minBodyTicks  = input.int(3, "Cuerpo mínimo (en ticks)", minval=0, group=grpDetect, tooltip="Evita disparar en dojis donde 'centrado' no tiene sentido. 3 ticks ≈ cuerpo visible.")
+allowWicksToo = input.bool(false, "Permitir si la MA solo cruza la mecha", group=grpDetect, tooltip="Por defecto la MA debe cruzar el CUERPO. Si activás esto, basta con que cruce algún punto del rango (high-low) de la vela.")
+
+grpFlat = "Filtro de Lateralidad"
+useFlatFilter = input.bool(true,  "Solo durante lateralidad", group=grpFlat, tooltip="Activo por default: solo dispara cuando la MA está horizontal. Desactivá para marcar siempre que haya centrado, incluso en tendencia.")
+flatLookback  = input.int(10,  "Barras para medir pendiente", minval=2, group=grpFlat)
+flatMaxPct    = input.float(0.15, "Pendiente máx (% del precio)", minval=0.0, step=0.05, group=grpFlat, tooltip="Cambio máximo de la MA en los últimos N bars, como % del precio. 0.15 = MA se movió menos del 0.15% en N bars.")
+
+grpStyle = "Estilo"
+arrowColor   = input.color(color.new(color.yellow, 0), "Color flecha", group=grpStyle)
+arrowSizeStr = input.string("normal", "Tamaño flecha", options=["tiny", "small", "normal", "large", "huge"], group=grpStyle)
+arrowPos     = input.string("Arriba", "Posición flecha", options=["Arriba", "Abajo"], group=grpStyle)
+markBg       = input.bool(false, "Fondo amarillo translúcido", group=grpStyle)
+showLabel    = input.bool(false, "Mostrar texto 'C' en la flecha", group=grpStyle)
+
+// ============================================================================
+// MOVING AVERAGE
+// ============================================================================
+ma = maType == "SMA" ? ta.sma(maSrc, maLen) :
+     maType == "EMA" ? ta.ema(maSrc, maLen) :
+     maType == "WMA" ? ta.wma(maSrc, maLen) :
+     maType == "RMA" ? ta.rma(maSrc, maLen) :
+     ta.hma(maSrc, maLen)
+
+plot(showMA ? ma : na, color=color.new(color.orange, 0), linewidth=2, title="MA")
+
+// ============================================================================
+// LÓGICA DE CENTRADO
+// ============================================================================
+bodyLo   = math.min(open, close)
+bodyHi   = math.max(open, close)
+bodyMid  = (open + close) / 2.0
+bodySize = bodyHi - bodyLo
+halfBody = bodySize / 2.0
+
+barLo = low
+barHi = high
+
+minBodyDollars = minBodyTicks * syminfo.mintick
+bodyOk = bodySize >= minBodyDollars
+
+// La MA debe estar dentro del cuerpo (o del rango, si allowWicksToo)
+inBody  = ma >= bodyLo and ma <= bodyHi
+inRange = ma >= barLo  and ma <= barHi
+maInside = allowWicksToo ? inRange : inBody
+
+// Distancia normalizada al centro del cuerpo: 0 = centro perfecto, 1 = borde
+// Si bodySize=0 (doji), nearMid=false (lo descarta el filtro de minBody arriba).
+nearMid = halfBody > 0 and math.abs(ma - bodyMid) <= halfBody * tolerance
+
+centered = bodyOk and maInside and (allowWicksToo ? true : nearMid)
+
+// ============================================================================
+// FILTRO LATERALIDAD
+// ============================================================================
+maSlopePct = na(ma[flatLookback]) ? 0.0 : math.abs(ma - ma[flatLookback]) / close * 100.0
+flatOk     = not useFlatFilter or maSlopePct <= flatMaxPct
+
+// ============================================================================
+// TRIGGER FINAL
+// ============================================================================
+trigger = centered and flatOk
+
+// ============================================================================
+// VISUAL
+// ============================================================================
+arrowSize = arrowSizeStr == "tiny"   ? size.tiny :
+            arrowSizeStr == "small"  ? size.small :
+            arrowSizeStr == "normal" ? size.normal :
+            arrowSizeStr == "large"  ? size.large :
+            size.huge
+
+arrowStyle = arrowPos == "Arriba" ? shape.arrowdown : shape.arrowup
+arrowLoc   = arrowPos == "Arriba" ? location.abovebar : location.belowbar
+
+plotshape(trigger, title="Vela Centrada",
+          style=arrowStyle, location=arrowLoc,
+          color=arrowColor, size=arrowSize,
+          text=showLabel ? "C" : "", textcolor=color.black)
+
+bgcolor(markBg and trigger ? color.new(color.yellow, 85) : na, title="Fondo Vela Centrada")
+
+// ============================================================================
+// ALERTA
+// ============================================================================
+alertcondition(trigger, title="Vela centrada en MM",
+               message="Vela centrada en MM en {{ticker}} {{interval}} @ {{close}}")

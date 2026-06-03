@@ -1,0 +1,155 @@
+//@version=5
+indicator("Zonas de Soporte y Resistencia (Wicks)", overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+grpPiv = "Detección de Pivots"
+leftBars   = input.int(15, "Barras a la Izquierda", minval=1, group=grpPiv, tooltip="Cantidad de barras a la izquierda para confirmar un pivot.")
+rightBars  = input.int(15, "Barras a la Derecha",  minval=1, group=grpPiv, tooltip="Cantidad de barras a la derecha para confirmar un pivot.")
+maxZones   = input.int(6,  "Máximo de Zonas Visibles", minval=1, maxval=30, group=grpPiv, tooltip="Cuántas zonas de soporte y resistencia mostrar en pantalla.")
+
+grpZone = "Construcción de la Zona"
+zoneMode = input.string("Wick (mecha)", "Modo de Zona", options=["Wick (mecha)", "Wick + ATR", "ATR fijo"], group=grpZone, tooltip="Wick: usa solo la mecha del pivot. Wick+ATR: añade un colchón con ATR. ATR fijo: usa solo un múltiplo del ATR.")
+atrLen   = input.int(14, "Longitud ATR", minval=1, group=grpZone)
+atrMult  = input.float(0.25, "Multiplicador ATR", minval=0.0, step=0.05, group=grpZone)
+
+grpStyle = "Estilo"
+resLineColor = input.color(color.new(color.red,   0), "Color Línea Resistencia", group=grpStyle)
+supLineColor = input.color(color.new(color.green, 0), "Color Línea Soporte",     group=grpStyle)
+resBoxColor  = input.color(color.new(color.red,   80), "Color Caja Resistencia", group=grpStyle)
+supBoxColor  = input.color(color.new(color.green, 80), "Color Caja Soporte",     group=grpStyle)
+borderColor  = input.color(color.new(color.gray,  70), "Color Borde Caja",       group=grpStyle)
+lineWidth    = input.int(1, "Grosor de Línea", minval=1, maxval=4, group=grpStyle)
+extendRight  = input.bool(true, "Extender hacia la derecha", group=grpStyle)
+showLabels   = input.bool(true, "Mostrar etiqueta de precio", group=grpStyle)
+
+// ============================================================================
+// PIVOTS
+// ============================================================================
+ph = ta.pivothigh(high, leftBars, rightBars)
+pl = ta.pivotlow (low,  leftBars, rightBars)
+atrVal = ta.atr(atrLen)
+
+// ============================================================================
+// ALMACENAMIENTO
+// ============================================================================
+var array<line>  resLines  = array.new<line>()
+var array<box>   resBoxes  = array.new<box>()
+var array<label> resLabels = array.new<label>()
+
+var array<line>  supLines  = array.new<line>()
+var array<box>   supBoxes  = array.new<box>()
+var array<label> supLabels = array.new<label>()
+
+// Limpia las zonas más antiguas cuando se excede el máximo
+trimZones(array<line> ls, array<box> bs, array<label> lbs, int maxCount) =>
+    while array.size(ls) > maxCount
+        line.delete(array.shift(ls))
+        box.delete(array.shift(bs))
+        if array.size(lbs) > 0
+            label.delete(array.shift(lbs))
+
+// ============================================================================
+// NUEVA ZONA DE RESISTENCIA (pivot high)
+// ============================================================================
+if not na(ph)
+    pivotBar   = bar_index - rightBars
+    pivotPrice = ph
+    bodyTop    = math.max(open[rightBars], close[rightBars])
+
+    // La línea horizontal se traza en el extremo de la mecha (pivot high).
+    // La caja se extiende DESDE la línea HACIA ABAJO hasta el cuerpo de la vela,
+    // cubriendo la mecha superior. Si se elige Wick+ATR, se añade un colchón ATR
+    // tanto arriba como abajo de la línea.
+    float topZone    = na
+    float bottomZone = na
+
+    if zoneMode == "Wick (mecha)"
+        topZone    := pivotPrice
+        bottomZone := bodyTop
+    else if zoneMode == "Wick + ATR"
+        topZone    := pivotPrice + atrVal * atrMult
+        bottomZone := math.min(bodyTop, pivotPrice - atrVal * atrMult)
+    else  // "ATR fijo"
+        topZone    := pivotPrice + atrVal * atrMult
+        bottomZone := pivotPrice - atrVal * atrMult
+
+    ln = line.new(pivotBar, pivotPrice, bar_index, pivotPrice,
+                  color=resLineColor, width=lineWidth,
+                  extend=extendRight ? extend.right : extend.none)
+
+    bx = box.new(pivotBar, topZone, bar_index, bottomZone,
+                 bgcolor=resBoxColor, border_color=borderColor,
+                 extend=extendRight ? extend.right : extend.none)
+
+    array.push(resLines, ln)
+    array.push(resBoxes, bx)
+
+    if showLabels
+        lb = label.new(bar_index, pivotPrice,
+                       str.tostring(pivotPrice, format.mintick),
+                       xloc=xloc.bar_index, style=label.style_label_left,
+                       color=color.new(color.red, 70),
+                       textcolor=color.white, size=size.small)
+        array.push(resLabels, lb)
+
+    trimZones(resLines, resBoxes, resLabels, maxZones)
+
+// ============================================================================
+// NUEVA ZONA DE SOPORTE (pivot low)
+// ============================================================================
+if not na(pl)
+    pivotBar   = bar_index - rightBars
+    pivotPrice = pl
+    bodyBottom = math.min(open[rightBars], close[rightBars])
+
+    float topZone    = na
+    float bottomZone = na
+
+    if zoneMode == "Wick (mecha)"
+        topZone    := bodyBottom
+        bottomZone := pivotPrice
+    else if zoneMode == "Wick + ATR"
+        topZone    := math.max(bodyBottom, pivotPrice + atrVal * atrMult)
+        bottomZone := pivotPrice - atrVal * atrMult
+    else  // "ATR fijo"
+        topZone    := pivotPrice + atrVal * atrMult
+        bottomZone := pivotPrice - atrVal * atrMult
+
+    ln = line.new(pivotBar, pivotPrice, bar_index, pivotPrice,
+                  color=supLineColor, width=lineWidth,
+                  extend=extendRight ? extend.right : extend.none)
+
+    bx = box.new(pivotBar, topZone, bar_index, bottomZone,
+                 bgcolor=supBoxColor, border_color=borderColor,
+                 extend=extendRight ? extend.right : extend.none)
+
+    array.push(supLines, ln)
+    array.push(supBoxes, bx)
+
+    if showLabels
+        lb = label.new(bar_index, pivotPrice,
+                       str.tostring(pivotPrice, format.mintick),
+                       xloc=xloc.bar_index, style=label.style_label_left,
+                       color=color.new(color.green, 70),
+                       textcolor=color.white, size=size.small)
+        array.push(supLabels, lb)
+
+    trimZones(supLines, supBoxes, supLabels, maxZones)
+
+// ============================================================================
+// MANTENER LÍNEAS Y CAJAS ALINEADAS AL ÚLTIMO BAR
+// (necesario cuando extend=extend.none, evita que la línea quede "corta")
+// ============================================================================
+if not extendRight
+    if array.size(resLines) > 0
+        l = array.get(resLines, array.size(resLines) - 1)
+        line.set_x2(l, bar_index)
+        b = array.get(resBoxes, array.size(resBoxes) - 1)
+        box.set_right(b, bar_index)
+    if array.size(supLines) > 0
+        l = array.get(supLines, array.size(supLines) - 1)
+        line.set_x2(l, bar_index)
+        b = array.get(supBoxes, array.size(supBoxes) - 1)
+        box.set_right(b, bar_index)

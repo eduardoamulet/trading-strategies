@@ -1,0 +1,293 @@
+//@version=6
+// =============================================================
+// STRATEGY: Break & Retest (Mechanical)
+// Recommended timeframe: 5m  (also valid on 1m / 15m intraday)
+// Asset class: Equities / Options Intraday
+//
+// CORE EDGE: Break & Retest mechanics on three key level types
+// (all share the same engine — only the level origin changes):
+//   1. PDH / PDL          — Previous Day High/Low (historical)
+//   2. Opening Range      — High/Low of first NY session candle
+//   3. Order Block        — Last counter-trend candle before a
+//                           strong displacement (wick-to-body)
+//
+// PILLAR 1 — Macro Filter (Daily 9 EMA):
+//   Price > Daily 9 EMA  → UPTREND  → Longs only
+//   Price < Daily 9 EMA  → DOWNTREND→ Shorts only
+//   Price ≈ Daily 9 EMA  → CHOP     → No trades (System Halt)
+//
+// PILLAR 2 — Micro Execution (Break & Retest):
+//   1. Break with displacement: close past level by ≥ 0.5*ATR
+//   2. Wait for retest within tolerance (0.25*ATR) and time window
+//   3. Confirmation candle: rejection (close back in trade dir.)
+//   4. Stop tight: behind retest candle / level
+//   5. Target: minimum 1:2 R:R
+//
+// FAKEOUT REVERSAL:
+//   If after a break price closes back inside the range, the
+//   strategy reverses (e.g. failed breakout above PDH → short).
+//
+// TRAILING (visual reference):
+//   5m EMA9 — exit when a candle closes against it.
+// =============================================================
+
+// ---------- NAMED CONSTANTS ----------
+DAILY_EMA_LEN              = 9
+EMA_TRAIL_LEN              = 9
+ATR_LEN                    = 14
+DISPLACEMENT_ATR_MULT      = 0.5     // break must travel ≥ 0.5*ATR past the level
+RETEST_TOLERANCE_ATR       = 0.25    // retest valid within 0.25*ATR of the level
+RETEST_MAX_BARS            = 30      // bars from break to allow retest
+EMA_NEAR_ATR_MULT          = 0.3     // |price - daily9| < this*ATR → CHOP
+RR_TARGET                  = 2.0     // minimum reward-to-risk multiple
+NY_OPEN_HOUR               = 9
+NY_OPEN_MIN                = 30
+OB_LOOKBACK                = 20
+OB_DISPLACEMENT_BODY_MULT  = 1.5     // displacement body ≥ this*ATR
+OB_BOX_FORWARD_BARS        = 30
+
+// Plot styling
+LEVEL_LINE_WIDTH           = 2
+LEVEL_PDH_COLOR            = color.new(color.red,     30)
+LEVEL_PDL_COLOR            = color.new(color.lime,    30)
+LEVEL_ORH_COLOR            = color.new(color.aqua,    30)
+LEVEL_ORL_COLOR            = color.new(color.fuchsia, 30)
+LONG_COLOR                 = color.new(color.green,   0)
+SHORT_COLOR                = color.new(color.red,     0)
+EMA_TRAIL_COLOR            = color.new(color.orange,  0)
+DAILY_EMA_COLOR            = color.new(color.blue,    0)
+OB_BULL_BG                 = color.new(color.green,   85)
+OB_BEAR_BG                 = color.new(color.red,     85)
+
+indicator("Break & Retest", shorttitle="B&R", overlay=true,
+     max_lines_count=200, max_labels_count=200, max_boxes_count=100)
+
+// ============================================================
+// CONFIGURATION — all hardcoded (no user inputs)
+// ============================================================
+showLevels        = true
+showOrderBlocks   = true
+showSignals       = true
+showSLTP          = true
+useFakeoutReverse = true
+
+// ============================================================
+// HIGHER-TIMEFRAME MACRO FILTER (Daily 9 EMA)
+// ============================================================
+dailyClose = request.security(syminfo.tickerid, "D", close,
+     lookahead=barmerge.lookahead_off)
+daily9     = request.security(syminfo.tickerid, "D", ta.ema(close, DAILY_EMA_LEN),
+     lookahead=barmerge.lookahead_off)
+atr        = ta.atr(ATR_LEN)
+
+emaDist = math.abs(dailyClose - daily9)
+chop    = emaDist < EMA_NEAR_ATR_MULT * atr
+bullish = not chop and dailyClose > daily9
+bearish = not chop and dailyClose < daily9
+
+// ============================================================
+// KEY LEVELS
+// ============================================================
+// --- PDH / PDL (yesterday's daily extremes) ---
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]],
+     lookahead=barmerge.lookahead_off)
+
+// --- Opening Range (first NY session candle) ---
+isNYOpen = (hour == NY_OPEN_HOUR and minute == NY_OPEN_MIN)
+newDay   = ta.change(time("D")) != 0
+
+var float orHigh = na
+var float orLow  = na
+if newDay
+    orHigh := na
+    orLow  := na
+if isNYOpen
+    orHigh := high
+    orLow  := low
+
+// --- Order Blocks ---
+// Bullish OB (uptrend support):  last DOWN candle before a strong UP displacement
+// Bearish OB (downtrend resist.): last UP   candle before a strong DOWN displacement
+isStrongUp   = close > open and (close - open) > OB_DISPLACEMENT_BODY_MULT * atr
+isStrongDown = open  > close and (open  - close) > OB_DISPLACEMENT_BODY_MULT * atr
+
+var float bullOBhigh = na
+var float bullOBlow  = na
+var float bearOBhigh = na
+var float bearOBlow  = na
+var box   bullOBbox  = na
+var box   bearOBbox  = na
+
+if isStrongUp
+    for i = 1 to OB_LOOKBACK
+        if open[i] > close[i]
+            bullOBhigh := high[i]
+            bullOBlow  := low[i]
+            if showOrderBlocks
+                if not na(bullOBbox)
+                    box.delete(bullOBbox)
+                bullOBbox := box.new(bar_index - i, bullOBhigh,
+                     bar_index + OB_BOX_FORWARD_BARS, bullOBlow,
+                     border_color=color.green, bgcolor=OB_BULL_BG)
+            break
+
+if isStrongDown
+    for i = 1 to OB_LOOKBACK
+        if close[i] > open[i]
+            bearOBhigh := high[i]
+            bearOBlow  := low[i]
+            if showOrderBlocks
+                if not na(bearOBbox)
+                    box.delete(bearOBbox)
+                bearOBbox := box.new(bar_index - i, bearOBhigh,
+                     bar_index + OB_BOX_FORWARD_BARS, bearOBlow,
+                     border_color=color.red, bgcolor=OB_BEAR_BG)
+            break
+
+// ============================================================
+// BREAK & RETEST DETECTION ENGINE
+// One state machine per level (broken-up / broken-down latches).
+// ============================================================
+
+// --- PDH / PDL state ---
+var bool pdhBrokenUp   = false
+var int  pdhBreakBar   = na
+var bool pdlBrokenDown = false
+var int  pdlBreakBar   = na
+
+// --- Opening Range state ---
+var bool orHighBrokenUp  = false
+var int  orHighBreakBar  = na
+var bool orLowBrokenDown = false
+var int  orLowBreakBar   = na
+
+// Reset all intraday state at the start of a new day
+if newDay
+    pdhBrokenUp      := false
+    pdhBreakBar      := na
+    pdlBrokenDown    := false
+    pdlBreakBar      := na
+    orHighBrokenUp   := false
+    orHighBreakBar   := na
+    orLowBrokenDown  := false
+    orLowBreakBar    := na
+
+// Detect breaks with displacement
+if not na(pdh) and close > pdh + DISPLACEMENT_ATR_MULT * atr and not pdhBrokenUp
+    pdhBrokenUp := true
+    pdhBreakBar := bar_index
+if not na(pdl) and close < pdl - DISPLACEMENT_ATR_MULT * atr and not pdlBrokenDown
+    pdlBrokenDown := true
+    pdlBreakBar   := bar_index
+if not na(orHigh) and close > orHigh + DISPLACEMENT_ATR_MULT * atr and not orHighBrokenUp
+    orHighBrokenUp := true
+    orHighBreakBar := bar_index
+if not na(orLow) and close < orLow - DISPLACEMENT_ATR_MULT * atr and not orLowBrokenDown
+    orLowBrokenDown := true
+    orLowBreakBar   := bar_index
+
+// --- Retest signals (level held → continuation) ---
+pdhRetestLong = pdhBrokenUp
+     and (bar_index - pdhBreakBar) <= RETEST_MAX_BARS
+     and low <= pdh + RETEST_TOLERANCE_ATR * atr
+     and close > pdh and close > open
+
+pdlRetestShort = pdlBrokenDown
+     and (bar_index - pdlBreakBar) <= RETEST_MAX_BARS
+     and high >= pdl - RETEST_TOLERANCE_ATR * atr
+     and close < pdl and close < open
+
+orHighRetestLong = orHighBrokenUp
+     and (bar_index - orHighBreakBar) <= RETEST_MAX_BARS
+     and low <= orHigh + RETEST_TOLERANCE_ATR * atr
+     and close > orHigh and close > open
+
+orLowRetestShort = orLowBrokenDown
+     and (bar_index - orLowBreakBar) <= RETEST_MAX_BARS
+     and high >= orLow - RETEST_TOLERANCE_ATR * atr
+     and close < orLow and close < open
+
+// --- Fakeout reversals (broke out, then closed back inside) ---
+pdhFakeoutShort  = useFakeoutReverse and pdhBrokenUp
+     and close < pdh and close < open
+pdlFakeoutLong   = useFakeoutReverse and pdlBrokenDown
+     and close > pdl and close > open
+orHighFakeoutShort = useFakeoutReverse and orHighBrokenUp
+     and close < orHigh and close < open
+orLowFakeoutLong   = useFakeoutReverse and orLowBrokenDown
+     and close > orLow and close > open
+
+// --- Order Block retest signals (price re-enters the OB zone) ---
+obLongSignal = bullish and not na(bullOBlow)
+     and low <= bullOBhigh and low >= bullOBlow
+     and close > open and close > bullOBlow
+
+obShortSignal = bearish and not na(bearOBhigh)
+     and high >= bearOBlow and high <= bearOBhigh
+     and close < open and close < bearOBhigh
+
+// ============================================================
+// FINAL ENTRY SIGNALS (gated by macro filter)
+// ============================================================
+longSignal = bullish and (
+     pdhRetestLong  or orHighRetestLong  or
+     pdlFakeoutLong or orLowFakeoutLong  or
+     obLongSignal)
+
+shortSignal = bearish and (
+     pdlRetestShort or orLowRetestShort   or
+     pdhFakeoutShort or orHighFakeoutShort or
+     obShortSignal)
+
+// ============================================================
+// STOP / TARGET (visualization, 1:2 R:R minimum)
+// ============================================================
+emaTrail = ta.ema(close, EMA_TRAIL_LEN)
+
+longSL  = longSignal  ? math.min(low,  low[1])  : na
+shortSL = shortSignal ? math.max(high, high[1]) : na
+longTP  = longSignal  ? close + (close - longSL)  * RR_TARGET : na
+shortTP = shortSignal ? close - (shortSL - close) * RR_TARGET : na
+
+// ============================================================
+// PLOTS
+// ============================================================
+plot(showLevels ? pdh    : na, "PDH",       color=LEVEL_PDH_COLOR,
+     style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(showLevels ? pdl    : na, "PDL",       color=LEVEL_PDL_COLOR,
+     style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(showLevels ? orHigh : na, "OR High",   color=LEVEL_ORH_COLOR,
+     style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(showLevels ? orLow  : na, "OR Low",    color=LEVEL_ORL_COLOR,
+     style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(emaTrail, "EMA9 Trail (5m)", color=EMA_TRAIL_COLOR, linewidth=1)
+plot(daily9,   "Daily 9 EMA",     color=DAILY_EMA_COLOR, linewidth=2)
+
+plotshape(showSignals and longSignal,  "LONG",  shape.triangleup,
+     location.belowbar, LONG_COLOR,  text="LONG",
+     textcolor=color.white, size=size.small)
+plotshape(showSignals and shortSignal, "SHORT", shape.triangledown,
+     location.abovebar, SHORT_COLOR, text="SHORT",
+     textcolor=color.white, size=size.small)
+
+plot(showSLTP ? longSL  : na, "Long SL",  color=color.new(color.red,   0),
+     style=plot.style_cross, linewidth=2)
+plot(showSLTP ? longTP  : na, "Long TP",  color=color.new(color.green, 0),
+     style=plot.style_cross, linewidth=2)
+plot(showSLTP ? shortSL : na, "Short SL", color=color.new(color.red,   0),
+     style=plot.style_cross, linewidth=2)
+plot(showSLTP ? shortTP : na, "Short TP", color=color.new(color.green, 0),
+     style=plot.style_cross, linewidth=2)
+
+// Background tint for macro state (very subtle)
+bgcolor(chop    ? color.new(color.gray,   95) : na, title="Chop (no trade)")
+bgcolor(bullish ? color.new(color.green,  97) : na, title="Bullish macro")
+bgcolor(bearish ? color.new(color.red,    97) : na, title="Bearish macro")
+
+// ============================================================
+// ALERTS
+// ============================================================
+alertcondition(longSignal,  title="B&R Long",
+     message="Break & Retest LONG signal — confirm tight SL behind level, target ≥ 1:2 R:R")
+alertcondition(shortSignal, title="B&R Short",
+     message="Break & Retest SHORT signal — confirm tight SL behind level, target ≥ 1:2 R:R")

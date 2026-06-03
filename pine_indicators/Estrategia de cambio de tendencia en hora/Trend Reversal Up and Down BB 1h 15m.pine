@@ -1,0 +1,530 @@
+//@version=6
+// =============================================================
+// INDICATOR: Trend Reversal Up & Down con Bollinger Bands
+//
+// 🎯 ARQUITECTURA: Dos estrategias en uno
+//
+// Combina las dos direcciones (CALL + PUT) en un solo indicador:
+//
+//   UP (CALL): cambio bajista -> alcista
+//     - Detecta lineas BAJISTAS (pivots highs descendentes, rojas)
+//     - Senal ▲ verde "UP" cuando close cruza ARRIBA + R3 + R4
+//
+//   DOWN (PUT): cambio alcista -> bajista
+//     - Detecta lineas ALCISTAS (pivots lows ascendentes, lima)
+//     - Senal ▼ rojo "DOWN" cuando close cruza ABAJO + R3 + R4
+//
+// Cada direccion se puede activar/desactivar independientemente.
+// La logica completa (R1-R4 + filtro transicion + modo estricto +
+// cooldown) se aplica simultaneamente en ambas direcciones.
+// =============================================================
+
+indicator("Trend Reversal Up & Down", shorttitle="TR-UD",
+     overlay=true,
+     max_lines_count=500,
+     max_labels_count=500)
+
+// =============================================================
+// IDIOMA / LANGUAGE
+// =============================================================
+grpLang = "Idioma / Language"
+lang    = input.string("Espanol", "Idioma / Language", options=["Espanol", "English"], group=grpLang,
+     tooltip="ES: Selecciona idioma para textos del chart (tooltips, tabla, alertas). Los nombres de inputs siempre se muestran en espanol por limitacion de Pine Script.\n\nEN: Select language for chart text. Input names always shown in Spanish (Pine Script limitation).")
+
+isES = lang == "Espanol"
+
+// Traducciones / Translations
+t_strategy_up = isES ? "  CAMBIO DE TENDENCIA AL ALZA\nEN 1 HORA CON BOLLINGER BANDS" : "    BULLISH TREND REVERSAL\nIN 1 HOUR WITH BOLLINGER BANDS"
+t_strategy_dn = isES ? "CAMBIO DE TENDENCIA A LA BAJA\nEN 1 HORA CON BOLLINGER BANDS" : "    BEARISH TREND REVERSAL\nIN 1 HOUR WITH BOLLINGER BANDS"
+// Nota: los mensajes de alertcondition deben ser const strings (limitacion de Pine).
+t_strict     = isES ? "ESTR" : "STR"
+t_normal     = isES ? "norm" : "norm"
+t_off        = "OFF"
+t_times      = isES ? "U/D" : "U/D"
+t_rule1      = isES ? "1. Linea" : "1. Trendline"
+t_rule2      = isES ? "2. Cruce" : "2. Cross"
+t_rule3      = isES ? "3. Confirm BB" : "3. BB confirm"
+t_signals    = isES ? "Senales" : "Signals"
+
+// =============================================================
+// INPUTS
+// =============================================================
+
+// Direccion (toggles para activar UP/DOWN independientemente)
+grpDir     = "Direccion (CALL / PUT)"
+enableUp   = input.bool(true, "Activar senales UP (CALL)",   group=grpDir,
+     tooltip="Detecta breakouts ARRIBA de lineas bajistas (cambio bajista->alcista). Genera ▲ verde 'UP'.")
+enableDown = input.bool(true, "Activar senales DOWN (PUT)", group=grpDir,
+     tooltip="Detecta breakdowns ABAJO de lineas alcistas (cambio alcista->bajista). Genera ▼ rojo 'DOWN'.")
+
+// Bollinger Bands (compartido)
+grpBB  = "Bollinger Bands"
+bbLen  = input.int(20,  "Periodo BB",     group=grpBB, minval=2)
+bbMult = input.float(2.0, "Desviacion BB", group=grpBB, minval=0.1, step=0.1)
+
+// Linea de tendencia auto-detectada (compartido entre direcciones)
+grpLine        = "Linea de tendencia (auto-detectada)"
+pivotLen       = input.int(3, "Pivot strength (left/right)", group=grpLine, minval=1, maxval=20,
+     tooltip="Velas a cada lado para confirmar pivot. Menor = mas pivots, mas sensible. Default 3 para 1H.")
+maxBarsForward = input.int(25, "Extension forward (bars)", group=grpLine, minval=5, maxval=200,
+     tooltip="Cuantas velas hacia adelante se extiende cada linea desde el ultimo pivot. Despues de eso la linea expira. Default 25 = ~3.5 dias en 1H.")
+maxLinesKeep   = input.int(50, "Max lineas dibujadas (historico)", group=grpLine, minval=10, maxval=500,
+     tooltip="Cuantas lineas historicas se conservan en el chart por direccion. Las mas viejas se eliminan automaticamente.")
+
+// Activacion individual de cada regla (aplica a ambas direcciones)
+grpToggles    = "Activacion de reglas (para pruebas)"
+useRule1      = input.bool(true, "Activar Regla 1 (linea de tendencia)", group=grpToggles,
+     tooltip="OFF: la regla no bloquea la senal en NINGUNA direccion.")
+useRule2      = input.bool(true, "Activar Regla 2 (close cruza linea)", group=grpToggles,
+     tooltip="OFF: la regla no bloquea la senal. Tambien neutraliza el modo estricto.")
+useRule3      = input.bool(true, "Activar Regla 3 (Confirmacion BB)", group=grpToggles)
+useRule4      = input.bool(true, "Activar Regla 4 (Confirmacion 15m)", group=grpToggles)
+useStrictMode = input.bool(true, "Modo estricto (1 senal por ciclo cruce)", group=grpToggles,
+     tooltip="ON (default): usa logica armed/disarmed por direccion. UP arma con cruce arriba, DOWN arma con cruce abajo. Solo permite UNA senal por ciclo cruce arriba/abajo.")
+cooldownBars  = input.int(0, "Cooldown entre senales (bars)", group=grpToggles, minval=0, maxval=200,
+     tooltip="Minimo de bars entre dos senales consecutivas en la MISMA direccion. UP y DOWN tienen contadores independientes.")
+useExitFilter = input.bool(true, "Filtro de transicion", group=grpToggles,
+     tooltip="ON: UP solo dispara si veniamos de bajista (close < basis reciente). DOWN solo dispara si veniamos de alcista (close > basis reciente). Bloquea senales en trends ya establecidos.")
+maxBarsExit   = input.int(15, "Bars max desde el otro lado del basis", group=grpToggles, minval=1, maxval=200,
+     tooltip="Cuantos bars hacia atras se considera 'reciente' el estado opuesto. Default 15 = ~2 dias de trading en 1H.")
+showPrePostSignals = input.bool(false, "Mostrar senales en premarket/postmarket", group=grpToggles,
+     tooltip="OFF (default): las senales (UP y DOWN) solo se muestran durante la sesion regular del mercado (ej. 9:30-16:00 ET para US stocks). ON: las senales tambien pueden aparecer en premarket y postmarket.")
+
+// Regla 3 - Confirmacion BB
+grpR3         = "Regla 3 - Confirmacion BB"
+useBodyFilter = input.bool(true, "Filtro de cuerpo de vela", group=grpR3,
+     tooltip="Si esta ON, la vela del cruce debe tener cuerpo |close-open| >= bodyAtrMult x ATR(14).")
+bodyAtrMult   = input.float(0.5, "Body minimo / ATR(14)", group=grpR3, minval=0.1, step=0.1)
+
+// Regla 4 - Confirmacion en TF inferior
+grpR4        = "Regla 4 - Confirmacion TF inferior"
+ltfTF        = input.timeframe("15", "TF inferior", group=grpR4, tooltip="Default 15m.")
+ltfSmaLen    = input.int(20, "SMA del TF inferior", group=grpR4, minval=2)
+ltfSlopeBars = input.int(3, "Lookback de momentum 15m (bars)", group=grpR4, minval=1,
+     tooltip="Bars del TF inferior para detectar momentum (close > close[N] para UP, close < close[N] para DOWN).")
+
+// Visualizacion
+grpViz          = "Visualizacion"
+showLines       = input.bool(true,  "Mostrar lineas de tendencia",      group=grpViz)
+onlySignalLines = input.bool(true,  "Solo lineas que dispararon senal", group=grpViz,
+     tooltip="ON: solo se conservan lineas historicas que dispararon senal. La linea actual de cada direccion siempre se muestra. OFF: todas las lineas detectadas se conservan (modo debug).")
+showPivots      = input.bool(false, "Mostrar marcadores de pivots",     group=grpViz)
+showTable       = input.bool(false, "Mostrar tabla de reglas",          group=grpViz)
+showBBLabels    = input.bool(false, "Mostrar etiquetas BB en la escala", group=grpViz)
+showTooltip     = input.bool(false, "Tooltips por vela (ultimas 500)",  group=grpViz)
+
+// =============================================================
+// BOLLINGER BANDS (compartido entre direcciones)
+// =============================================================
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+bbDisplay = showBBLabels ? display.all : display.pane + display.status_line + display.data_window
+plot(basis, "BB basis", color=color.orange, linewidth=2, display=bbDisplay)
+p1 = plot(upper, "BB upper", color=color.new(color.gray, 50), display=bbDisplay)
+p2 = plot(lower, "BB lower", color=color.new(color.gray, 50), display=bbDisplay)
+fill(p1, p2, color=color.new(color.gray, 92))
+
+// =============================================================
+// REGLA 1 (UP) - Linea de tendencia BAJISTA (pivots HIGHS descendentes)
+// =============================================================
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+
+var float prevHighUp = na
+var int   prevBarUp  = na
+
+var float upLineStartPrice = na
+var int   upLineStartBar   = na
+var float upLineSlope      = na
+var int   upLineEndBar     = na
+
+var line  upCurrentLine     = na
+var bool  upCurrentHadSignal = false
+var array<line> upVisualLines = array.new<line>()
+
+if not na(ph)
+    chU = ph
+    cbU = bar_index - pivotLen
+
+    if not na(prevHighUp) and chU < prevHighUp
+        bdU = cbU - prevBarUp
+        slU = (chU - prevHighUp) / float(bdU)
+        fbU = cbU + maxBarsForward
+        fpU = chU + slU * maxBarsForward
+
+        upLineStartPrice := prevHighUp
+        upLineStartBar   := prevBarUp
+        upLineSlope      := slU
+        upLineEndBar     := fbU
+
+        if showLines and enableUp
+            if not na(upCurrentLine)
+                if upCurrentHadSignal or not onlySignalLines
+                    array.push(upVisualLines, upCurrentLine)
+                    if array.size(upVisualLines) > maxLinesKeep
+                        oldL = array.shift(upVisualLines)
+                        line.delete(oldL)
+                else
+                    line.delete(upCurrentLine)
+
+            upCurrentLine     := line.new(prevBarUp, prevHighUp, fbU, fpU,
+                 extend=extend.none, color=color.new(color.red, 0),
+                 width=2, style=line.style_dashed)
+            upCurrentHadSignal := false
+
+    prevHighUp := chU
+    prevBarUp  := cbU
+
+// =============================================================
+// REGLA 1 (DOWN) - Linea de tendencia ALCISTA (pivots LOWS ascendentes)
+// =============================================================
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+var float prevLowDown = na
+var int   prevBarDown = na
+
+var float dnLineStartPrice = na
+var int   dnLineStartBar   = na
+var float dnLineSlope      = na
+var int   dnLineEndBar     = na
+
+var line  dnCurrentLine     = na
+var bool  dnCurrentHadSignal = false
+var array<line> dnVisualLines = array.new<line>()
+
+if not na(pl)
+    clD = pl
+    cbD = bar_index - pivotLen
+
+    if not na(prevLowDown) and clD > prevLowDown
+        bdD = cbD - prevBarDown
+        slD = (clD - prevLowDown) / float(bdD)
+        fbD = cbD + maxBarsForward
+        fpD = clD + slD * maxBarsForward
+
+        dnLineStartPrice := prevLowDown
+        dnLineStartBar   := prevBarDown
+        dnLineSlope      := slD
+        dnLineEndBar     := fbD
+
+        if showLines and enableDown
+            if not na(dnCurrentLine)
+                if dnCurrentHadSignal or not onlySignalLines
+                    array.push(dnVisualLines, dnCurrentLine)
+                    if array.size(dnVisualLines) > maxLinesKeep
+                        oldL = array.shift(dnVisualLines)
+                        line.delete(oldL)
+                else
+                    line.delete(dnCurrentLine)
+
+            dnCurrentLine     := line.new(prevBarDown, prevLowDown, fbD, fpD,
+                 extend=extend.none, color=color.new(color.lime, 0),
+                 width=2, style=line.style_dashed)
+            dnCurrentHadSignal := false
+
+    prevLowDown := clD
+    prevBarDown := cbD
+
+// Pivot markers (opcionales)
+plotshape(showPivots and not na(ph), title="Pivot High",
+     style=shape.circle, location=location.abovebar,
+     color=color.new(color.yellow, 0), size=size.tiny, offset=-pivotLen)
+plotshape(showPivots and not na(pl), title="Pivot Low",
+     style=shape.circle, location=location.belowbar,
+     color=color.new(color.aqua, 0), size=size.tiny, offset=-pivotLen)
+
+// Trendline values en el bar actual
+upTrendlineActive = not na(upLineStartPrice) and not na(upLineEndBar) and bar_index <= upLineEndBar
+upTrendlineNow    = upTrendlineActive ? upLineStartPrice + upLineSlope * (bar_index - upLineStartBar) : na
+
+dnTrendlineActive = not na(dnLineStartPrice) and not na(dnLineEndBar) and bar_index <= dnLineEndBar
+dnTrendlineNow    = dnTrendlineActive ? dnLineStartPrice + dnLineSlope * (bar_index - dnLineStartBar) : na
+
+// =============================================================
+// REGLAS 1 y 2 - por direccion
+// =============================================================
+ruleUp1 = upTrendlineActive
+ruleUp2 = ruleUp1 and not na(upTrendlineNow) and close > upTrendlineNow
+
+ruleDn1 = dnTrendlineActive
+ruleDn2 = ruleDn1 and not na(dnTrendlineNow) and close < dnTrendlineNow
+
+// =============================================================
+// REGLA 3 - Confirmacion BB (TF actual) - direccional
+// =============================================================
+atr14         = ta.atr(14)
+candleBody    = math.abs(close - open)
+bodyOk        = (not useBodyFilter) or (candleBody >= bodyAtrMult * atr14)
+
+ruleUp3 = close > basis and close > open and bodyOk
+ruleDn3 = close < basis and close < open and bodyOk
+
+// =============================================================
+// REGLA 4 - Confirmacion en TF inferior - direccional
+// =============================================================
+[ltfBasis, ltfClose, ltfClosePrev] = request.security(syminfo.tickerid, ltfTF,
+     [ta.sma(close, ltfSmaLen), close, close[ltfSlopeBars]],
+     lookahead=barmerge.lookahead_off)
+
+ltfRising  = ltfClose > ltfClosePrev
+ltfFalling = ltfClose < ltfClosePrev
+
+ruleUp4 = not na(ltfClose) and not na(ltfBasis) and ltfClose > ltfBasis and ltfRising
+ruleDn4 = not na(ltfClose) and not na(ltfBasis) and ltfClose < ltfBasis and ltfFalling
+
+// =============================================================
+// SENAL COMPLETA por direccion - armed/disarmed + filtros
+// =============================================================
+
+// Armed states independientes
+var bool upArmed = false
+var bool dnArmed = false
+
+// Reset al crearse una nueva linea en su direccion
+upNewLineCreated = ta.change(upLineStartBar) != 0 and not na(upLineStartBar)
+dnNewLineCreated = ta.change(dnLineStartBar) != 0 and not na(dnLineStartBar)
+
+if upNewLineCreated
+    upArmed := false
+if dnNewLineCreated
+    dnArmed := false
+
+// Cruces (calculados siempre fuera de if para state historico)
+upCrossUp   = ta.crossover(close,  upTrendlineNow)
+upCrossDown = ta.crossunder(close, upTrendlineNow)
+dnCrossDown = ta.crossunder(close, dnTrendlineNow)
+dnCrossUp   = ta.crossover(close,  dnTrendlineNow)
+
+if ruleUp1 and upCrossUp
+    upArmed := true
+if ruleUp1 and upCrossDown
+    upArmed := false
+if ruleDn1 and dnCrossDown
+    dnArmed := true
+if ruleDn1 and dnCrossUp
+    dnArmed := false
+
+// Filtro de transicion
+barsSinceBearish = ta.barssince(close < basis)
+barsSinceBullish = ta.barssince(close > basis)
+exitingBearish = not na(barsSinceBearish) and barsSinceBearish <= maxBarsExit
+exitingBullish = not na(barsSinceBullish) and barsSinceBullish <= maxBarsExit
+
+effExitUp = (not useExitFilter) or exitingBearish
+effExitDn = (not useExitFilter) or exitingBullish
+
+// Valores efectivos por direccion
+effUp1 = (not useRule1) or ruleUp1
+effUp2 = (not useRule2) or (useStrictMode ? upArmed : ruleUp2)
+effUp3 = (not useRule3) or ruleUp3
+effUp4 = (not useRule4) or ruleUp4
+
+effDn1 = (not useRule1) or ruleDn1
+effDn2 = (not useRule2) or (useStrictMode ? dnArmed : ruleDn2)
+effDn3 = (not useRule3) or ruleDn3
+effDn4 = (not useRule4) or ruleDn4
+
+fullSignalUp = enableUp   and effUp1 and effUp2 and effUp3 and effUp4 and effExitUp
+fullSignalDn = enableDown and effDn1 and effDn2 and effDn3 and effDn4 and effExitDn
+
+breakoutRawUp = fullSignalUp and not fullSignalUp[1]
+breakoutRawDn = fullSignalDn and not fullSignalDn[1]
+
+// Cooldown independiente por direccion
+var int lastUpSignalBar = na
+var int lastDnSignalBar = na
+withinCooldownUp = cooldownBars > 0 and not na(lastUpSignalBar) and (bar_index - lastUpSignalBar) < cooldownBars
+withinCooldownDn = cooldownBars > 0 and not na(lastDnSignalBar) and (bar_index - lastDnSignalBar) < cooldownBars
+
+// Filtro de sesion: por default bloquea senales en premarket/postmarket
+inAllowedSession = showPrePostSignals or session.ismarket
+
+breakoutUp = breakoutRawUp and not withinCooldownUp and inAllowedSession
+breakoutDn = breakoutRawDn and not withinCooldownDn and inAllowedSession
+
+if breakoutUp
+    lastUpSignalBar := bar_index
+if breakoutDn
+    lastDnSignalBar := bar_index
+
+// Strict mode: desarmar tras disparar
+if breakoutUp and useStrictMode
+    upArmed := false
+if breakoutDn and useStrictMode
+    dnArmed := false
+
+// Marcar la linea actual con "had signal"
+if breakoutUp
+    upCurrentHadSignal := true
+if breakoutDn
+    dnCurrentHadSignal := true
+
+// =============================================================
+// CONTADORES por direccion
+// =============================================================
+var int countUp1   = 0
+var int countUp2   = 0
+var int countUp3   = 0
+var int countUp4   = 0
+var int countUpSig = 0
+
+var int countDn1   = 0
+var int countDn2   = 0
+var int countDn3   = 0
+var int countDn4   = 0
+var int countDnSig = 0
+
+if ruleUp1 and not ruleUp1[1]
+    countUp1 += 1
+if ruleUp2 and not ruleUp2[1]
+    countUp2 += 1
+if ruleUp3 and not ruleUp3[1]
+    countUp3 += 1
+if ruleUp4 and not ruleUp4[1]
+    countUp4 += 1
+if breakoutUp
+    countUpSig += 1
+
+if ruleDn1 and not ruleDn1[1]
+    countDn1 += 1
+if ruleDn2 and not ruleDn2[1]
+    countDn2 += 1
+if ruleDn3 and not ruleDn3[1]
+    countDn3 += 1
+if ruleDn4 and not ruleDn4[1]
+    countDn4 += 1
+if breakoutDn
+    countDnSig += 1
+
+// =============================================================
+// PLOTSHAPES y ALERTAS
+// =============================================================
+plotshape(breakoutUp, title="UP Signal",
+     style=shape.triangleup, location=location.belowbar,
+     color=color.new(color.lime, 0), size=size.small)
+
+plotshape(breakoutDn, title="DOWN Signal",
+     style=shape.triangledown, location=location.abovebar,
+     color=color.new(color.red, 0), size=size.small)
+
+// Texto "UP"/"DW" via label.new (en lugar de plotshape) para soportar
+// tooltip nativo. Hover sobre el texto muestra el nombre de la estrategia.
+// UP: tooltip "CAMBIO DE TENDENCIA AL ALZA..." / "BULLISH..."
+// DW: tooltip "CAMBIO DE TENDENCIA A LA BAJA..." / "BEARISH..."
+if breakoutUp
+    label.new(bar_index, low, "UP",
+         yloc=yloc.belowbar,
+         style=label.style_none,
+         textcolor=color.new(color.lime, 0),
+         size=size.small,
+         tooltip=t_strategy_up)
+if breakoutDn
+    label.new(bar_index, high, "DW",
+         yloc=yloc.abovebar,
+         style=label.style_none,
+         textcolor=color.new(color.red, 0),
+         size=size.small,
+         tooltip=t_strategy_dn)
+
+alertcondition(breakoutUp, title="UP signal",   message="TR-UD UP {{ticker}} @ {{close}}")
+alertcondition(breakoutDn, title="DOWN signal", message="TR-UD DOWN {{ticker}} @ {{close}}")
+
+// =============================================================
+// TABLA DE REGLAS - 4 columnas (Concepto | UP | DOWN | Counts)
+// =============================================================
+f_check(bool b) => b ? "[X]" : "[ ]"
+f_bg(bool b)    => b ? color.new(color.green, 60) : color.new(color.gray, 70)
+
+var table tbl = na
+if showTable and barstate.islast
+    table.delete(tbl)
+    tbl := table.new(position.top_right, 4, 8,
+         bgcolor=color.new(color.black, 20),
+         border_color=color.new(color.gray, 50), border_width=1)
+
+    // Header
+    table.cell(tbl, 0, 0, "TR-UD",
+         text_color=color.white, bgcolor=color.new(color.blue, 30), text_halign=text.align_left)
+    table.cell(tbl, 1, 0, "UP",
+         text_color=color.white, bgcolor=color.new(color.green, 50))
+    table.cell(tbl, 2, 0, "DOWN",
+         text_color=color.white, bgcolor=color.new(color.red, 50))
+    table.cell(tbl, 3, 0, "U/D",
+         text_color=color.white, bgcolor=color.new(color.blue, 30))
+
+    // Symbol + mode info
+    table.cell(tbl, 0, 1, syminfo.ticker,
+         text_color=color.gray, bgcolor=color.new(color.black, 50), text_halign=text.align_left)
+    table.cell(tbl, 1, 1, enableUp   ? (useStrictMode ? t_strict : t_normal) : t_off,
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+    table.cell(tbl, 2, 1, enableDown ? (useStrictMode ? t_strict : t_normal) : t_off,
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+    table.cell(tbl, 3, 1, "",
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+
+    // R1
+    table.cell(tbl, 0, 2, t_rule1,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 2, f_check(ruleUp1), text_color=color.white, bgcolor=f_bg(ruleUp1))
+    table.cell(tbl, 2, 2, f_check(ruleDn1), text_color=color.white, bgcolor=f_bg(ruleDn1))
+    table.cell(tbl, 3, 2, str.tostring(countUp1) + "/" + str.tostring(countDn1),
+         text_color=color.white)
+
+    // R2
+    table.cell(tbl, 0, 3, t_rule2,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 3, f_check(ruleUp2), text_color=color.white, bgcolor=f_bg(ruleUp2))
+    table.cell(tbl, 2, 3, f_check(ruleDn2), text_color=color.white, bgcolor=f_bg(ruleDn2))
+    table.cell(tbl, 3, 3, str.tostring(countUp2) + "/" + str.tostring(countDn2),
+         text_color=color.white)
+
+    // R3
+    table.cell(tbl, 0, 4, t_rule3,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 4, f_check(ruleUp3), text_color=color.white, bgcolor=f_bg(ruleUp3))
+    table.cell(tbl, 2, 4, f_check(ruleDn3), text_color=color.white, bgcolor=f_bg(ruleDn3))
+    table.cell(tbl, 3, 4, str.tostring(countUp3) + "/" + str.tostring(countDn3),
+         text_color=color.white)
+
+    // R4
+    table.cell(tbl, 0, 5, (isES ? "4. Confirm " : "4. Confirm ") + ltfTF + "m",
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 5, f_check(ruleUp4), text_color=color.white, bgcolor=f_bg(ruleUp4))
+    table.cell(tbl, 2, 5, f_check(ruleDn4), text_color=color.white, bgcolor=f_bg(ruleDn4))
+    table.cell(tbl, 3, 5, str.tostring(countUp4) + "/" + str.tostring(countDn4),
+         text_color=color.white)
+
+    // Senales totales (resaltado)
+    table.cell(tbl, 0, 6, t_signals,
+         text_color=color.white, bgcolor=color.new(color.blue, 50), text_halign=text.align_left)
+    table.cell(tbl, 1, 6, str.tostring(countUpSig),
+         text_color=color.white, bgcolor=color.new(color.green, 30))
+    table.cell(tbl, 2, 6, str.tostring(countDnSig),
+         text_color=color.white, bgcolor=color.new(color.red, 30))
+    table.cell(tbl, 3, 6, str.tostring(countUpSig + countDnSig),
+         text_color=color.white, bgcolor=color.new(color.blue, 30))
+
+    // Filtro transicion estado
+    table.cell(tbl, 0, 7, isES ? "Filtro salida" : "Exit filter",
+         text_color=color.gray, bgcolor=color.new(color.black, 50), text_halign=text.align_left)
+    table.cell(tbl, 1, 7, useExitFilter ? (exitingBearish ? "OK" : (isES ? "no" : "no")) : t_off,
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+    table.cell(tbl, 2, 7, useExitFilter ? (exitingBullish ? "OK" : (isES ? "no" : "no")) : t_off,
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+    table.cell(tbl, 3, 7, "",
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+
+// =============================================================
+// TOOLTIP POR VELA - Diagnostico (ambas direcciones)
+// =============================================================
+if showTooltip
+    upStr   = na(upTrendlineNow) ? "n/a" : str.tostring(upTrendlineNow, "#.##")
+    dnStr   = na(dnTrendlineNow) ? "n/a" : str.tostring(dnTrendlineNow, "#.##")
+    upBlock = "UP: line=" + upStr + " R1=" + f_check(ruleUp1) + " R2=" + f_check(ruleUp2) + " R3=" + f_check(ruleUp3) + " R4=" + f_check(ruleUp4) + " SIG=" + f_check(fullSignalUp)
+    dnBlock = "DN: line=" + dnStr + " R1=" + f_check(ruleDn1) + " R2=" + f_check(ruleDn2) + " R3=" + f_check(ruleDn3) + " R4=" + f_check(ruleDn4) + " SIG=" + f_check(fullSignalDn)
+    txt     = str.format_time(time, "yyyy-MM-dd HH:mm") + " close=" + str.tostring(close, "#.##") + "\n" + upBlock + "\n" + dnBlock
+    label.new(bar_index, high, "", tooltip=txt, yloc=yloc.abovebar,
+         color=color.new(color.gray, 70), style=label.style_circle, size=size.tiny,
+         textcolor=color.new(color.white, 100))

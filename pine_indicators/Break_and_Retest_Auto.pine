@@ -1,0 +1,166 @@
+//@version=5
+indicator("Break & Retest Automático", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+grpPiv = "Niveles (Pivots)"
+leftBars   = input.int(15, "Barras Izquierda", minval=1, group=grpPiv)
+rightBars  = input.int(15, "Barras Derecha",  minval=1, group=grpPiv)
+maxLevels  = input.int(20, "Máx. niveles a rastrear", minval=2, maxval=100, group=grpPiv)
+
+grpBR = "Lógica Break & Retest"
+maxBarsToRetest   = input.int(30, "Máx. barras para esperar retest", minval=1, group=grpBR, tooltip="Tras la ruptura, cuántas barras esperar a que el precio reprueba el nivel.")
+requireConfirm    = input.bool(true, "Requerir vela de confirmación", group=grpBR, tooltip="Si está activo: la entrada exige una vela alcista (long) / bajista (short) en el retest. Si está desactivo: entrada al primer toque.")
+minBodyRatio      = input.float(0.4, "Ratio mínimo cuerpo/rango", minval=0.1, maxval=1.0, step=0.05, group=grpBR, tooltip="Cuerpo de la vela como porcentaje de su rango total (high-low). 0.4 = cuerpo de al menos 40%.")
+invalidateOnClose = input.bool(true, "Invalidar nivel si el close vuelve dentro", group=grpBR, tooltip="Si tras romper, una vela cierra de vuelta al lado original = fakeout, descarta el nivel.")
+
+grpRisk = "Gestión de Riesgo"
+showTrade   = input.bool(true, "Mostrar entrada, SL y TP", group=grpRisk)
+rrRatio     = input.float(2.0, "R:R Ratio (TP)", minval=0.5, step=0.5, group=grpRisk)
+slBufferATR = input.float(0.3, "Buffer SL (× ATR)", minval=0.0, step=0.05, group=grpRisk)
+atrLen      = input.int(14, "Longitud ATR", minval=1, group=grpRisk)
+
+grpStyle = "Estilo"
+resColor      = input.color(color.new(color.red,   0),  "Color Resistencia (activa)", group=grpStyle)
+supColor      = input.color(color.new(color.green, 0),  "Color Soporte (activo)",     group=grpStyle)
+brokenColor   = input.color(color.new(color.gray,  20), "Color Nivel Roto (espera retest)", group=grpStyle)
+deleteOnDone  = input.bool(true, "Eliminar niveles invalidados/completados", group=grpStyle)
+
+// ============================================================================
+// TIPO LEVEL
+// ============================================================================
+type Level
+    float price
+    int    barIdx
+    string side       // "R" o "S"
+    int    state      // 0=ACTIVE, 1=BROKEN, 2=DONE
+    int    breakBar
+    line   ln
+
+ACTIVE = 0
+BROKEN = 1
+DONE   = 2
+
+// ============================================================================
+// ESTADO
+// ============================================================================
+var array<Level> levels = array.new<Level>()
+atrVal = ta.atr(atrLen)
+
+// ============================================================================
+// CREACIÓN DE NUEVOS NIVELES (al detectar pivot)
+// ============================================================================
+ph = ta.pivothigh(high, leftBars, rightBars)
+pl = ta.pivotlow (low,  leftBars, rightBars)
+
+if not na(ph)
+    pivotBar = bar_index - rightBars
+    ln = line.new(pivotBar, ph, bar_index, ph, color=resColor, width=2, extend=extend.right)
+    array.push(levels, Level.new(ph, pivotBar, "R", ACTIVE, 0, ln))
+
+if not na(pl)
+    pivotBar = bar_index - rightBars
+    ln = line.new(pivotBar, pl, bar_index, pl, color=supColor, width=2, extend=extend.right)
+    array.push(levels, Level.new(pl, pivotBar, "S", ACTIVE, 0, ln))
+
+// Mantener la cantidad bajo control
+while array.size(levels) > maxLevels
+    oldLv = array.shift(levels)
+    line.delete(oldLv.ln)
+
+// ============================================================================
+// MÁQUINA DE ESTADOS POR NIVEL
+// ============================================================================
+bool  longSignal   = false
+bool  shortSignal  = false
+float signalEntry  = na
+float signalSL     = na
+float signalTP     = na
+
+if array.size(levels) > 0
+    for i = 0 to array.size(levels) - 1
+        lv = array.get(levels, i)
+
+        // ---- ACTIVE: esperando ruptura ----
+        if lv.state == ACTIVE
+            if lv.side == "R" and close > lv.price
+                lv.state    := BROKEN
+                lv.breakBar := bar_index
+                line.set_color(lv.ln, brokenColor)
+                line.set_style(lv.ln, line.style_dashed)
+            else if lv.side == "S" and close < lv.price
+                lv.state    := BROKEN
+                lv.breakBar := bar_index
+                line.set_color(lv.ln, brokenColor)
+                line.set_style(lv.ln, line.style_dashed)
+
+        // ---- BROKEN: esperando retest ----
+        else if lv.state == BROKEN
+            barsSinceBreak = bar_index - lv.breakBar
+            float rng     = math.max(high - low, syminfo.mintick)
+            float bodyAbs = math.abs(close - open)
+            float bodyR   = bodyAbs / rng
+
+            if barsSinceBreak > maxBarsToRetest
+                lv.state := DONE
+
+            else if barsSinceBreak >= 1
+                if lv.side == "R"
+                    // Resistencia rota → ahora soporte. Retest = la mecha baja al nivel.
+                    if invalidateOnClose and close < lv.price
+                        lv.state := DONE  // fakeout: precio cerró de vuelta abajo
+                    else if low <= lv.price and close > lv.price
+                        bullish = close > open and bodyR >= minBodyRatio
+                        if not requireConfirm or bullish
+                            longSignal  := true
+                            signalEntry := close
+                            signalSL    := math.min(low, lv.price) - atrVal * slBufferATR
+                            signalTP    := signalEntry + (signalEntry - signalSL) * rrRatio
+                            lv.state    := DONE
+                else  // "S"
+                    // Soporte roto → ahora resistencia. Retest = la mecha sube al nivel.
+                    if invalidateOnClose and close > lv.price
+                        lv.state := DONE  // fakeout
+                    else if high >= lv.price and close < lv.price
+                        bearish = close < open and bodyR >= minBodyRatio
+                        if not requireConfirm or bearish
+                            shortSignal := true
+                            signalEntry := close
+                            signalSL    := math.max(high, lv.price) + atrVal * slBufferATR
+                            signalTP    := signalEntry - (signalSL - signalEntry) * rrRatio
+                            lv.state    := DONE
+
+        // ---- DONE: limpieza opcional ----
+        if lv.state == DONE and deleteOnDone
+            line.delete(lv.ln)
+
+// Limpieza de niveles DONE eliminados (líneas ya borradas pero objeto sigue en array)
+if deleteOnDone and array.size(levels) > 0
+    for i = array.size(levels) - 1 to 0
+        if array.get(levels, i).state == DONE
+            array.remove(levels, i)
+
+// ============================================================================
+// PLOT DE SEÑALES
+// ============================================================================
+plotshape(longSignal,  title="LONG",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="BUY",  textcolor=color.white)
+plotshape(shortSignal, title="SHORT", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), size=size.small, text="SELL", textcolor=color.white)
+
+// ============================================================================
+// DIBUJAR ENTRADA / SL / TP
+// ============================================================================
+if showTrade and (longSignal or shortSignal)
+    rightX = bar_index + 25
+    line.new(bar_index, signalEntry, rightX, signalEntry, color=color.new(color.yellow, 0), width=2)
+    line.new(bar_index, signalSL,    rightX, signalSL,    color=color.new(color.red,    0), width=1, style=line.style_dashed)
+    line.new(bar_index, signalTP,    rightX, signalTP,    color=color.new(color.green,  0), width=1, style=line.style_dashed)
+    label.new(rightX, signalEntry, "ENTRY " + str.tostring(signalEntry, format.mintick), style=label.style_label_left, color=color.new(color.yellow, 60), textcolor=color.black, size=size.small)
+    label.new(rightX, signalSL,    "SL "    + str.tostring(signalSL,    format.mintick), style=label.style_label_left, color=color.new(color.red,    60), textcolor=color.white, size=size.small)
+    label.new(rightX, signalTP,    "TP "    + str.tostring(signalTP,    format.mintick), style=label.style_label_left, color=color.new(color.green,  60), textcolor=color.white, size=size.small)
+
+// ============================================================================
+// ALERTAS
+// ============================================================================
+alertcondition(longSignal,  title="Break & Retest LONG",  message="B&R LONG señal en {{ticker}} @ {{close}}")
+alertcondition(shortSignal, title="Break & Retest SHORT", message="B&R SHORT señal en {{ticker}} @ {{close}}")

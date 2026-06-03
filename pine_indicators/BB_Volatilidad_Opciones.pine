@@ -1,0 +1,189 @@
+//@version=5
+indicator("BB Volatilidad + Volumen Opciones (1m / 5m / 1H)", overlay=true, max_labels_count=300)
+
+// ============================================================================
+// PRESET POR TIMEFRAME (1m / 5m / 1H)
+// ============================================================================
+grpPreset = "Preset"
+preset = input.string("5m Intradía (0 DTE)", "Timeframe objetivo", options=["1m Scalp (0 DTE)", "5m Intradía (0 DTE)", "1H Swing (1-3 DTE)", "Manual"], group=grpPreset, tooltip="Selecciona el TF en el que estás operando. Los parámetros internos se ajustan automáticamente.")
+
+// --- BB / Vol ---
+length_p     = preset == "1m Scalp (0 DTE)" ? 20  : preset == "5m Intradía (0 DTE)" ? 20  : preset == "1H Swing (1-3 DTE)" ? 20  : 20
+volLen_p     = preset == "1m Scalp (0 DTE)" ? 15  : preset == "5m Intradía (0 DTE)" ? 20  : preset == "1H Swing (1-3 DTE)" ? 20  : 20
+volMult_p    = preset == "1m Scalp (0 DTE)" ? 1.35: preset == "5m Intradía (0 DTE)" ? 1.25: preset == "1H Swing (1-3 DTE)" ? 1.20: 1.20
+minSlope_p   = preset == "1m Scalp (0 DTE)" ? 0.03: preset == "5m Intradía (0 DTE)" ? 0.02: preset == "1H Swing (1-3 DTE)" ? 0.01: 0.0
+minBars_p    = preset == "1m Scalp (0 DTE)" ? 2   : preset == "5m Intradía (0 DTE)" ? 2   : preset == "1H Swing (1-3 DTE)" ? 1   : 1
+// --- Volumen ---
+volBarsLen_p = preset == "1m Scalp (0 DTE)" ? 30  : preset == "5m Intradía (0 DTE)" ? 20  : preset == "1H Swing (1-3 DTE)" ? 20  : 20
+volBarsMult_p= preset == "1m Scalp (0 DTE)" ? 1.80: preset == "5m Intradía (0 DTE)" ? 1.50: preset == "1H Swing (1-3 DTE)" ? 1.30: 1.50
+
+// ============================================================================
+// MANUAL OVERRIDE
+// ============================================================================
+grpManual = "Manual (solo si Preset = Manual)"
+length_m     = input.int(20,    "Período BB",                minval=1, group=grpManual)
+mult         = input.float(2.0, "Mult StdDev",               minval=0.1, step=0.1, group=grpManual)
+volLen_m     = input.int(20,    "Período media BB Width",    minval=2, group=grpManual)
+volMult_m    = input.float(1.20,"Umbral Vol Alta (× media)", minval=1.0, step=0.05, group=grpManual)
+minSlope_m   = input.float(0.0, "Pendiente mín (%)",         minval=0.0, step=0.01, group=grpManual)
+minBars_m    = input.int(1,     "Mín barras consecutivas",   minval=1, group=grpManual)
+volBarsLen_m = input.int(20,    "Período media Volumen",     minval=2, group=grpManual)
+volBarsMult_m= input.float(1.50,"Umbral Volumen (× media)",  minval=1.0, step=0.1, group=grpManual)
+
+// ============================================================================
+// VOLUMEN — control general
+// ============================================================================
+grpVol = "Volumen"
+requireVolume = input.bool(true, "Exigir VOLUMEN ALTO (además de volatilidad)", group=grpVol, tooltip="Si está activo: la señal CALL/PUT solo dispara si BB se expande, hay vol alta Y el volumen supera el umbral. Desactívalo si operas un activo sin volumen confiable (ej. forex CFD).")
+
+// ============================================================================
+// FILTRO ANTI-EXTREMO (%B) — evita disparar en agotamiento
+// ============================================================================
+grpPB = "Filtro Anti-Extremo (%B)"
+usePercentB = input.bool(true, "Filtrar señales en extremos de banda", group=grpPB, tooltip="Activado: NO dispara CALL si precio ya tocó banda superior, NI PUT si tocó la inferior. Evita comprar opciones en el agotamiento del movimiento (capitulación).")
+pbCallMin   = input.float(0.50, "%B mín para CALL", minval=0.0, maxval=1.0, step=0.05, group=grpPB, tooltip="Precio debe estar al menos por encima del basis (0.50). Más bajo = más permisivo pero más reversiones.")
+pbCallMax   = input.float(0.85, "%B máx para CALL", minval=0.0, maxval=1.0, step=0.05, group=grpPB, tooltip="Precio NO debe estar pegado a la banda superior. >0.85 = ya extendido, alta probabilidad de reversión.")
+pbPutMin    = input.float(0.15, "%B mín para PUT",  minval=0.0, maxval=1.0, step=0.05, group=grpPB, tooltip="Precio NO debe estar pegado a la banda inferior. <0.15 = ya capituló, rebote inminente.")
+pbPutMax    = input.float(0.50, "%B máx para PUT",  minval=0.0, maxval=1.0, step=0.05, group=grpPB, tooltip="Precio debe estar al menos por debajo del basis (0.50).")
+
+// Resolución final
+length       = preset == "Manual" ? length_m     : length_p
+volLen       = preset == "Manual" ? volLen_m     : volLen_p
+volMult      = preset == "Manual" ? volMult_m    : volMult_p
+minSlopePct  = preset == "Manual" ? minSlope_m   : minSlope_p
+minBars      = preset == "Manual" ? minBars_m    : minBars_p
+volBarsLen   = preset == "Manual" ? volBarsLen_m : volBarsLen_p
+volBarsMult  = preset == "Manual" ? volBarsMult_m: volBarsMult_p
+
+// ============================================================================
+// ESTILO
+// ============================================================================
+grpStyle = "Estilo"
+showBg       = input.bool(true,  "Fondo rojo en señal activa",   group=grpStyle)
+fillBands    = input.bool(true,  "Rellenar entre bandas",        group=grpStyle)
+showStraddle = input.bool(false, "Mostrar señales STRADDLE",     group=grpStyle)
+markVolBars  = input.bool(true,  "Resaltar barras con volumen alto", group=grpStyle, tooltip="Marca con un punto debajo de la vela cada vez que el volumen supera el umbral, aunque no haya señal CALL/PUT.")
+showPanel    = input.bool(true,  "Mostrar panel de diagnóstico", group=grpStyle, tooltip="Activa/desactiva la tabla con BB Width, Vol Alta, Volumen, %B y Sesgo en la esquina superior derecha.")
+
+// ============================================================================
+// CÁLCULO BB
+// ============================================================================
+basis = ta.sma(close, length)
+dev   = mult * ta.stdev(close, length)
+upper = basis + dev
+lower = basis - dev
+
+// ============================================================================
+// EXPANSIÓN DIVERGENTE
+// ============================================================================
+threshold   = close * minSlopePct / 100.0
+upperSlope  = upper - upper[1]
+lowerSlope  = lower[1] - lower
+upperRising  = upperSlope > threshold
+lowerFalling = lowerSlope > threshold
+rawDivergent = upperRising and lowerFalling
+
+var int consec = 0
+consec := rawDivergent ? consec + 1 : 0
+divergent = consec >= minBars
+
+// ============================================================================
+// VOLATILIDAD ALTA (BB Width)
+// ============================================================================
+bbWidth    = (upper - lower) / basis * 100.0
+bbWidthAvg = ta.sma(bbWidth, volLen)
+highVol    = bbWidth > bbWidthAvg * volMult
+
+// ============================================================================
+// VOLUMEN ALTO
+// ============================================================================
+volAvg     = ta.sma(volume, volBarsLen)
+highVolume = volume > volAvg * volBarsMult
+
+// ============================================================================
+// TRIGGER COMBINADO: vol expansion + vol alta + (opcional) volumen alto
+// ============================================================================
+volumeOK   = not requireVolume or highVolume
+trigger    = divergent and highVol and volumeOK
+newTrigger = trigger and not trigger[1]
+
+// ============================================================================
+// SESGO DIRECCIONAL → CALL / PUT / STRADDLE
+// ============================================================================
+slopeBias = upperSlope - lowerSlope
+priceBias = close - basis
+bullish   = priceBias > 0 and slopeBias > 0
+bearish   = priceBias < 0 and slopeBias < 0
+neutral   = not bullish and not bearish
+
+// %B = posición del close dentro de las bandas (0 = lower, 1 = upper)
+percentB = (close - lower) / math.max(upper - lower, syminfo.mintick)
+
+// Filtro anti-extremo: rechaza señales si %B está fuera del rango operativo
+callPbOK = not usePercentB or (percentB >= pbCallMin and percentB <= pbCallMax)
+putPbOK  = not usePercentB or (percentB >= pbPutMin  and percentB <= pbPutMax)
+
+callSignal     = newTrigger and bullish and callPbOK
+putSignal      = newTrigger and bearish and putPbOK
+straddleSignal = newTrigger and neutral and showStraddle
+
+// ============================================================================
+// PLOT BANDAS
+// ============================================================================
+plot(basis, color=color.new(color.orange, 0), title="Basis (SMA)")
+upperPlot = plot(upper, color=trigger ? color.new(color.red, 0) : color.new(color.blue, 0), linewidth=2, title="Banda Superior")
+lowerPlot = plot(lower, color=trigger ? color.new(color.red, 0) : color.new(color.blue, 0), linewidth=2, title="Banda Inferior")
+
+fill(upperPlot, lowerPlot, color=fillBands ? (trigger ? color.new(color.red, 90) : color.new(color.blue, 93)) : na, title="Fill")
+
+bgcolor(showBg and trigger ? color.new(color.red, 88) : na)
+
+// ============================================================================
+// SEÑALES DE OPCIONES
+// ============================================================================
+plotshape(callSignal,     title="CALL",     style=shape.triangleup,   location=location.belowbar, color=color.new(color.green,  0), size=size.normal, text="CALL", textcolor=color.white)
+plotshape(putSignal,      title="PUT",      style=shape.triangledown, location=location.abovebar, color=color.new(color.red,    0), size=size.normal, text="PUT",  textcolor=color.white)
+plotshape(straddleSignal, title="STRADDLE", style=shape.diamond,      location=location.abovebar, color=color.new(color.yellow, 0), size=size.small,  text="STRD", textcolor=color.black)
+
+// Marca puntual de volumen alto (sin importar si hay señal direccional)
+plotshape(markVolBars and highVolume and not trigger, title="Vol Alto (sin trigger completo)", style=shape.circle, location=location.belowbar, color=color.new(color.aqua, 30), size=size.tiny)
+
+// ============================================================================
+// PANEL DE DIAGNÓSTICO
+// ============================================================================
+var table info = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 70), border_width=1)
+if barstate.islast
+    if showPanel
+        table.cell(info, 0, 0, "Preset",       text_color=color.white, text_size=size.small)
+        table.cell(info, 1, 0, preset,         text_color=color.yellow, text_size=size.small)
+        table.cell(info, 0, 1, "TF actual",    text_color=color.white, text_size=size.small)
+        table.cell(info, 1, 1, timeframe.period, text_color=color.aqua, text_size=size.small)
+        table.cell(info, 0, 2, "BB Width %",   text_color=color.white, text_size=size.small)
+        table.cell(info, 1, 2, str.tostring(bbWidth, "#.###"), text_color=color.white, text_size=size.small)
+        table.cell(info, 0, 3, "Media BBW %",  text_color=color.white, text_size=size.small)
+        table.cell(info, 1, 3, str.tostring(bbWidthAvg, "#.###"), text_color=color.white, text_size=size.small)
+        table.cell(info, 0, 4, "Vol Alta",     text_color=color.white, text_size=size.small)
+        table.cell(info, 1, 4, highVol ? "SI" : "no",   text_color=highVol   ? color.red : color.gray, text_size=size.small)
+        table.cell(info, 0, 5, "Divergente",   text_color=color.white, text_size=size.small)
+        table.cell(info, 1, 5, divergent ? "SI" : "no", text_color=divergent ? color.red : color.gray, text_size=size.small)
+        table.cell(info, 0, 6, "Volumen",      text_color=color.white, text_size=size.small)
+        volTxt = str.tostring(volume / volAvg, "#.##") + "× media"
+        table.cell(info, 1, 6, volTxt, text_color=highVolume ? color.red : color.gray, text_size=size.small)
+        table.cell(info, 0, 7, "Vol Alto",     text_color=color.white, text_size=size.small)
+        table.cell(info, 1, 7, highVolume ? "SI" : "no", text_color=highVolume ? color.red : color.gray, text_size=size.small)
+        table.cell(info, 0, 8, "%B (posición)", text_color=color.white, text_size=size.small)
+        pbCol = (percentB > 0.85 or percentB < 0.15) ? color.red : (percentB > pbCallMin or percentB < pbPutMax) ? color.aqua : color.gray
+        table.cell(info, 1, 8, str.tostring(percentB, "0.00"), text_color=pbCol, text_size=size.small)
+        table.cell(info, 0, 9, "Sesgo",        text_color=color.white, text_size=size.small)
+        sesgoTxt = bullish ? "CALL" : bearish ? "PUT" : "NEUTRAL"
+        sesgoCol = bullish ? color.green : bearish ? color.red : color.yellow
+        table.cell(info, 1, 9, sesgoTxt,       text_color=sesgoCol, text_size=size.small)
+    else
+        table.clear(info, 0, 0, 1, 9)
+
+// ============================================================================
+// ALERTAS
+// ============================================================================
+alertcondition(callSignal,     title="Opciones CALL (vol+volumen)",     message="BB vol+volumen BULLISH en {{ticker}} {{interval}} - CALL @ {{close}}")
+alertcondition(putSignal,      title="Opciones PUT (vol+volumen)",      message="BB vol+volumen BEARISH en {{ticker}} {{interval}} - PUT @ {{close}}")
+alertcondition(straddleSignal, title="Opciones STRADDLE (vol+volumen)", message="BB vol+volumen NEUTRAL en {{ticker}} {{interval}} - STRADDLE")

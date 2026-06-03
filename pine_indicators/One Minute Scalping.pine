@@ -1,0 +1,269 @@
+//@version=6
+// =============================================================
+// STRATEGY: One-Minute Scalping
+// Recommended timeframe: 1m  (also valid on 5m)
+// Asset class: Stocks intraday — first 2 hours of NY session
+//
+// MECHANICAL 3-STEP PROCESS (literal to source document):
+//
+//   STEP 1 — Mark Previous Day High & Low (PDH / PDL)
+//     Computed from the previous day's REGULAR TRADING HOURS
+//     only (09:30-16:00 EST). Snapshotted at each 9:30 open.
+//     These are the primary targets where liquidity rests.
+//
+//   STEP 2 — Mark the Opening Range Candle
+//     At 9:30 AM EST (NY open), mark the high and low of the
+//     very first 1m (or 5m) candle. This is the Opening Range.
+//
+//   STEP 3 — Wait for Break & Retest
+//     Bullish: break ABOVE OR High with displacement →
+//              retest of OR High → confirmation candle → LONG
+//              Target: PDH
+//     Bearish: break BELOW OR Low with displacement →
+//              retest of OR Low → confirmation candle → SHORT
+//              Target: PDL
+//
+// CONFIRMATION CANDLES (two-bar requirement):
+//   Bar N-1 — retest touch + close past level + strong-body
+//             candle closing in the direction of the trade
+//             (body ≥ 40% of range).
+//   Bar N   — level still held (close past it) + another
+//             strong-body candle in the same direction.
+//   Entry fires at the close of Bar N.
+//
+// STOP LOSS:
+//   Just on the opposite side of the OR level (with small ATR
+//   buffer). If price re-enters the range, the setup is invalid.
+//
+// TARGETS:
+//   TP1 (partial 50%): 1:2 R:R   OR   LOD/HOD (whichever is
+//                      reached first — both plotted).
+//   TP2 (trailers):    PDH (long) / PDL (short).
+//
+// NO-TRADE DAY:
+//   No displacement on the break, or no confirmation candle on
+//   the retest → stand aside. Do not force a trade.
+//
+// SESSION GATE:
+//   Signals fire only between 09:30 and 11:30 EST.
+// =============================================================
+
+// ---------- NAMED CONSTANTS ----------
+ATR_LEN                    = 14
+DISPLACEMENT_ATR_MULT      = 0.5     // break must travel ≥ 0.5*ATR past OR
+RETEST_TOLERANCE_ATR       = 0.25    // retest valid within 0.25*ATR of OR
+RETEST_MAX_BARS            = 30      // bars after break to allow retest
+SL_BUFFER_ATR              = 0.1     // stop buffer beyond OR level
+CONFIRM_BODY_RATIO         = 0.4     // confirmation body ≥ 40% of candle range
+RR_PARTIAL                 = 2.0     // TP1 at 1:2 R:R (partial 50%)
+NY_OPEN_HOUR               = 9
+NY_OPEN_MIN                = 30
+SESSION_RANGE              = "0930-1130"
+
+// Plot styling
+LEVEL_LINE_WIDTH           = 2
+PDH_COLOR                  = color.new(color.red,     30)
+PDL_COLOR                  = color.new(color.lime,    30)
+ORH_COLOR                  = color.new(color.aqua,    30)
+ORL_COLOR                  = color.new(color.fuchsia, 30)
+LONG_COLOR                 = color.new(color.green,   0)
+SHORT_COLOR                = color.new(color.red,     0)
+SL_BOX_COLOR               = color.new(color.red,     85)
+TP_BOX_COLOR               = color.new(color.green,   85)
+
+indicator("One Minute Scalping", shorttitle="1m Scalp", overlay=true,
+     max_lines_count=200, max_labels_count=200, max_boxes_count=100)
+
+// ============================================================
+// TIMEFRAME GUARD — only 1m and 5m are supported
+// ============================================================
+tfSec = timeframe.in_seconds()
+if tfSec != 60 and tfSec != 300
+    runtime.error("One Minute Scalping is designed for 1-minute or 5-minute charts only. Switch the chart timeframe to 1m or 5m.")
+
+// ============================================================
+// CONFIGURATION — all hardcoded (no user inputs)
+// ============================================================
+showLevels      = true
+showSignals     = true
+showTradeBoxes  = true
+
+// ============================================================
+// SESSION GATE & DAY RESET
+// ============================================================
+inSession = not na(time(timeframe.period, SESSION_RANGE, "America/New_York"))
+isNYOpen  = (hour == NY_OPEN_HOUR and minute == NY_OPEN_MIN)
+newDay    = ta.change(time("D")) != 0
+atr       = ta.atr(ATR_LEN)
+
+// ============================================================
+// STEP 1 — PDH / PDL from previous day's RTH (9:30-16:00 EST)
+// Daily bars on TradingView often include extended hours, which
+// produces highs/lows that don't match the visible RTH session.
+// We accumulate the running RTH high/low ourselves and snapshot
+// it at each 9:30 open → that becomes today's PDH / PDL.
+// ============================================================
+isRTH = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+
+var float curRTH_high = na
+var float curRTH_low  = na
+var float pdh = na
+var float pdl = na
+
+if isNYOpen
+    pdh         := curRTH_high
+    pdl         := curRTH_low
+    curRTH_high := high
+    curRTH_low  := low
+else if isRTH
+    curRTH_high := na(curRTH_high) ? high : math.max(curRTH_high, high)
+    curRTH_low  := na(curRTH_low)  ? low  : math.min(curRTH_low,  low)
+
+// ============================================================
+// STEP 2 — Opening Range (first NY session candle)
+// ============================================================
+var float orHigh = na
+var float orLow  = na
+if newDay
+    orHigh := na
+    orLow  := na
+if isNYOpen
+    orHigh := high
+    orLow  := low
+
+// ============================================================
+// Intraday HOD / LOD (used as alternative TP1)
+// ============================================================
+var float hod = na
+var float lod = na
+if newDay
+    hod := high
+    lod := low
+else
+    hod := math.max(nz(hod, high), high)
+    lod := math.min(nz(lod, low),  low)
+
+// ============================================================
+// STEP 3 — Break with displacement, then retest + confirmation
+// ============================================================
+var bool orHighBrokenUp  = false
+var int  orHighBreakBar  = na
+var bool orLowBrokenDown = false
+var int  orLowBreakBar   = na
+
+if newDay
+    orHighBrokenUp  := false
+    orHighBreakBar  := na
+    orLowBrokenDown := false
+    orLowBreakBar   := na
+
+// Break with displacement (close ≥ 0.5*ATR past OR)
+if not na(orHigh) and close > orHigh + DISPLACEMENT_ATR_MULT * atr and not orHighBrokenUp
+    orHighBrokenUp := true
+    orHighBreakBar := bar_index
+if not na(orLow) and close < orLow - DISPLACEMENT_ATR_MULT * atr and not orLowBrokenDown
+    orLowBrokenDown := true
+    orLowBreakBar   := bar_index
+
+// Confirmation candle: body ≥ 50% of range, closing in trade direction
+candleRange = high - low
+candleBody  = math.abs(close - open)
+strongBody  = candleRange > 0 and (candleBody / candleRange) >= CONFIRM_BODY_RATIO
+bullConfirm = strongBody and close > open
+bearConfirm = strongBody and close < open
+
+// Retest: price tags OR level within tolerance during retest window
+withinLongWindow  = orHighBrokenUp  and (bar_index - orHighBreakBar)  <= RETEST_MAX_BARS
+withinShortWindow = orLowBrokenDown and (bar_index - orLowBreakBar)   <= RETEST_MAX_BARS
+
+retestLong  = withinLongWindow  and low  <= orHigh + RETEST_TOLERANCE_ATR * atr and close > orHigh
+retestShort = withinShortWindow and high >= orLow  - RETEST_TOLERANCE_ATR * atr and close < orLow
+
+// Two-candle confirmation:
+//   Bar N-1: retest touch + close past level + strong directional body
+//   Bar N:   level still held (close past level) + strong directional body
+twoBarLongConfirm  = retestLong[1]  and bullConfirm[1] and close > orHigh and bullConfirm
+twoBarShortConfirm = retestShort[1] and bearConfirm[1] and close < orLow  and bearConfirm
+
+// Final entry: two-candle confirmation + session gate
+longSignal  = inSession and twoBarLongConfirm
+shortSignal = inSession and twoBarShortConfirm
+
+// ============================================================
+// STOP / TARGETS
+// ============================================================
+longSL   = longSignal  ? orHigh - SL_BUFFER_ATR * atr : na
+shortSL  = shortSignal ? orLow  + SL_BUFFER_ATR * atr : na
+
+longRisk  = longSignal  ? close - longSL  : na
+shortRisk = shortSignal ? shortSL - close : na
+
+// TP1 candidates (plot both — exit partial at whichever hits first)
+longTP1_RR   = longSignal  ? close + longRisk  * RR_PARTIAL : na
+shortTP1_RR  = shortSignal ? close - shortRisk * RR_PARTIAL : na
+longTP1_HOD  = longSignal  ? hod : na
+shortTP1_LOD = shortSignal ? lod : na
+
+// TP2 (trailers → PDH / PDL)
+longTP2  = longSignal  ? pdh : na
+shortTP2 = shortSignal ? pdl : na
+
+// ============================================================
+// PLOTS — Levels
+// ============================================================
+plot(showLevels ? pdh    : na, "PDH",     color=PDH_COLOR,
+     style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(showLevels ? pdl    : na, "PDL",     color=PDL_COLOR,
+     style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(showLevels ? orHigh : na, "OR High", color=ORH_COLOR,
+     style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+plot(showLevels ? orLow  : na, "OR Low",  color=ORL_COLOR,
+     style=plot.style_linebr, linewidth=LEVEL_LINE_WIDTH)
+
+// ============================================================
+// PLOTS — Signal markers
+// ============================================================
+plotshape(showSignals and longSignal,  "LONG",  shape.triangleup,
+     location.belowbar, LONG_COLOR,  text="LONG",
+     textcolor=color.white, size=size.small)
+plotshape(showSignals and shortSignal, "SHORT", shape.triangledown,
+     location.abovebar, SHORT_COLOR, text="SHORT",
+     textcolor=color.white, size=size.small)
+
+// ============================================================
+// PLOTS — SL / TP cross markers
+// ============================================================
+plot(longSL,       "Long SL",       color=color.new(color.red,    0), style=plot.style_cross, linewidth=2)
+plot(longTP1_RR,   "Long TP1 (1:2)", color=color.new(color.green,  0), style=plot.style_cross, linewidth=2)
+plot(longTP1_HOD,  "Long TP1 (HOD)", color=color.new(color.yellow, 0), style=plot.style_cross, linewidth=2)
+plot(longTP2,      "Long TP2 (PDH)", color=color.new(color.lime,   0), style=plot.style_cross, linewidth=2)
+
+plot(shortSL,      "Short SL",       color=color.new(color.red,    0), style=plot.style_cross, linewidth=2)
+plot(shortTP1_RR,  "Short TP1 (1:2)", color=color.new(color.green,  0), style=plot.style_cross, linewidth=2)
+plot(shortTP1_LOD, "Short TP1 (LOD)", color=color.new(color.yellow, 0), style=plot.style_cross, linewidth=2)
+plot(shortTP2,     "Short TP2 (PDL)", color=color.new(color.lime,   0), style=plot.style_cross, linewidth=2)
+
+// ============================================================
+// PLOTS — Trade visualization boxes (SL zone / TP1 zone)
+// ============================================================
+if showTradeBoxes and longSignal
+    box.new(bar_index, close, bar_index + RETEST_MAX_BARS, longSL,
+         border_color=color.red, bgcolor=SL_BOX_COLOR)
+    box.new(bar_index, close, bar_index + RETEST_MAX_BARS, longTP1_RR,
+         border_color=color.green, bgcolor=TP_BOX_COLOR)
+if showTradeBoxes and shortSignal
+    box.new(bar_index, shortSL, bar_index + RETEST_MAX_BARS, close,
+         border_color=color.red, bgcolor=SL_BOX_COLOR)
+    box.new(bar_index, close, bar_index + RETEST_MAX_BARS, shortTP1_RR,
+         border_color=color.green, bgcolor=TP_BOX_COLOR)
+
+// Background tint outside session (informational)
+bgcolor(not inSession ? color.new(color.gray, 95) : na, title="Outside session window")
+
+// ============================================================
+// ALERTS
+// ============================================================
+alertcondition(longSignal,  title="1m Scalp Long",
+     message="One-Minute Scalp LONG — break+retest+confirmation. SL below OR High, TP1 = 1:2 or HOD, TP2 = PDH")
+alertcondition(shortSignal, title="1m Scalp Short",
+     message="One-Minute Scalp SHORT — break+retest+confirmation. SL above OR Low, TP1 = 1:2 or LOD, TP2 = PDL")

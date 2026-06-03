@@ -29,7 +29,169 @@ class StrikeProbe:
     strike: float
     opening_premium: Optional[float]
     occ: str
-    in_range: bool
+    in_range: bool                      # dentro del Rango Óptimo (premium)
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    spread: Optional[float] = None
+    volume: float = 0.0
+    in_extended: bool = False           # dentro del Rango Extendido (Min-Max)
+    itm_depth: float = 0.0              # >0 = ITM, <0 = OTM (CALL: spot-strike; PUT: strike-spot)
+    right: str = ""
+    spread_ok: bool = True             # pasó el filtro de spread
+
+
+# --- Spread config (umbral máx por bucket de precio del subyacente) ---
+import json as _json  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+_SPREAD_CONFIG_PATH = _Path(__file__).parent / "spread_config.json"
+
+
+def _default_spread_config() -> dict:
+    return {
+        "enable_spread_filter": True,
+        "buckets": [
+            {"price_min": 0, "price_max": 100, "max_spread": 0.03},
+            {"price_min": 100, "price_max": 300, "max_spread": 0.05},
+            {"price_min": 300, "price_max": 600, "max_spread": 0.10},
+            {"price_min": 600, "price_max": 1200, "max_spread": 0.25},
+            {"price_min": 1200, "price_max": 1_000_000, "max_spread": 0.50},
+        ],
+    }
+
+
+def load_spread_config() -> dict:
+    if not _SPREAD_CONFIG_PATH.exists():
+        return _default_spread_config()
+    try:
+        with _SPREAD_CONFIG_PATH.open(encoding="utf-8") as f:
+            cfg = _json.load(f)
+        cfg.setdefault("enable_spread_filter", True)
+        cfg.setdefault("buckets", _default_spread_config()["buckets"])
+        return cfg
+    except Exception:
+        return _default_spread_config()
+
+
+def _max_spread_for_price(spot: float, cfg: dict) -> float:
+    """Máximo spread aceptable según el bucket donde cae el precio del subyacente."""
+    for b in cfg.get("buckets", []):
+        if b["price_min"] <= spot < b["price_max"]:
+            return float(b["max_spread"])
+    return float("inf")  # fuera de todos los buckets → sin filtro
+
+
+@dataclass
+class IterationResult:
+    iteration: int
+    invest_call: float
+    invest_put: float
+    premium_min: float
+    premium_max: float
+    exit_threshold_pct: float
+    exit_metric: str   # "total" | "call" | "put"
+    stop_loss_pct: float
+    start_dt: pd.Timestamp
+    end_dt: pd.Timestamp
+    exit_reason: str   # "100%_threshold" | "stop_loss" | "session_end"
+    spot_at_start: float
+    call_strike: float
+    put_strike: float
+    call_occ: str
+    put_occ: str
+    call_entry_premium: float
+    put_entry_premium: float
+    call_exit_premium: float
+    put_exit_premium: float
+    initial_total: float
+    final_total: float
+    max_total: float
+    max_total_dt: pd.Timestamp
+    min_total: float
+    min_total_dt: pd.Timestamp
+    call_probes: list = field(default_factory=list, repr=False)
+    put_probes: list = field(default_factory=list, repr=False)
+    df: pd.DataFrame = field(default_factory=pd.DataFrame, repr=False)
+    mode: str = "both"   # "both" | "call_only" | "put_only"
+    call_fallback: bool = False   # True si se eligió por cercanía (sin match en rango)
+    put_fallback: bool = False    # True si se eligió por cercanía (sin match en rango)
+    # --- Metadata de spread/NBBO de la pierna seleccionada ---
+    call_bid: Optional[float] = None
+    call_ask: Optional[float] = None
+    call_spread: Optional[float] = None
+    call_range_tier: str = ""     # "optimo" | "extended" | "fallback"
+    put_bid: Optional[float] = None
+    put_ask: Optional[float] = None
+    put_spread: Optional[float] = None
+    put_range_tier: str = ""
+    # --- Salidas INDEPENDIENTES por pierna (modo "call_or_put") ---
+    # Índice de fila (en `df`) donde cada pierna se vendió, y por qué.
+    call_exit_idx: Optional[int] = None
+    put_exit_idx: Optional[int] = None
+    call_exit_reason: str = ""   # "100%_threshold" | "stop_loss" | "session_end"
+    put_exit_reason: str = ""
+
+    @property
+    def gain_call(self) -> float:
+        if not self.call_entry_premium:
+            return 0.0
+        return self.invest_call * ((self.call_exit_premium / self.call_entry_premium) - 1.0)
+
+    @property
+    def gain_put(self) -> float:
+        if not self.put_entry_premium:
+            return 0.0
+        return self.invest_put * ((self.put_exit_premium / self.put_entry_premium) - 1.0)
+
+    @property
+    def gain_total(self) -> float:
+        return self.gain_call + self.gain_put
+
+    @property
+    def invest_total(self) -> float:
+        return self.invest_call + self.invest_put
+
+    @property
+    def pnl_pct_combined(self) -> float:
+        """% combined gain at exit (Call% + Put%)."""
+        pct_c = ((self.call_exit_premium / self.call_entry_premium) - 1.0) if self.call_entry_premium else 0.0
+        pct_p = ((self.put_exit_premium / self.put_entry_premium) - 1.0) if self.put_entry_premium else 0.0
+        return pct_c + pct_p
+
+
+@dataclass
+class MultiIterationResult:
+    ticker: str
+    date: str
+    expiry: str
+    premium_min: float
+    premium_max: float
+    time_start: time
+    time_end: time
+    invest_call_per_iter: float
+    invest_put_per_iter: float
+    exit_threshold_pct: float
+    iterations: list = field(default_factory=list)
+
+    @property
+    def n_iterations(self) -> int:
+        return len(self.iterations)
+
+    @property
+    def total_invested(self) -> float:
+        return sum(i.invest_total for i in self.iterations)
+
+    @property
+    def total_gain(self) -> float:
+        return sum(i.gain_total for i in self.iterations)
+
+    @property
+    def final_capital(self) -> float:
+        return self.total_invested + self.total_gain
+
+    @property
+    def roi_pct(self) -> float:
+        return self.total_gain / self.total_invested if self.total_invested else 0.0
 
 
 @dataclass
@@ -114,27 +276,117 @@ def _probe_premium_range(
     premium_min: float,
     premium_max: float,
     max_probe: int,
-) -> tuple[Optional[StrikeProbe], list[StrikeProbe]]:
-    """Iterate strikes (already sorted by distance to ATM) and return the first whose
-    entry premium falls in [premium_min, premium_max]. Also return all probed strikes."""
+    ext_min: Optional[float] = None,
+    ext_max: Optional[float] = None,
+    spot: Optional[float] = None,
+    spread_cfg: Optional[dict] = None,
+) -> tuple[Optional[StrikeProbe], list[StrikeProbe], str]:
+    """Selector de contrato con filtro de spread + cascada Óptimo/Extendido.
+
+    Lógica (confirmada por el usuario):
+    1. Para cada candidato (orden por cercanía a ATM, hasta max_probe) cuyo
+       premium de apertura caiga en el rango Extendido (∪ Óptimo), trae el NBBO
+       al minuto de entrada y calcula spread.
+    2. Filtra por spread <= máximo del bucket de precio del subyacente.
+    3. Cascada de selección entre los que pasan spread:
+       a. Dentro del Rango Óptimo → elige por prioridad (menor spread, mayor
+          cercanía a ITM, mayor volumen). tier="optimo"
+       b. Si ninguno: dentro del Rango Extendido → misma prioridad. tier="extended"
+       c. Si ninguno pasa spread en ningún rango: el premium más cercano al
+          Óptimo (fallback histórico). tier="fallback"
+    Devuelve (probe_elegido, todos_los_probes, tier). tier="" si no hubo nada.
+
+    Retro-compat: ext_min/ext_max default al rango óptimo; si spread_cfg es None
+    o el filtro está deshabilitado, se omite el filtro de spread.
+    """
+    if ext_min is None:
+        ext_min = premium_min
+    if ext_max is None:
+        ext_max = premium_max
+    if spread_cfg is None:
+        spread_cfg = load_spread_config()
+
+    spread_enabled = bool(spread_cfg.get("enable_spread_filter", True))
+    max_spread = _max_spread_for_price(spot, spread_cfg) if spot is not None else float("inf")
+    # Rango de fetch de quotes = unión de óptimo y extendido (eficiencia: solo
+    # pedimos NBBO de candidatos con premium plausible).
+    fetch_lo = min(premium_min, ext_min)
+    fetch_hi = max(premium_max, ext_max)
+
     probes: list[StrikeProbe] = []
     for i, (_, row) in enumerate(candidates.iterrows()):
         if i >= max_probe:
             break
         strike = float(row["strike_price"])
-        occ = PolygonAdapter.build_occ(ticker, date, right, strike)
+        # Usar el ticker real del chain — índices tienen OCC root distinto.
+        occ = row.get("ticker") or PolygonAdapter.build_occ(ticker, date, right, strike)
         bars = downloader.option(occ, date)
         bars_in = bars[(bars["timestamp"] >= start_ts) & (bars["timestamp"] <= end_ts)] if not bars.empty else bars
         if bars_in.empty:
-            probes.append(StrikeProbe(strike=strike, opening_premium=None, occ=occ, in_range=False))
+            probes.append(StrikeProbe(strike=strike, opening_premium=None, occ=occ,
+                                      in_range=False, right=right))
             continue
         opening = float(bars_in.iloc[0]["open"])
-        in_range = premium_min <= opening <= premium_max
-        probe = StrikeProbe(strike=strike, opening_premium=opening, occ=occ, in_range=in_range)
-        probes.append(probe)
-        if in_range:
-            return probe, probes
-    return None, probes
+        volume = float(bars_in.iloc[0].get("volume", 0) or 0)
+        in_opt = premium_min <= opening <= premium_max
+        in_ext = ext_min <= opening <= ext_max
+        itm_depth = (spot - strike) if (spot is not None and right == "C") else \
+                    ((strike - spot) if (spot is not None and right == "P") else 0.0)
+
+        bid = ask = spread = None
+        spread_ok = True
+        # Solo pedimos quote si el premium está en el rango de fetch (óptimo∪ext)
+        # y el filtro de spread está activo.
+        if spread_enabled and (fetch_lo <= opening <= fetch_hi):
+            q = downloader.option_quote(occ, date, start_ts)
+            bid, ask, spread = q.get("bid"), q.get("ask"), q.get("spread")
+            spread_ok = (spread is not None) and (spread <= max_spread)
+
+        probes.append(StrikeProbe(
+            strike=strike, opening_premium=opening, occ=occ,
+            in_range=in_opt, bid=bid, ask=ask, spread=spread, volume=volume,
+            in_extended=in_ext, itm_depth=itm_depth, right=right, spread_ok=spread_ok,
+        ))
+
+    valid = [p for p in probes if p.opening_premium is not None]
+    if not valid:
+        return None, probes, ""
+
+    def _sort_key(p: StrikeProbe):
+        # Prioridad: (1) menor spread (redondeado a centavo), (2) más cercano a
+        # ITM, (3) mayor volumen.
+        sp = round(p.spread, 2) if p.spread is not None else 9.99
+        if p.itm_depth >= 0:
+            itm_rank = p.itm_depth           # ITM: menor profundidad = "1-ITM"
+        else:
+            itm_rank = abs(p.itm_depth) + 1e6  # OTM: después de todos los ITM
+        return (sp, itm_rank, -(p.volume or 0.0))
+
+    def _passes_spread(p: StrikeProbe) -> bool:
+        if not spread_enabled:
+            return True
+        return p.spread_ok
+
+    # a. Óptimo + pasa spread
+    cand_opt = [p for p in valid if p.in_range and _passes_spread(p)]
+    if cand_opt:
+        return min(cand_opt, key=_sort_key), probes, "optimo"
+
+    # b. Extendido + pasa spread
+    cand_ext = [p for p in valid if p.in_extended and _passes_spread(p)]
+    if cand_ext:
+        return min(cand_ext, key=_sort_key), probes, "extended"
+
+    # c. Fallback: nadie pasó spread dentro de rango → premium más cercano al óptimo.
+    def _dist_to_range(v: float) -> float:
+        if v < premium_min:
+            return premium_min - v
+        if v > premium_max:
+            return v - premium_max
+        return 0.0
+
+    best = min(valid, key=lambda p: _dist_to_range(p.opening_premium))
+    return best, probes, "fallback"
 
 
 def replay_session(
@@ -193,14 +445,14 @@ def replay_session(
         ["_d", "strike_price"]
     )
 
-    call_pick, call_probes = _probe_premium_range(
+    call_pick, call_probes, _call_fb = _probe_premium_range(
         downloader, ticker, date, calls, "C", start_ts, end_ts,
         premium_min, premium_max, max_strikes_to_probe,
     )
     if call_pick is None:
         raise NoMatchError("CALL", call_probes, premium_min, premium_max)
 
-    put_pick, put_probes = _probe_premium_range(
+    put_pick, put_probes, _put_fb = _probe_premium_range(
         downloader, ticker, date, puts, "P", start_ts, end_ts,
         premium_min, premium_max, max_strikes_to_probe,
     )
@@ -246,6 +498,465 @@ def replay_session(
         call_probes=call_probes,
         put_probes=put_probes,
         df=merged,
+    )
+
+
+def replay_session_loop(
+    downloader: Downloader,
+    ticker: str,
+    date: str,
+    premium_min: float,
+    premium_max: float,
+    invest_call: float,
+    invest_put: float,
+    time_start: time = DEFAULT_TIME_START,
+    time_end: time = DEFAULT_TIME_END,
+    exit_threshold_pct: float = 1.0,
+    max_iterations: int = 30,
+    max_strikes_to_probe: int = MAX_STRIKES_TO_PROBE,
+    check_step_min: int = 1,
+) -> MultiIterationResult:
+    """Run an iterating replay: when combined % exceeds `exit_threshold_pct`,
+    exit the position, re-enter the same (invest_call, invest_put) into a new
+    CALL+PUT 0 DTE pair whose opening premium at that minute is in range and
+    is closest to ATM. Repeat until session end or no matching contracts."""
+    if premium_min >= premium_max:
+        raise ValueError(f"premium_min ({premium_min}) must be < premium_max ({premium_max})")
+    if premium_min < 0:
+        raise ValueError("premium_min cannot be negative")
+
+    ticker = ticker.upper().strip()
+    tz = "America/New_York"
+    day_start_ts = pd.Timestamp.combine(pd.Timestamp(date).date(), time_start).tz_localize(tz)
+    day_end_ts = pd.Timestamp.combine(pd.Timestamp(date).date(), time_end).tz_localize(tz)
+
+    under_full = downloader.underlying(ticker, date)
+    if under_full.empty:
+        raise ValueError(f"No underlying data for {ticker} on {date} (market closed?)")
+
+    nearest = downloader.nearest_expiry(ticker, date)
+    if nearest is None:
+        raise ValueError(f"No option expirations available for {ticker} on/after {date}")
+    if nearest != date:
+        raise ValueError(
+            f"No 0 DTE option for {ticker} on {date}. Nearest expiry is {nearest}. "
+            f"This ticker likely does not have daily expirations on this date."
+        )
+
+    chain = downloader.chain(ticker, date)
+    if chain.empty:
+        raise ValueError(f"Empty 0 DTE chain for {ticker} on {date}")
+
+    calls_chain = chain[chain["contract_type"].str.lower() == "call"].copy()
+    puts_chain = chain[chain["contract_type"].str.lower() == "put"].copy()
+    if calls_chain.empty or puts_chain.empty:
+        raise ValueError(f"Chain missing CALL or PUT side for {ticker} on {date}")
+
+    iterations: list[IterationResult] = []
+    current_start_ts = day_start_ts
+
+    while current_start_ts < day_end_ts and len(iterations) < max_iterations:
+        try:
+            it = _run_one_iteration(
+                downloader=downloader,
+                ticker=ticker,
+                date=date,
+                under_full=under_full,
+                calls_chain=calls_chain,
+                puts_chain=puts_chain,
+                premium_min=premium_min,
+                premium_max=premium_max,
+                invest_call=invest_call,
+                invest_put=invest_put,
+                start_ts=current_start_ts,
+                end_ts=day_end_ts,
+                exit_threshold_pct=exit_threshold_pct,
+                iteration_idx=len(iterations) + 1,
+                max_strikes_to_probe=max_strikes_to_probe,
+                check_step_min=check_step_min,
+            )
+        except (NoMatchError, ValueError):
+            break
+
+        iterations.append(it)
+
+        if it.exit_reason != "100%_threshold":
+            break
+        current_start_ts = it.end_dt + pd.Timedelta(minutes=1)
+
+    return MultiIterationResult(
+        ticker=ticker,
+        date=date,
+        expiry=date,
+        premium_min=premium_min,
+        premium_max=premium_max,
+        time_start=time_start,
+        time_end=time_end,
+        invest_call_per_iter=invest_call,
+        invest_put_per_iter=invest_put,
+        exit_threshold_pct=exit_threshold_pct,
+        iterations=iterations,
+    )
+
+
+def validate_0dte_session(downloader: Downloader, ticker: str, date: str) -> str:
+    """Verify 0 DTE exists for ticker/date. Returns expiry (== date) or raises."""
+    ticker = ticker.upper().strip()
+    # Fast path: si la chain ya está cacheada en Parquet, 0 DTE existe seguro.
+    # Evitamos una llamada innecesaria a la API de Polygon.
+    chain_path = downloader.data_dir / "chain" / f"{ticker}_{date}.parquet"
+    if chain_path.exists():
+        return date
+    nearest = downloader.nearest_expiry(ticker, date)
+    if nearest is None:
+        raise ValueError(f"No option expirations available for {ticker} on/after {date}")
+    if nearest != date:
+        raise ValueError(
+            f"No 0 DTE option for {ticker} on {date}. Nearest expiry is {nearest}. "
+            f"This ticker likely does not have daily expirations on this date."
+        )
+    return nearest
+
+
+def run_next_iteration(
+    downloader: Downloader,
+    ticker: str,
+    date: str,
+    premium_min: float,
+    premium_max: float,
+    invest_call: float,
+    invest_put: float,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    exit_threshold_pct: float = 1.0,
+    exit_metric: str = "total",
+    stop_loss_pct: float = -1.0,
+    iteration_idx: int = 1,
+    max_strikes_to_probe: int = MAX_STRIKES_TO_PROBE,
+    mode: str = "both",   # "both" | "call_only" | "put_only" | "call_or_put"
+    ext_min: Optional[float] = None,
+    ext_max: Optional[float] = None,
+    check_step_min: int = 1,
+    call_exit_threshold_pct: float = 0.10,
+    call_stop_loss_pct: float = -1.0,
+    put_exit_threshold_pct: float = 0.10,
+    put_stop_loss_pct: float = -1.0,
+) -> IterationResult:
+    """Run a single iteration starting at `start_ts`. Public wrapper that loads
+    underlying + chain from the downloader cache and then invokes the iteration
+    engine. Use for manual mode (one iteration per UI click)."""
+    if premium_min >= premium_max:
+        raise ValueError(f"premium_min ({premium_min}) must be < premium_max ({premium_max})")
+    if premium_min < 0:
+        raise ValueError("premium_min cannot be negative")
+
+    ticker = ticker.upper().strip()
+    under_full = downloader.underlying(ticker, date)
+    if under_full.empty:
+        raise ValueError(f"No underlying data for {ticker} on {date}")
+
+    chain = downloader.chain(ticker, date)
+    if chain.empty:
+        raise ValueError(f"Empty 0 DTE chain for {ticker} on {date}")
+
+    calls_chain = chain[chain["contract_type"].str.lower() == "call"].copy()
+    puts_chain = chain[chain["contract_type"].str.lower() == "put"].copy()
+    if calls_chain.empty or puts_chain.empty:
+        raise ValueError(f"Chain missing CALL or PUT side for {ticker} on {date}")
+
+    return _run_one_iteration(
+        downloader=downloader,
+        ticker=ticker,
+        date=date,
+        under_full=under_full,
+        calls_chain=calls_chain,
+        puts_chain=puts_chain,
+        premium_min=premium_min,
+        premium_max=premium_max,
+        invest_call=invest_call,
+        invest_put=invest_put,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        exit_threshold_pct=exit_threshold_pct,
+        exit_metric=exit_metric,
+        stop_loss_pct=stop_loss_pct,
+        iteration_idx=iteration_idx,
+        max_strikes_to_probe=max_strikes_to_probe,
+        mode=mode,
+        ext_min=ext_min,
+        ext_max=ext_max,
+        check_step_min=check_step_min,
+        call_exit_threshold_pct=call_exit_threshold_pct,
+        call_stop_loss_pct=call_stop_loss_pct,
+        put_exit_threshold_pct=put_exit_threshold_pct,
+        put_stop_loss_pct=put_stop_loss_pct,
+    )
+
+
+def _run_one_iteration(
+    downloader: Downloader,
+    ticker: str,
+    date: str,
+    under_full: pd.DataFrame,
+    calls_chain: pd.DataFrame,
+    puts_chain: pd.DataFrame,
+    premium_min: float,
+    premium_max: float,
+    invest_call: float,
+    invest_put: float,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    exit_threshold_pct: float,
+    iteration_idx: int,
+    max_strikes_to_probe: int,
+    exit_metric: str = "total",
+    stop_loss_pct: float = -1.0,
+    mode: str = "both",
+    ext_min: Optional[float] = None,
+    ext_max: Optional[float] = None,
+    check_step_min: int = 1,
+    call_exit_threshold_pct: float = 0.10,
+    call_stop_loss_pct: float = -1.0,
+    put_exit_threshold_pct: float = 0.10,
+    put_stop_loss_pct: float = -1.0,
+) -> IterationResult:
+    # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
+    # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
+    # diluiría el ROI: ej. call_only con invest_put=10k haría ROI = pct_call / 2).
+    if mode == "call_only":
+        invest_put = 0.0
+    elif mode == "put_only":
+        invest_call = 0.0
+
+    under = under_full[
+        (under_full["timestamp"] >= start_ts) & (under_full["timestamp"] <= end_ts)
+    ].reset_index(drop=True)
+    if under.empty:
+        raise ValueError(f"No bars after {start_ts}")
+    spot_at_start = float(under.iloc[0]["open"])
+
+    calls_sorted = calls_chain.assign(
+        _d=(calls_chain["strike_price"] - spot_at_start).abs()
+    ).sort_values(["_d", "strike_price"])
+    puts_sorted = puts_chain.assign(
+        _d=(puts_chain["strike_price"] - spot_at_start).abs()
+    ).sort_values(["_d", "strike_price"])
+
+    spread_cfg = load_spread_config()
+
+    # Probing CALL (skip si mode == "put_only")
+    if mode != "put_only":
+        call_pick, call_probes, call_tier = _probe_premium_range(
+            downloader, ticker, date, calls_sorted, "C", start_ts, end_ts,
+            premium_min, premium_max, max_strikes_to_probe,
+            ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
+        )
+        if call_pick is None:
+            raise NoMatchError("CALL", call_probes, premium_min, premium_max)
+        call_fallback = (call_tier == "fallback")
+        df_c = downloader.option(call_pick.occ, date)
+    else:
+        call_pick = StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False)
+        call_probes = []
+        call_fallback = False
+        call_tier = ""
+        df_c = pd.DataFrame({
+            "timestamp": under["timestamp"],
+            "open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0, "volume": 0,
+        })
+
+    # Probing PUT (skip si mode == "call_only")
+    if mode != "call_only":
+        put_pick, put_probes, put_tier = _probe_premium_range(
+            downloader, ticker, date, puts_sorted, "P", start_ts, end_ts,
+            premium_min, premium_max, max_strikes_to_probe,
+            ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
+        )
+        if put_pick is None:
+            raise NoMatchError("PUT", put_probes, premium_min, premium_max)
+        put_fallback = (put_tier == "fallback")
+        df_p = downloader.option(put_pick.occ, date)
+    else:
+        put_pick = StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False)
+        put_probes = []
+        put_fallback = False
+        put_tier = ""
+        df_p = pd.DataFrame({
+            "timestamp": under["timestamp"],
+            "open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0, "volume": 0,
+        })
+
+    merged = _merge_minute(under, df_c, df_p, start_ts, end_ts)
+    if merged.empty:
+        raise ValueError("No overlapping minute bars between underlying, CALL and PUT")
+
+    # "Sell verification (min)": el ROI se verifica cada `check_step_min` minutos
+    # (no cada minuto), simulando que el API se consulta a ese período. Subsampleamos
+    # el minuto-a-minuto a una grilla absoluta desde la entrada (offset 0, N, 2N, …).
+    # La fila 0 (entrada) siempre se conserva. N=1 => comportamiento original.
+    _step = int(check_step_min) if check_step_min else 1
+    if _step > 1 and len(merged) > 1:
+        _t0 = merged["timestamp"].iloc[0]
+        _mins = ((merged["timestamp"] - _t0).dt.total_seconds() / 60.0).round().astype(int)
+        merged = merged[_mins % _step == 0].reset_index(drop=True)
+
+    # Cálculo de % por leg. Si la pierna fue "skip" (opening_premium == 0),
+    # forzamos pct = 0 para evitar división por cero y para que no contamine
+    # el total ni los triggers.
+    if call_pick.opening_premium > 0:
+        pct_call = (merged["call_px"] - call_pick.opening_premium) / call_pick.opening_premium
+    else:
+        pct_call = pd.Series(0.0, index=merged.index)
+    if put_pick.opening_premium > 0:
+        pct_put = (merged["put_px"] - put_pick.opening_premium) / put_pick.opening_premium
+    else:
+        pct_put = pd.Series(0.0, index=merged.index)
+    # pct_total = ROI real sobre el capital invertido (ponderado por inversión por leg).
+    _total_invest = invest_call + invest_put
+    if _total_invest > 0:
+        pct_total = (invest_call * pct_call + invest_put * pct_put) / _total_invest
+    else:
+        pct_total = pd.Series(0.0, index=merged.index)
+    # Defaults de metadata de salida por pierna (solo se llenan en "call_or_put").
+    call_exit_idx: Optional[int] = None
+    put_exit_idx: Optional[int] = None
+    call_exit_reason = ""
+    put_exit_reason = ""
+
+    def _first_pos(mask) -> Optional[int]:
+        return int(mask.values.argmax()) if bool(mask.any()) else None
+
+    if mode == "call_or_put":
+        # ----- Salidas INDEPENDIENTES por pierna -----
+        # Cada pierna se "vende" en la primera fila donde alcanza SU Umbral de ROI
+        # (profit) o SU Stop loss. La iteración corre hasta que AMBAS salgan; si al
+        # menos una no sale, corre hasta el final del día (EOD) y esa pierna se
+        # liquida ahí.
+        def _leg_exit(prof_pos, loss_pos):
+            if prof_pos is not None and (loss_pos is None or prof_pos <= loss_pos):
+                return prof_pos, "100%_threshold"
+            if loss_pos is not None:
+                return loss_pos, "stop_loss"
+            return None, "session_end"
+
+        c_pos, call_exit_reason = _leg_exit(
+            _first_pos(pct_call >= call_exit_threshold_pct),
+            _first_pos(pct_call <= call_stop_loss_pct),
+        )
+        p_pos, put_exit_reason = _leg_exit(
+            _first_pos(pct_put >= put_exit_threshold_pct),
+            _first_pos(pct_put <= put_stop_loss_pct),
+        )
+
+        last_pos = len(merged) - 1
+        both_exited = (c_pos is not None) and (p_pos is not None)
+        end_pos = max(c_pos, p_pos) if both_exited else last_pos
+        # Pierna que no salió: se liquida a EOD (última fila del tramo).
+        if c_pos is None:
+            c_pos = end_pos
+        if p_pos is None:
+            p_pos = end_pos
+
+        # Truncar a end_pos y CONGELAR cada pierna desde su salida (ya vendida:
+        # su precio queda fijo en el de la fila de salida).
+        merged = merged.iloc[: end_pos + 1].copy()
+        if c_pos < end_pos:
+            merged.loc[c_pos + 1:, "call_px"] = float(merged.loc[c_pos, "call_px"])
+        if p_pos < end_pos:
+            merged.loc[p_pos + 1:, "put_px"] = float(merged.loc[p_pos, "put_px"])
+        merged["total"] = merged["call_px"] + merged["put_px"]
+        merged = merged.reset_index(drop=True)
+
+        call_exit_idx, put_exit_idx = int(c_pos), int(p_pos)
+        # exit_reason global (para el loop/cartel): profit si ambas por umbral,
+        # stop si alguna cortó por stop, sino fin de sesión.
+        if call_exit_reason == "100%_threshold" and put_exit_reason == "100%_threshold":
+            exit_reason = "100%_threshold"
+        elif "stop_loss" in (call_exit_reason, put_exit_reason):
+            exit_reason = "stop_loss"
+        else:
+            exit_reason = "session_end"
+    else:
+        # ----- Salida combinada / single-leg (modos existentes) -----
+        if exit_metric == "call":
+            profit_mask = pct_call >= exit_threshold_pct
+        elif exit_metric == "put":
+            profit_mask = pct_put >= exit_threshold_pct
+        else:
+            profit_mask = pct_total >= exit_threshold_pct
+
+        loss_mask = pct_total <= stop_loss_pct
+        profit_pos = _first_pos(profit_mask)
+        loss_pos = _first_pos(loss_mask)
+
+        if profit_pos is not None and (loss_pos is None or profit_pos <= loss_pos):
+            trigger_pos = profit_pos
+            exit_reason = "100%_threshold"
+        elif loss_pos is not None:
+            trigger_pos = loss_pos
+            exit_reason = "stop_loss"
+        else:
+            trigger_pos = None
+            exit_reason = "session_end"
+
+        if trigger_pos is not None:
+            merged = merged.iloc[: trigger_pos + 1].reset_index(drop=True)
+        else:
+            merged = merged.reset_index(drop=True)
+
+    merged["call_strike"] = call_pick.strike
+    merged["put_strike"] = put_pick.strike
+    initial_total = float(call_pick.opening_premium + put_pick.opening_premium)
+    merged["pnl_acum"] = merged["total"] - initial_total
+
+    idx_max = int(merged["total"].idxmax())
+    idx_min = int(merged["total"].idxmin())
+
+    return IterationResult(
+        iteration=iteration_idx,
+        invest_call=invest_call,
+        invest_put=invest_put,
+        premium_min=premium_min,
+        premium_max=premium_max,
+        exit_threshold_pct=exit_threshold_pct,
+        exit_metric=exit_metric,
+        stop_loss_pct=stop_loss_pct,
+        start_dt=merged.iloc[0]["timestamp"],
+        end_dt=merged.iloc[-1]["timestamp"],
+        exit_reason=exit_reason,
+        spot_at_start=spot_at_start,
+        call_strike=call_pick.strike,
+        put_strike=put_pick.strike,
+        call_occ=call_pick.occ,
+        put_occ=put_pick.occ,
+        call_entry_premium=float(call_pick.opening_premium),
+        put_entry_premium=float(put_pick.opening_premium),
+        call_exit_premium=float(merged.iloc[-1]["call_px"]),
+        put_exit_premium=float(merged.iloc[-1]["put_px"]),
+        initial_total=initial_total,
+        final_total=float(merged.iloc[-1]["total"]),
+        max_total=float(merged.loc[idx_max, "total"]),
+        max_total_dt=merged.loc[idx_max, "timestamp"],
+        min_total=float(merged.loc[idx_min, "total"]),
+        min_total_dt=merged.loc[idx_min, "timestamp"],
+        call_probes=call_probes,
+        put_probes=put_probes,
+        df=merged,
+        mode=mode,
+        call_fallback=call_fallback,
+        put_fallback=put_fallback,
+        call_bid=getattr(call_pick, "bid", None),
+        call_ask=getattr(call_pick, "ask", None),
+        call_spread=getattr(call_pick, "spread", None),
+        call_range_tier=call_tier,
+        put_bid=getattr(put_pick, "bid", None),
+        put_ask=getattr(put_pick, "ask", None),
+        put_spread=getattr(put_pick, "spread", None),
+        put_range_tier=put_tier,
+        call_exit_idx=call_exit_idx,
+        put_exit_idx=put_exit_idx,
+        call_exit_reason=call_exit_reason,
+        put_exit_reason=put_exit_reason,
     )
 
 
