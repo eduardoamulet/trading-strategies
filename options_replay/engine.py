@@ -827,55 +827,27 @@ def _run_one_iteration(
         return int(mask.values.argmax()) if bool(mask.any()) else None
 
     if mode == "call_or_put":
-        # ----- Salidas INDEPENDIENTES por pierna -----
-        # Cada pierna se "vende" en la primera fila donde alcanza SU Umbral de ROI
-        # (profit) o SU Stop loss. La iteración corre hasta que AMBAS salgan; si al
-        # menos una no sale, corre hasta el final del día (EOD) y esa pierna se
-        # liquida ahí.
-        def _leg_exit(prof_pos, loss_pos):
-            if prof_pos is not None and (loss_pos is None or prof_pos <= loss_pos):
-                return prof_pos, "100%_threshold"
-            if loss_pos is not None:
-                return loss_pos, "stop_loss"
-            return None, "session_end"
-
-        c_pos, call_exit_reason = _leg_exit(
-            _first_pos(pct_call >= call_exit_threshold_pct),
-            _first_pos(pct_call <= call_stop_loss_pct),
-        )
-        p_pos, put_exit_reason = _leg_exit(
-            _first_pos(pct_put >= put_exit_threshold_pct),
-            _first_pos(pct_put <= put_stop_loss_pct),
-        )
-
-        last_pos = len(merged) - 1
-        both_exited = (c_pos is not None) and (p_pos is not None)
-        end_pos = max(c_pos, p_pos) if both_exited else last_pos
-        # Pierna que no salió: se liquida a EOD (última fila del tramo).
-        if c_pos is None:
-            c_pos = end_pos
-        if p_pos is None:
-            p_pos = end_pos
-
-        # Truncar a end_pos y CONGELAR cada pierna desde su salida (ya vendida:
-        # su precio queda fijo en el de la fila de salida).
-        merged = merged.iloc[: end_pos + 1].copy()
-        if c_pos < end_pos:
-            merged.loc[c_pos + 1:, "call_px"] = float(merged.loc[c_pos, "call_px"])
-        if p_pos < end_pos:
-            merged.loc[p_pos + 1:, "put_px"] = float(merged.loc[p_pos, "put_px"])
-        merged["total"] = merged["call_px"] + merged["put_px"]
-        merged = merged.reset_index(drop=True)
-
-        call_exit_idx, put_exit_idx = int(c_pos), int(p_pos)
-        # exit_reason global (para el loop/cartel): profit si ambas por umbral,
-        # stop si alguna cortó por stop, sino fin de sesión.
-        if call_exit_reason == "100%_threshold" and put_exit_reason == "100%_threshold":
+        # ----- Salida COMBINADA al +100% -----
+        # Se compran ambas piernas y se VENDEN LAS DOS en la primera fila donde
+        # CUALQUIERA de las dos alcanza +100% (la prima se duplica). NO usa Umbral
+        # de ROI por pierna ni Stop loss. Si ninguna llega a +100%, ambas se cierran
+        # al final del día (EOD). Los parámetros *_threshold/*_stop_loss se ignoran.
+        TARGET = 1.0  # +100%
+        trigger_pos = _first_pos((pct_call >= TARGET) | (pct_put >= TARGET))
+        if trigger_pos is not None:
             exit_reason = "100%_threshold"
-        elif "stop_loss" in (call_exit_reason, put_exit_reason):
-            exit_reason = "stop_loss"
+            # Marca verde la(s) celda(s) de la pierna que alcanzó +100% en la fila
+            # de salida (puede ser una o ambas; la otra se vende igual pero sin marca).
+            if bool(pct_call.iloc[trigger_pos] >= TARGET):
+                call_exit_idx, call_exit_reason = trigger_pos, "100%_threshold"
+            if bool(pct_put.iloc[trigger_pos] >= TARGET):
+                put_exit_idx, put_exit_reason = trigger_pos, "100%_threshold"
+            merged = merged.iloc[: trigger_pos + 1].reset_index(drop=True)
         else:
+            # Ninguna llegó a +100% → ambas se cierran a EOD (sin marca verde).
             exit_reason = "session_end"
+            call_exit_reason = put_exit_reason = "session_end"
+            merged = merged.reset_index(drop=True)
     else:
         # ----- Salida combinada / single-leg (modos existentes) -----
         if exit_metric == "call":

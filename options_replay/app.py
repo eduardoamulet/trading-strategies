@@ -1376,28 +1376,19 @@ with st.sidebar.container(border=True):
         exit_metric = "total"
 
         if is_call_or_put:
-            # Salidas INDEPENDIENTES → Umbral de ROI + Stop loss POR PIERNA.
-            cc1, cc2 = st.columns(2)
-            call_exit_threshold_pct = cc1.number_input(
-                "Umbral de ROI (%) de CALL", key="call_roi_pct",
-                step=5.0, min_value=1.0,
-            ) / 100.0
-            call_stop_loss_pct = cc2.number_input(
-                "Stop loss (%) de CALL", key="call_stop_pct",
-                step=10.0, max_value=0.0, format="%.2f",
-            ) / 100.0
-            cp1, cp2 = st.columns(2)
-            put_exit_threshold_pct = cp1.number_input(
-                "Umbral de ROI (%) de PUT", key="put_roi_pct",
-                step=5.0, min_value=1.0,
-            ) / 100.0
-            put_stop_loss_pct = cp2.number_input(
-                "Stop loss (%) de PUT", key="put_stop_pct",
-                step=10.0, max_value=0.0, format="%.2f",
-            ) / 100.0
-            # La columna "ROI (%)" (combinada) usa estos como referencia de estilo.
-            exit_threshold_pct = call_exit_threshold_pct
-            stop_loss_pct = min(call_stop_loss_pct, put_stop_loss_pct)
+            # CALL o PUT: salida COMBINADA al +100%. Se venden AMBAS piernas cuando
+            # CUALQUIERA alcanza +100% (se duplica). NO usa Umbral de ROI ni Stop
+            # loss — por eso no se muestran esos inputs. Termina al +100% o al cierre.
+            st.info(
+                "🎯 **CALL o PUT** — se compran ambas piernas y se **venden las dos** "
+                "en cuanto **cualquiera alcanza +100%** (se duplica). No depende de "
+                "Umbral de ROI ni Stop loss. Termina al +100% o al **cierre del día**."
+            )
+            # Valores fijos (el engine ignora umbral/stop en este modo).
+            exit_threshold_pct = 1.0          # +100% (solo referencia de estilo)
+            stop_loss_pct = -1.0
+            call_exit_threshold_pct = put_exit_threshold_pct = 1.0
+            call_stop_loss_pct = put_stop_loss_pct = -1.0
         else:
             c7, c8 = st.columns(2)
             exit_threshold_pct = c7.number_input(
