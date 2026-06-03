@@ -1376,10 +1376,13 @@ with st.sidebar.container(border=True):
                        ("exit_plus_pct", 50.0)):
             if _k not in st.session_state:
                 st.session_state[_k] = _v
+        if "exit_plus_time" not in st.session_state:
+            st.session_state["exit_plus_time"] = time_cls(15, 30)
 
         # El cierre por umbral siempre se evalúa sobre el ROI (%) total.
         exit_metric = "total"
-        exit_plus_threshold_pct = 0.50  # default; solo se usa en "CALL o PUT (plus)"
+        exit_plus_threshold_pct = 0.50  # default; solo en "CALL o PUT (plus)"
+        exit_plus_time = None           # default; solo en "CALL o PUT (plus)"
 
         if is_call_or_put:
             # CALL o PUT: salida COMBINADA al +100%. Se venden AMBAS piernas cuando
@@ -1402,14 +1405,21 @@ with st.sidebar.container(border=True):
                 "🎯 **CALL o PUT (plus)** — la **1ª pierna** que alcanza el **Umbral de "
                 "salida (%)** se vende y banca su ganancia. La **otra** se vende cuando, "
                 "sumando lo bancado + su valor, se **recupera la inversión total** "
-                "(CALL + PUT). Si no se cumple, cierran al **fin del día**."
+                "(CALL + PUT). Si no se cumple antes de la **Hora de salida**, ambas se "
+                "venden a esa hora."
             )
-            cps, _cps2 = st.columns(2)
+            cps, chs = st.columns(2)
             exit_plus_threshold_pct = cps.number_input(
                 "Umbral de salida (%)", key="exit_plus_pct",
                 step=5.0, min_value=1.0, format="%.2f",
                 help="ROI% al que se vende la PRIMERA pierna (la que llegue primero al umbral).",
             ) / 100.0
+            exit_plus_time = chs.time_input(
+                "Hora de salida", key="exit_plus_time", step=300,
+                help=("Hora MÁXIMA de venta de AMBAS piernas. Si la estrategia no se "
+                      "cumple antes, se liquidan a esta hora en vez de esperar al "
+                      "cierre (16:00)."),
+            )
             exit_threshold_pct = exit_plus_threshold_pct   # referencia de estilo
             stop_loss_pct = -1.0
             call_exit_threshold_pct = put_exit_threshold_pct = exit_plus_threshold_pct
@@ -1524,6 +1534,7 @@ if btn_iniciar:
                         put_exit_threshold_pct=float(put_exit_threshold_pct),
                         put_stop_loss_pct=float(put_stop_loss_pct),
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
+                        exit_plus_time=exit_plus_time,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1602,6 +1613,7 @@ if btn_iniciar:
                         put_exit_threshold_pct=float(put_exit_threshold_pct),
                         put_stop_loss_pct=float(put_stop_loss_pct),
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
+                        exit_plus_time=exit_plus_time,
                     )
                     day_runs.append({
                         "date": date_str,
@@ -1695,6 +1707,7 @@ elif btn_proxima:
                         put_exit_threshold_pct=float(put_exit_threshold_pct),
                         put_stop_loss_pct=float(put_stop_loss_pct),
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
+                        exit_plus_time=exit_plus_time,
                     )
                 except NoMatchError as e:
                     st.error(str(e))

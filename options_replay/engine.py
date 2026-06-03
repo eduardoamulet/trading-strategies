@@ -642,6 +642,7 @@ def run_next_iteration(
     put_exit_threshold_pct: float = 0.10,
     put_stop_loss_pct: float = -1.0,
     exit_plus_threshold_pct: float = 0.50,
+    exit_plus_time: Optional[time] = None,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -692,6 +693,7 @@ def run_next_iteration(
         put_exit_threshold_pct=put_exit_threshold_pct,
         put_stop_loss_pct=put_stop_loss_pct,
         exit_plus_threshold_pct=exit_plus_threshold_pct,
+        exit_plus_time=exit_plus_time,
     )
 
 
@@ -722,6 +724,7 @@ def _run_one_iteration(
     put_exit_threshold_pct: float = 0.10,
     put_stop_loss_pct: float = -1.0,
     exit_plus_threshold_pct: float = 0.50,
+    exit_plus_time: Optional[time] = None,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -802,6 +805,19 @@ def _run_one_iteration(
         _t0 = merged["timestamp"].iloc[0]
         _mins = ((merged["timestamp"] - _t0).dt.total_seconds() / 60.0).round().astype(int)
         merged = merged[_mins % _step == 0].reset_index(drop=True)
+
+    # "Hora de salida" (solo modo "CALL o PUT (plus)"): ambas piernas se venden a
+    # MÁS TARDAR a esta hora, en vez de al cierre (16:00). Se capea la ventana acá:
+    # si la condición de la estrategia no se cumple antes, la última fila será esta
+    # hora y ambas piernas se liquidan ahí.
+    if mode == "call_or_put_plus" and exit_plus_time is not None and not merged.empty:
+        _hs_ts = merged["timestamp"].iloc[0].normalize() + pd.Timedelta(
+            hours=int(exit_plus_time.hour), minutes=int(exit_plus_time.minute))
+        merged = merged[merged["timestamp"] <= _hs_ts].reset_index(drop=True)
+        if merged.empty:
+            raise ValueError(
+                f"La 'Hora de salida' ({exit_plus_time:%H:%M}) es anterior a la hora de orden."
+            )
 
     # Cálculo de % por leg. Si la pierna fue "skip" (opening_premium == 0),
     # forzamos pct = 0 para evitar división por cero y para que no contamine
