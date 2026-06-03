@@ -1589,11 +1589,13 @@ if btn_iniciar:
                 "put_alloc": _b_put_alloc, "roi_threshold": _b_roi_pct_int,
             }
 
+            _skipped_no0dte = 0
             for i, d in enumerate(day_list):
                 date_str = d.isoformat()
                 day_end_ts = _to_ts(date_str, t_end)
                 order_ts = _to_ts(date_str, hora_orden)
 
+                _was_skip = False
                 try:
                     expiry = validate_0dte_session(dl, ticker, date_str)
                     it = run_next_iteration(
@@ -1632,6 +1634,20 @@ if btn_iniciar:
                         "iteration": None, "error": f"NoMatch: {e}",
                         "prediction": _pred_info, "day_params": _params_info,
                     })
+                except ValueError as e:
+                    # Día sin 0DTE (tickers weekly como SOXL/MSTR: solo viernes tienen
+                    # 0DTE) → SALTAR silenciosamente, NO listarlo como error. Otros
+                    # ValueError (sin data, etc.) sí se reportan como error real.
+                    if "No 0 DTE option" in str(e):
+                        _skipped_no0dte += 1
+                        _was_skip = True
+                    else:
+                        day_runs.append({
+                            "date": date_str, "expiry": None,
+                            "day_start_ts": order_ts, "day_end_ts": day_end_ts,
+                            "iteration": None, "error": str(e),
+                            "prediction": _pred_info, "day_params": _params_info,
+                        })
                 except Exception as e:
                     day_runs.append({
                         "date": date_str, "expiry": None,
@@ -1639,17 +1655,20 @@ if btn_iniciar:
                         "iteration": None, "error": str(e),
                         "prediction": _pred_info, "day_params": _params_info,
                     })
-                # Refresca el panel de totales con los day_runs acumulados
-                # hasta el momento — reemplaza el contenido del placeholder.
-                with totals_placeholder.container():
-                    render_batch_totals(
-                        day_runs,
-                        total_days=len(day_list),
-                        title="💼 Totales del backtest (preliminar)",
-                    )
+                # Refresca el panel de totales (solo si el día NO fue saltado: en un
+                # skip los day_runs no cambian, así que no hace falta re-renderizar).
+                if not _was_skip:
+                    with totals_placeholder.container():
+                        render_batch_totals(
+                            day_runs,
+                            total_days=len(day_list),
+                            title="💼 Totales del backtest (preliminar)",
+                        )
                 progress.progress(
                     (i + 1) / len(day_list),
-                    text=f"Backtest {ticker}: {i + 1}/{len(day_list)} días procesados ({date_str})",
+                    text=(f"Backtest {ticker}: {i + 1}/{len(day_list)} días"
+                          + (f"  ·  {_skipped_no0dte} sin 0DTE saltados"
+                             if _skipped_no0dte else f" procesados ({date_str})")),
                 )
             progress.empty()
             totals_placeholder.empty()
@@ -1662,6 +1681,7 @@ if btn_iniciar:
                 "time_end": t_end,
                 "order_time": hora_orden,
                 "day_runs": day_runs,
+                "skipped_no0dte": _skipped_no0dte,
             }
             st.rerun()
 
@@ -2254,6 +2274,12 @@ if _mode == "range":
         total_days=len(day_runs),
         title="💼 Totales del backtest",
     )
+    _n_skipped = int(replay_state.get("skipped_no0dte", 0))
+    if _n_skipped:
+        st.caption(
+            f"ℹ️ Se saltaron **{_n_skipped}** días sin 0DTE (ticker weekly: solo los "
+            f"viernes vencen el mismo día). No cuentan como error ni en los totales."
+        )
 
     # ------------------------------------------------------------------
     # Días con resultados — tabla + descargas dentro de un expander
