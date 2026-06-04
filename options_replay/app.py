@@ -693,12 +693,13 @@ def _ticker_label(t: str) -> str:
     """Label del dropdown:
     - 🟢 = 0DTE todos los días (daily)  ·  🟡 = 0DTE solo Lun/Mié/Vie
     - 💾 = cacheado (data local) · ☁️ = sin cache (se baja de Polygon)
-    Ej: `🟢 💾 SPY — …` · `🟡 ☁️ MSFT — …` · `☁️ COIN — …` (solo weekly)
+    Ej: `🟢 💾 SPY — …` · `🟡 ☁️ MSFT — …` · `⚪ 💾 SOXL — …` (weekly)
     """
     info = _all_tickers_info.get(t) or {}
     nombre = info.get("nombre")
     tier = _zerodte_map.get(t)
-    mark = "🟢 " if tier == "daily" else ("🟡 " if tier == "mwf" else "")
+    # 🟢 daily · 🟡 Lun/Mié/Vie · ⚪ weekly (solo viernes / el resto).
+    mark = "🟢 " if tier == "daily" else ("🟡 " if tier == "mwf" else "⚪ ")
     cache = "💾" if t in _cached_set else "☁️"
     base = f"{mark}{cache} {t}"
     return f"{base} — {nombre}" if nombre else base
@@ -706,7 +707,8 @@ def _ticker_label(t: str) -> str:
 
 _ticker_legend = (
     "🟢 0DTE todos los días&#10;"
-    "🟡 0DTE solo Lun/Mié/Vie&#10;"
+    "🟡 0DTE Lun/Mié/Vie&#10;"
+    "⚪ 0DTE solo viernes (weekly)&#10;"
     "💾 cacheado&#10;"
     "☁️ sin cache"
 )
