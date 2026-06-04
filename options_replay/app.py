@@ -383,24 +383,13 @@ def render_batch_totals(
         gain_bg, gain_delta_color, gain_arrow = "#f0f2f6", "#555", "–"
     gain_delta_txt = f"{gain_arrow} {abs(roi):.1%}" if total_invested else ""
     tc[2].markdown(
-        f"""
-        <div style='
-            border: 1px solid rgba(49, 51, 63, 0.2);
-            border-radius: 0.5rem;
-            padding: 0.85rem 1rem;
-            background-color: {gain_bg};
-        '>
-            <div style='font-size: 0.85rem; font-weight: bold; color: rgba(49, 51, 63, 0.65); margin-bottom: 0.35rem;'>
-                Ganancia total
-            </div>
-            <div style='font-size: 1.75rem; font-weight: 600; line-height: 1.15;'>
-                ${total_gain:+,.2f}
-            </div>
-            <div style='font-size: 0.85rem; color: {gain_delta_color}; margin-top: 0.25rem;'>
-                {gain_delta_txt}
-            </div>
-        </div>
-        """,
+        f"<div style='border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem; "
+        f"padding:0.85rem 1rem; background-color:{gain_bg};'>"
+        f"<div style='font-size:0.85rem; font-weight:bold; color:rgba(49,51,63,0.65); "
+        f"margin-bottom:0.35rem;'>Ganancia total</div>"
+        f"<div style='font-size:1.75rem; font-weight:600; line-height:1.15;'>${total_gain:+,.2f}</div>"
+        f"<div style='font-size:0.85rem; color:{gain_delta_color}; margin-top:0.25rem;'>{gain_delta_txt}</div>"
+        f"</div>",
         unsafe_allow_html=True,
     )
     tc[3].metric("Capital final", f"${final_capital:,.2f}")
@@ -2119,24 +2108,13 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         if it.invest_total else ""
     )
     mc[3].markdown(
-        f"""
-        <div style='
-            border: 1px solid rgba(49, 51, 63, 0.2);
-            border-radius: 0.5rem;
-            padding: 0.85rem 1rem;
-            background-color: {it_bg};
-        '>
-            <div style='font-size: 0.85rem; font-weight: bold; color: rgba(49, 51, 63, 0.65); margin-bottom: 0.35rem;'>
-                Ganancia total
-            </div>
-            <div style='font-size: 1.5rem; font-weight: 600; line-height: 1.15;'>
-                ${it.gain_total:+,.2f}
-            </div>
-            <div style='font-size: 0.85rem; color: {it_dc}; margin-top: 0.25rem;'>
-                {it_delta_txt}
-            </div>
-        </div>
-        """,
+        f"<div style='border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem; "
+        f"padding:0.85rem 1rem; background-color:{it_bg};'>"
+        f"<div style='font-size:0.85rem; font-weight:bold; color:rgba(49,51,63,0.65); "
+        f"margin-bottom:0.35rem;'>Ganancia total</div>"
+        f"<div style='font-size:1.5rem; font-weight:600; line-height:1.15;'>${it.gain_total:+,.2f}</div>"
+        f"<div style='font-size:0.85rem; color:{it_dc}; margin-top:0.25rem;'>{it_delta_txt}</div>"
+        f"</div>",
         unsafe_allow_html=True,
     )
 
@@ -2637,24 +2615,13 @@ else:
     gain_bg, gain_delta_color, gain_arrow = "#f0f2f6", "#555", "–"
 gain_delta_txt = f"{gain_arrow} {abs(roi):.1%}" if total_invested else ""
 tc[2].markdown(
-    f"""
-    <div style='
-        border: 1px solid rgba(49, 51, 63, 0.2);
-        border-radius: 0.5rem;
-        padding: 0.85rem 1rem;
-        background-color: {gain_bg};
-    '>
-        <div style='font-size: 0.85rem; font-weight: bold; color: rgba(49, 51, 63, 0.65); margin-bottom: 0.35rem;'>
-            Ganancia total
-        </div>
-        <div style='font-size: 1.75rem; font-weight: 600; line-height: 1.15;'>
-            ${total_gain:+,.2f}
-        </div>
-        <div style='font-size: 0.85rem; color: {gain_delta_color}; margin-top: 0.25rem;'>
-            {gain_delta_txt}
-        </div>
-    </div>
-    """,
+    f"<div style='border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem; "
+    f"padding:0.85rem 1rem; background-color:{gain_bg};'>"
+    f"<div style='font-size:0.85rem; font-weight:bold; color:rgba(49,51,63,0.65); "
+    f"margin-bottom:0.35rem;'>Ganancia total</div>"
+    f"<div style='font-size:1.75rem; font-weight:600; line-height:1.15;'>${total_gain:+,.2f}</div>"
+    f"<div style='font-size:0.85rem; color:{gain_delta_color}; margin-top:0.25rem;'>{gain_delta_txt}</div>"
+    f"</div>",
     unsafe_allow_html=True,
 )
 tc[3].metric("Capital final", f"${final_capital:,.2f}")
