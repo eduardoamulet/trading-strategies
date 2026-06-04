@@ -1594,11 +1594,47 @@ if btn_iniciar:
                 "put_alloc": _b_put_alloc, "roi_threshold": _b_roi_pct_int,
             }
 
+            # Días de semana con 0DTE para este ticker → permite SALTAR SIN llamar al
+            # API los días que de antemano no tienen 0DTE (clave para weekly como SOXL:
+            # solo viernes; mwf: Lun/Mié/Vie). Si no se puede inferir, se chequea cada
+            # día como antes (un nearest_expiry por día no cacheado).
+            _tier = _zerodte_map.get(ticker)
+            if _tier == "daily":
+                _valid_wd = {0, 1, 2, 3, 4}
+            elif _tier == "mwf":
+                _valid_wd = {0, 2, 4}
+            else:
+                # Inferir de la cache: los días de semana frecuentes en los chains
+                # cacheados (ej. SOXL → solo viernes). Los feriados corridos (1 jueves)
+                # caen por debajo del umbral, pero igual se procesan vía "chain cacheado".
+                from collections import Counter as _Counter
+                _cd = [p.stem.split("_", 1)[1]
+                       for p in (DATA_DIR / "chain").glob(f"{ticker}_*.parquet")]
+                if _cd:
+                    _c = _Counter(pd.Timestamp(x).weekday() for x in _cd)
+                    _thr = max(2, len(_cd) * 0.2)
+                    _valid_wd = {wd for wd, n in _c.items() if n >= _thr} or None
+                else:
+                    _valid_wd = None   # sin info → chequear todos (comportamiento previo)
+
             _skipped_no0dte = 0
             for i, d in enumerate(day_list):
                 date_str = d.isoformat()
                 day_end_ts = _to_ts(date_str, t_end)
                 order_ts = _to_ts(date_str, hora_orden)
+
+                # Pre-skip RÁPIDO (sin API): si el día de semana no tiene 0DTE para este
+                # ticker y NO hay chain cacheado, se salta directo. Evita un nearest_expiry
+                # por cada Lun-Jue de un weekly → el backtest es muchísimo más rápido.
+                if (_valid_wd is not None and d.weekday() not in _valid_wd
+                        and not (DATA_DIR / "chain" / f"{ticker}_{date_str}.parquet").exists()):
+                    _skipped_no0dte += 1
+                    progress.progress(
+                        (i + 1) / len(day_list),
+                        text=f"Backtest {ticker}: {i + 1}/{len(day_list)} días"
+                             f"  ·  {_skipped_no0dte} sin 0DTE saltados",
+                    )
+                    continue
 
                 _was_skip = False
                 try:
