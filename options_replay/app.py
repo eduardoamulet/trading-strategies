@@ -1370,9 +1370,6 @@ with st.sidebar.container(border=True):
                        ("exit_plus_pct", 50.0)):
             if _k not in st.session_state:
                 st.session_state[_k] = _v
-        if "exit_plus_time" not in st.session_state:
-            st.session_state["exit_plus_time"] = time_cls(15, 30)
-
         # El cierre por umbral siempre se evalúa sobre el ROI (%) total.
         exit_metric = "total"
         exit_plus_threshold_pct = 0.50  # default; solo en "CALL o PUT (plus)"
@@ -1409,10 +1406,10 @@ with st.sidebar.container(border=True):
                 help="ROI% al que se vende la PRIMERA pierna (la que llegue primero al umbral).",
             ) / 100.0
             exit_plus_time = chs.time_input(
-                "Hora de salida", key="exit_plus_time", step=300,
-                help=("Hora MÁXIMA de venta de AMBAS piernas. Si la estrategia no se "
-                      "cumple antes, se liquidan a esta hora en vez de esperar al "
-                      "cierre (16:00)."),
+                "Hora de salida", value=time_cls(15, 30), step=300,
+                help=("Hora MÁXIMA de venta de AMBAS piernas (debe ser POSTERIOR a la "
+                      "hora de orden). Si la estrategia no se cumple antes, se liquidan "
+                      "a esta hora en vez de esperar al cierre (16:00)."),
             )
             exit_threshold_pct = exit_plus_threshold_pct   # referencia de estilo
             stop_loss_pct = -1.0
@@ -1498,6 +1495,15 @@ def _validate_form() -> bool:
                 f"(hasta ${cost_1:,.2f} = premium máx ${_prem_cap:.2f} × 100). Aumentala."
             )
             return False
+
+    # "CALL o PUT (plus)": la Hora de salida debe ser POSTERIOR a la hora de orden,
+    # sino la ventana queda vacía y todos los días fallarían.
+    if is_call_or_put_plus and exit_plus_time is not None and exit_plus_time <= hora_orden:
+        st.error(
+            f"La **'Hora de salida'** ({exit_plus_time:%H:%M}) debe ser **posterior** a la "
+            f"hora de orden ({hora_orden:%H:%M}). Ajustala (default 15:30)."
+        )
+        return False
     return True
 
 

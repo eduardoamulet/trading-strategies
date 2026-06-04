@@ -813,11 +813,12 @@ def _run_one_iteration(
     if mode == "call_or_put_plus" and exit_plus_time is not None and not merged.empty:
         _hs_ts = merged["timestamp"].iloc[0].normalize() + pd.Timedelta(
             hours=int(exit_plus_time.hour), minutes=int(exit_plus_time.minute))
-        merged = merged[merged["timestamp"] <= _hs_ts].reset_index(drop=True)
-        if merged.empty:
-            raise ValueError(
-                f"La 'Hora de salida' ({exit_plus_time:%H:%M}) es anterior a la hora de orden."
-            )
+        _capped = merged[merged["timestamp"] <= _hs_ts]
+        # Si la Hora de salida queda ANTES de la entrada, el cap dejaría la ventana
+        # vacía → se IGNORA el cap (se usa la ventana completa) en vez de fallar la
+        # iteración. (La UI igual valida que sea posterior a la hora de orden.)
+        if not _capped.empty:
+            merged = _capped.reset_index(drop=True)
 
     # Cálculo de % por leg. Si la pierna fue "skip" (opening_premium == 0),
     # forzamos pct = 0 para evitar división por cero y para que no contamine
