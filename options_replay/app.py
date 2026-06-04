@@ -607,8 +607,13 @@ _cached_set = _cached_tickers_set()
 #   - ETFs/índices: 0DTE TODOS los días hábiles (Lun-Vie) → "daily".
 #   - Mega-caps: 0DTE solo Lun/Mié/Vie (NO Mar/Jue) → "mwf".
 #   - El resto: solo weekly (viernes).
-_DAILY_INDEX = {"SPY", "QQQ", "IWM", "DIA", "SPX", "XSP", "NDX", "VIX", "RUT"}
-_MWF_STOCK = {"TSLA", "NVDA", "AAPL", "AMZN", "GOOG", "GOOGL", "META", "MSFT"}
+# Clasificación verificada contra Polygon (probe sobre 3 martes + 3 miércoles):
+#   - DAILY: SPY/QQQ/IWM/SPX (del watchlist) + XSP/NDX/VIX/RUT (índices daily conocidos).
+#     OJO: DIA NO es daily (es weekly) — sorpresa confirmada.
+#   - MWF (Lun/Mié/Vie): mega-caps AAPL/AMZN/AVGO/META/MSFT/NVDA/TSLA + commodities
+#     GLD/SLV/USO. OJO: GOOG/GOOGL NO son mwf (son weekly).
+_DAILY_INDEX = {"SPY", "QQQ", "IWM", "SPX", "XSP", "NDX", "VIX", "RUT"}
+_MWF_STOCK = {"AAPL", "AMZN", "AVGO", "GLD", "META", "MSFT", "NVDA", "SLV", "TSLA", "USO"}
 
 
 @st.cache_data(ttl=60)
