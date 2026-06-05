@@ -2181,7 +2181,8 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         def _leg_df(probes, s):
             def _sp(p):
                 b, a = getattr(p, "bid", None), getattr(p, "ask", None)
-                return (a - b) if (b is not None and a is not None) else None
+                # Spread positivo: |Ask - Bid| (nunca negativo).
+                return abs(a - b) if (b is not None and a is not None) else None
             rows = [{
                 "Strike": p.strike,
                 f"{s} Last": p.opening_premium,
@@ -2225,9 +2226,21 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                     out.append("background-color: #cce5ff; font-weight: bold" if hit else "")
                 return out
 
+            def _fmt2nz(v):
+                # 2 decimales SIN cero a la izquierda: 0.03 -> .03, -0.03 -> -.03.
+                if pd.isna(v):
+                    return "—"
+                s = f"{float(v):.2f}"
+                if s.startswith("0."):
+                    return s[1:]
+                if s.startswith("-0."):
+                    return "-" + s[2:]
+                return s
+            _fmt = {c: _fmt2nz for c in _chain.columns if c != "Strike"}
+            _fmt["Strike"] = "{:.2f}"
             _styled = (_chain.style
                        .apply(_hl_chain, axis=1)
-                       .format({c: "{:.2f}" for c in _chain.columns}, na_rep="—")
+                       .format(_fmt, na_rep="—")
                        .hide(axis="index"))
             st.caption("⬅ CALLS  ·  Strike  ·  PUTS ➡   ·   fila azul = contrato elegido")
             st.dataframe(_styled, use_container_width=True, height=430)
