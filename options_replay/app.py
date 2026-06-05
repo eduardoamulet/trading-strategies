@@ -2254,9 +2254,18 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                        .format(_fmt, na_rep="—")
                        .hide(axis="index"))
             st.caption("⬅ CALLS · Strike · PUTS ➡   ·   azul claro = ITM · amarillo claro = OTM · negrita = contrato elegido")
-            # Tabla al 40% del ancho (columna izquierda 40%, derecha 60% vacía).
+            # Tabla al 40% del ancho, con las columnas AJUSTADAS al panel: render HTML
+            # con table-layout:fixed → las columnas se reparten para llenar el
+            # contenedor (entran todas, sin scroll horizontal). Scroll vertical a 430px.
             _half, _ = st.columns([2, 3])
-            _half.dataframe(_styled, use_container_width=True, height=430)
+            _tbl_html = _styled.set_table_attributes(
+                'style="width:100%; table-layout:fixed; border-collapse:collapse; '
+                'font-size:0.72rem; text-align:right"'
+            ).to_html()
+            _half.markdown(
+                f'<div style="max-height:430px; overflow:auto">{_tbl_html}</div>',
+                unsafe_allow_html=True,
+            )
 
     # Key único por (fecha, iteración) — en range mode todos los días tienen
     # iteration=1, así que necesitamos la fecha para evitar colisiones.
@@ -2384,6 +2393,66 @@ if _mode == "range":
             f"ℹ️ Se saltaron **{_n_skipped}** días sin 0DTE (ticker weekly: solo los "
             f"viernes vencen el mismo día). No cuentan como error ni en los totales."
         )
+
+    # ------------------------------------------------------------------
+    # Distribución temporal de operaciones EXITOSAS (tiempo a salida)
+    # ------------------------------------------------------------------
+    # "Exitosa" = se cumplió la condición de salida de la estrategia
+    # (exit_reason == "100%_threshold"), en CUALQUIER modo (CALL y PUT, Sólo
+    # CALL/PUT, CALL o PUT, CALL o PUT plus). Las que salieron por stop_loss o
+    # por fin de sesión / Hora de salida (timeout) se EXCLUYEN del cálculo.
+    _wins = [r["iteration"] for r in successful
+             if getattr(r["iteration"], "exit_reason", "") == "100%_threshold"]
+    with st.expander(
+        f"⏱️ Distribución temporal de operaciones exitosas ({len(_wins)})",
+        expanded=True,
+    ):
+        if not _wins:
+            st.caption(
+                "No hubo operaciones que cumplieran la condición de salida de la "
+                "estrategia (todas salieron por stop loss o por fin de sesión)."
+            )
+        else:
+            _esp = int(st.number_input(
+                "Espaciado en minutos", min_value=1, max_value=240, value=15, step=5,
+                key="temporal_spacing_min",
+                help="Tamaño n de cada intervalo para agrupar el tiempo desde la "
+                     "apertura de la posición hasta que se cumplió la condición de "
+                     "salida de la estrategia. La gráfica se actualiza al cambiarlo.",
+            ))
+            # Tiempo (min) de cada operación exitosa: apertura -> condición cumplida.
+            _mins = [max(0, int(round((it.end_dt - it.start_dt).total_seconds() / 60.0)))
+                     for it in _wins]
+            # Bins: bin 1 = [0..n], bin k = [(k-1)*n+1 .. k*n]  (ej. n=15: 0-15, 16-30, …)
+            def _bink(m):
+                return 1 if m <= 0 else (m + _esp - 1) // _esp
+            _maxk = max(_bink(m) for m in _mins)
+            _labels = [f"{0 if k == 1 else (k - 1) * _esp + 1}-{k * _esp}"
+                       for k in range(1, _maxk + 1)]
+            _counts = [0] * _maxk
+            for m in _mins:
+                _counts[_bink(m) - 1] += 1
+
+            import plotly.graph_objects as _go
+            _fig = _go.Figure(_go.Bar(
+                x=_labels, y=_counts, marker_color="#2e7d32",
+                text=_counts, textposition="outside",
+            ))
+            _fig.update_layout(
+                xaxis=dict(title="Tiempo a salida (min)", categoryorder="array",
+                           categoryarray=_labels),
+                yaxis=dict(title="Operaciones exitosas"),
+                height=360, margin=dict(l=10, r=10, t=40, b=10),
+                title=f"Distribución temporal — n={_esp} min · {len(_wins)} exitosas",
+            )
+            st.plotly_chart(_fig, use_container_width=True, key="temporal_dist_chart")
+            _avg = sum(_mins) / len(_mins)
+            _med = sorted(_mins)[len(_mins) // 2]
+            st.caption(
+                f"Promedio: {_avg:.1f} min · mediana: {_med} min · "
+                f"más rápida: {min(_mins)} min · más lenta: {max(_mins)} min  "
+                f"(solo operaciones que cumplieron la condición de salida)"
+            )
 
     # ------------------------------------------------------------------
     # Días con resultados — tabla + descargas dentro de un expander
