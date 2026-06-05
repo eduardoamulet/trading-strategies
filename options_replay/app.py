@@ -919,7 +919,7 @@ with st.sidebar.container(border=True):
         # Hora de orden — Step + verificación de ROI arriba; Hora + Minuto abajo.
         # El Step define la granularidad del dropdown de minutos.
         st.markdown(
-            "<p style='font-weight:bold; margin: 0.4rem 0 0.2rem 0;'>Hora de orden</p>",
+            "<p style='font-weight:bold; margin: 0.4rem 0 0.2rem 0;'>Horario de entrada</p>",
             unsafe_allow_html=True,
         )
 
@@ -1025,9 +1025,33 @@ with st.sidebar.container(border=True):
         hora_orden = time_cls(int(selected_hour), int(selected_minute))
 
     else:
-        # En modo rango usamos 09:30 fijo (apertura) como hora de orden.
+        # En modo rango usamos 09:30 fijo (apertura) como horario de entrada.
         hora_orden = time_cls(9, 30)
         sell_check_min = int(st.session_state.get("sell_check_min", 1))
+
+    # Horario de salida (GENERAL, para las 5 estrategias) — fin de la ventana
+    # operativa. Reemplaza el cierre fijo 16:00 en la lógica. Lo que quede sin
+    # vender se liquida en el minuto ANTES de esta hora (end_ts = salida - 1min).
+    st.markdown(
+        "<p style='font-weight:bold; margin: 0.5rem 0 0.2rem 0;'>Horario de salida</p>",
+        unsafe_allow_html=True,
+    )
+    if "horario_salida" not in st.session_state:
+        st.session_state["horario_salida"] = time_cls(16, 0)
+    horario_salida = st.time_input(
+        "Horario de salida", key="horario_salida", step=300,
+        label_visibility="collapsed",
+        help=("Fin de la ventana operativa (default 16:00). Toda evaluación, compra y "
+              "venta ocurre dentro de [Horario de entrada, Horario de salida]; lo que "
+              "quede sin vender se liquida en el minuto ANTES de esta hora."),
+    )
+    # La salida debe ser posterior a la entrada (autocorrige, no bloquea).
+    if horario_salida <= hora_orden and t_end > hora_orden:
+        st.warning(
+            f"El **Horario de salida** debe ser posterior a la entrada "
+            f"({hora_orden:%H:%M}); se ajustó a **{t_end:%H:%M}**."
+        )
+        horario_salida = t_end
 
     # Cargar config del predictor — necesario en ambos modos.
     _predictor_cfg = load_predictor_config()
@@ -1404,7 +1428,7 @@ with st.sidebar.container(border=True):
                 "🎯&#10;CALL o PUT (plus) — la 1ª pierna que alcanza el Umbral de salida "
                 "(%) se vende y banca su ganancia. La otra se vende cuando, sumando lo "
                 "bancado + su valor, se recupera la inversión total (CALL + PUT). Si no "
-                "se cumple antes de la Hora de salida, ambas se venden a esa hora."
+                "se cumple antes del Horario de salida, ambas se venden 1 min antes."
             )
             st.markdown(
                 "<p style='text-align:left; font-weight:bold; margin: 0.2rem 0 0.5rem 0;'>"
@@ -1413,44 +1437,15 @@ with st.sidebar.container(border=True):
                 "font-weight:normal;'>ⓘ</span></p>",
                 unsafe_allow_html=True,
             )
-            cps, chs = st.columns(2)
-            exit_plus_threshold_pct = cps.number_input(
+            exit_plus_threshold_pct = st.number_input(
                 "Umbral de salida (%)", key="exit_plus_pct",
                 step=5.0, min_value=1.0, format="%.2f",
                 help="ROI% al que se vende la PRIMERA pierna (la que llegue primero al umbral).",
             ) / 100.0
-            # Hora de salida — con `key` + init explícito en session_state para que el
-            # cambio del usuario se LEA de forma confiable en el rerun del botón (sin
-            # key el valor no siempre propagaba). El init a 15:30 evita el bug de
-            # Streamlit de "defaultear a la hora actual" cuando hay key sin valor.
-            if "exit_plus_time" not in st.session_state:
-                st.session_state["exit_plus_time"] = time_cls(15, 30)
-            exit_plus_time = chs.time_input(
-                "Hora de salida", key="exit_plus_time", step=300,
-                help=("Hora MÁXIMA de venta de AMBAS piernas (debe ser POSTERIOR a la "
-                      "hora de orden). Si la estrategia no se cumple antes, se liquidan "
-                      "a esta hora en vez de esperar al cierre (16:00)."),
-            )
-            # Autocorrección (NO bloquea): si la Hora de salida quedó en/antes de la
-            # hora de orden, la ventana sería vacía. Elegimos una hora válida posterior
-            # (15:30 si cabe, sino el cierre); si ni eso sirve, sin cap → cierre del día.
-            if exit_plus_time is not None and exit_plus_time <= hora_orden:
-                _safe_exit = next(
-                    (c for c in (time_cls(15, 30), t_end) if c > hora_orden), None
-                )
-                if _safe_exit is not None:
-                    st.warning(
-                        f"La **'Hora de salida'** debe ser posterior a la hora de orden "
-                        f"({hora_orden:%H:%M}). Se usará **{_safe_exit:%H:%M}** "
-                        f"(cambiá el campo si querés otra)."
-                    )
-                    exit_plus_time = _safe_exit
-                else:
-                    st.warning(
-                        f"La hora de orden ({hora_orden:%H:%M}) es muy tardía para una "
-                        f"'Hora de salida' posterior; se liquidará al **cierre del día**."
-                    )
-                    exit_plus_time = None
+            # La "Hora de salida" del plus es ahora el "Horario de salida" GENERAL
+            # (arriba, default 16:00): la pierna pendiente se liquida en el minuto ANTES
+            # de esa hora (vía end_ts = salida - 1min), igual que las demás estrategias.
+            exit_plus_time = horario_salida
             exit_threshold_pct = exit_plus_threshold_pct   # referencia de estilo
             stop_loss_pct = -1.0
             call_exit_threshold_pct = put_exit_threshold_pct = exit_plus_threshold_pct
@@ -1497,7 +1492,7 @@ def _validate_form() -> bool:
         return False
     if not (t_start <= hora_orden <= t_end):
         st.error(
-            f"La 'Hora de orden' ({hora_orden:%H:%M}) debe estar dentro de la "
+            f"El 'Horario de entrada' ({hora_orden:%H:%M}) debe estar dentro de la "
             f"ventana horaria ({t_start:%H:%M} – {t_end:%H:%M})."
         )
         return False
@@ -1549,7 +1544,9 @@ if btn_iniciar:
             with st.spinner(f"Bajando datos de Polygon para {ticker} {sel_date} y corriendo iteración 1..."):
                 try:
                     expiry = validate_0dte_session(dl, ticker, sel_date.isoformat())
-                    day_end_ts = _to_ts(sel_date.isoformat(), t_end)
+                    # Fin de la ventana = Horario de salida - 1 min: la lógica liquida
+                    # lo pendiente en el minuto ANTES de la salida (todas las estrategias).
+                    day_end_ts = _to_ts(sel_date.isoformat(), horario_salida) - pd.Timedelta(minutes=1)
                     order_ts = _to_ts(sel_date.isoformat(), hora_orden)
                     it1 = run_next_iteration(
                         dl, ticker, sel_date.isoformat(),
@@ -1649,7 +1646,9 @@ if btn_iniciar:
             _skipped_no0dte = 0
             for i, d in enumerate(day_list):
                 date_str = d.isoformat()
-                day_end_ts = _to_ts(date_str, t_end)
+                # Fin de la ventana = Horario de salida - 1 min (liquida lo pendiente
+                # en el minuto ANTES de la salida).
+                day_end_ts = _to_ts(date_str, horario_salida) - pd.Timedelta(minutes=1)
                 order_ts = _to_ts(date_str, hora_orden)
 
                 # Pre-skip RÁPIDO (sin API): si el día de semana no tiene 0DTE para este
@@ -1773,7 +1772,7 @@ elif btn_proxima:
         next_ts = _to_ts(replay_state["date"], hora_orden)
         if next_ts >= replay_state["day_end_ts"]:
             st.warning(
-                f"La 'Hora de orden' ({hora_orden:%H:%M}) está fuera de la "
+                f"El 'Horario de entrada' ({hora_orden:%H:%M}) está fuera de la "
                 f"ventana de sesión — ajustá el valor y reintentá."
             )
         else:
