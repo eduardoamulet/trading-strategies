@@ -22,11 +22,6 @@ from downloader import Downloader
 DEFAULT_TIME_START = time(9, 30)
 DEFAULT_TIME_END = time(16, 0)
 MAX_STRIKES_TO_PROBE = 25  # per side; safety cap
-# En el FALLBACK (sin match de premium) sólo pedimos NBBO de los N strikes MÁS
-# cercanos a ATM — ahí se concentran los spreads chicos (lo que el fallback busca).
-# Evita decenas de llamadas NBBO por día en weekly caros (SOXL ~$230). Subir si se
-# quiere buscar el spread mínimo más lejos del dinero (más lento).
-FALLBACK_QUOTE_CAP = 10
 
 
 @dataclass
@@ -251,44 +246,28 @@ class ReplayResult:
 
 
 class NoMatchError(ValueError):
-    """No strike found whose opening premium falls inside the user range."""
+    """Ningún strike dentro del rango Óptimo/Extendido pasó la compuerta de spread.
+
+    Sin fallback: si esto ocurre, NO se compra ese leg en ese día."""
 
     def __init__(self, side: str, probes: list[StrikeProbe], premium_min: float, premium_max: float):
         self.side = side
         self.probes = probes
         self.premium_min = premium_min
         self.premium_max = premium_max
-        info = [
-            f"strike={p.strike:g} open={p.opening_premium:.2f}" if p.opening_premium is not None
-            else f"strike={p.strike:g} open=N/A"
-            for p in probes[:8]
-        ]
+        info = []
+        for p in probes[:8]:
+            if p.opening_premium is None:
+                info.append(f"strike={p.strike:g} open=N/A")
+            else:
+                _sp = f"{p.spread:.2f}" if p.spread is not None else "N/A"
+                info.append(f"strike={p.strike:g} open={p.opening_premium:.2f} spread={_sp}")
         super().__init__(
-            f"No {side} 0 DTE contract has opening premium inside "
-            f"[{premium_min:.2f}, {premium_max:.2f}] USD. "
-            f"Probed {len(probes)} strikes; sample (USD): {'; '.join(info)}"
+            f"No hay contrato {side} 0 DTE con premium en [{premium_min:.2f}, "
+            f"{premium_max:.2f}] USD (óptimo/extendido) que pase la compuerta de "
+            f"spread. Sin fallback → no se compra. {len(probes)} strikes probados; "
+            f"muestra (USD): {'; '.join(info)}"
         )
-
-
-def _fallback_max_spread(spot: Optional[float]) -> Optional[float]:
-    """Spread bid-ask (en $) máximo aceptable para el FALLBACK, por precio del
-    subyacente. Se ignora el rango de premium: solo importa la liquidez.
-
-        $100-$300   -> $5
-        $300-$600   -> $10
-        $600-$1200  -> $25
-
-    Fuera de $100-$1200 -> None (sin tope; se elige por menor spread y cercanía
-    a ITM). Cuanto más chico el spread, mejor."""
-    if spot is None:
-        return None
-    if 100.0 <= spot <= 300.0:
-        return 5.0
-    if 300.0 < spot <= 600.0:
-        return 10.0
-    if 600.0 < spot <= 1200.0:
-        return 25.0
-    return None
 
 
 def _probe_premium_range(
@@ -307,20 +286,21 @@ def _probe_premium_range(
     spot: Optional[float] = None,
     spread_cfg: Optional[dict] = None,
 ) -> tuple[Optional[StrikeProbe], list[StrikeProbe], str]:
-    """Selector de contrato con filtro de spread + cascada Óptimo/Extendido.
+    """Selector de contrato: filtro de spread (compuerta dura) + Óptimo/Extendido.
 
-    Lógica (confirmada por el usuario):
-    1. Para cada candidato (orden por cercanía a ATM, hasta max_probe) cuyo
-       premium de apertura caiga en el rango Extendido (∪ Óptimo), trae el NBBO
-       al minuto de entrada y calcula spread.
-    2. Filtra por spread <= máximo del bucket de precio del subyacente.
-    3. Cascada de selección entre los que pasan spread:
-       a. Dentro del Rango Óptimo → elige por prioridad (menor spread, mayor
-          cercanía a ITM, mayor volumen). tier="optimo"
-       b. Si ninguno: dentro del Rango Extendido → misma prioridad. tier="extended"
-       c. Si ninguno pasa spread en ningún rango: el premium más cercano al
-          Óptimo (fallback histórico). tier="fallback"
-    Devuelve (probe_elegido, todos_los_probes, tier). tier="" si no hubo nada.
+    Lógica (confirmada por el usuario — SIN fallback):
+    1. Candidatos: hasta max_probe strikes ordenados por cercanía a ATM; se lee
+       su premium de apertura en el minuto de entrada.
+    2. Filtro de spread (COMPUERTA): trae el NBBO y descarta todo contrato cuyo
+       spread (ask-bid) supere el máximo del bucket de precio del subyacente
+       (spread_config.json). Si NINGÚN contrato pasa el filtro → NO se compra.
+    3. Entre los que pasan spread, dentro del Rango Óptimo → el MÁS CERCANO A ITM.
+       tier="optimo".
+    4. Si ninguno en óptimo: dentro del Rango Extendido → el MÁS CERCANO A ITM.
+       tier="extended".
+    5. Si tampoco hay en extendido → NO se compra (None). NO hay fallback ni
+       mecanismo alternativo de selección.
+    Devuelve (probe_elegido, todos_los_probes, tier). tier="" si no hubo compra.
 
     Retro-compat: ext_min/ext_max default al rango óptimo; si spread_cfg es None
     o el filtro está deshabilitado, se omite el filtro de spread.
@@ -379,14 +359,14 @@ def _probe_premium_range(
         return None, probes, ""
 
     def _sort_key(p: StrikeProbe):
-        # Prioridad: (1) menor spread (redondeado a centavo), (2) más cercano a
-        # ITM, (3) mayor volumen.
-        sp = round(p.spread, 2) if p.spread is not None else 9.99
+        # Prioridad: (1) MÁS CERCANO A ITM (el spread ya es compuerta dura, no
+        # criterio de selección). Desempates: (2) menor spread, (3) mayor volumen.
         if p.itm_depth >= 0:
             itm_rank = p.itm_depth           # ITM: menor profundidad = "1-ITM"
         else:
             itm_rank = abs(p.itm_depth) + 1e6  # OTM: después de todos los ITM
-        return (sp, itm_rank, -(p.volume or 0.0))
+        sp = round(p.spread, 2) if p.spread is not None else 9.99
+        return (itm_rank, sp, -(p.volume or 0.0))
 
     def _passes_spread(p: StrikeProbe) -> bool:
         if not spread_enabled:
@@ -403,49 +383,9 @@ def _probe_premium_range(
     if cand_ext:
         return min(cand_ext, key=_sort_key), probes, "extended"
 
-    # c. Fallback (nadie pasó óptimo/extendido + spread): se IGNORA el rango de
-    #    premium. Se elige el contrato cercano a ITM con el MENOR bid-ask spread,
-    #    con el spread <= tope del bucket de precio del subyacente ($100-300->$5,
-    #    $300-600->$10, $600-1200->$25); fuera de $100-1200 sin tope. Prioridad:
-    #    1º menor spread, 2º más cercano a ITM. Cuanto más chico el spread, mejor.
-    fb_max = _fallback_max_spread(spot)
-    # Rellenar el NBBO de los candidatos cercanos a ATM que aún no lo tengan (no se
-    # les pidió quote porque su premium quedó fuera del rango de fetch óptimo∪ext).
-    # CAP: sólo los FALLBACK_QUOTE_CAP strikes más cercanos a ATM (`valid` viene
-    # ordenado por cercanía). Los lejanos tienen spreads anchos y no ganarían; así
-    # el batch de un weekly caro pasa de ~50 a ~20 NBBO/día (las quotes se cachean).
-    if spread_enabled:
-        _fetched = 0
-        for p in valid:
-            if _fetched >= FALLBACK_QUOTE_CAP:
-                break
-            if p.spread is None and p.opening_premium is not None:
-                q = downloader.option_quote(p.occ, date, start_ts)
-                p.bid, p.ask, p.spread = q.get("bid"), q.get("ask"), q.get("spread")
-                _fetched += 1
-
-    with_spread = [p for p in valid if p.spread is not None]
-    if with_spread:
-        pool = with_spread if fb_max is None else [p for p in with_spread if p.spread <= fb_max]
-        if not pool:                        # ninguno bajo el tope → el de menor spread igual
-            pool = with_spread
-
-        def _fb_key(p: StrikeProbe):
-            itm_rank = p.itm_depth if p.itm_depth >= 0 else abs(p.itm_depth) + 1e6
-            return (round(p.spread, 2), itm_rank)   # 1º menor spread, 2º cercano a ITM
-        return min(pool, key=_fb_key), probes, "fallback"
-
-    # Sin NBBO disponible (filtro de spread off, o sin quotes para ningún strike) →
-    # fallback histórico: el premium de apertura más cercano al rango óptimo.
-    def _dist_to_range(v: float) -> float:
-        if v < premium_min:
-            return premium_min - v
-        if v > premium_max:
-            return v - premium_max
-        return 0.0
-
-    best = min(valid, key=lambda p: _dist_to_range(p.opening_premium))
-    return best, probes, "fallback"
+    # c. SIN FALLBACK: si nadie quedó dentro del Óptimo/Extendido pasando el filtro
+    #    de spread, NO se compra. No hay mecanismo alternativo de selección.
+    return None, probes, ""
 
 
 def replay_session(
