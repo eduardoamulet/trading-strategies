@@ -2205,7 +2205,11 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                 except (TypeError, ValueError):
                     is_sel = False
                 return ["background-color: #cce5ff; font-weight: bold" if is_sel else "" for _ in row]
-            return pdf.style.apply(_hl_selected, axis=1)
+            return pdf.style.apply(_hl_selected, axis=1).format(
+                {"strike": "{:.2f}", "open premium": "{:.2f}", "bid": "{:.2f}",
+                 "ask": "{:.2f}", "spread": "{:.2f}"},
+                na_rep="—",
+            )
 
         if pc1 is not None:
             pc1.markdown("**CALL probes**")

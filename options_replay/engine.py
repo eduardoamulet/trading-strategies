@@ -258,10 +258,10 @@ class NoMatchError(ValueError):
         info = []
         for p in probes[:8]:
             if p.opening_premium is None:
-                info.append(f"strike={p.strike:g} open=N/A")
+                info.append(f"strike={p.strike:.2f} open=N/A")
             else:
                 _sp = f"{p.spread:.2f}" if p.spread is not None else "N/A"
-                info.append(f"strike={p.strike:g} open={p.opening_premium:.2f} spread={_sp}")
+                info.append(f"strike={p.strike:.2f} open={p.opening_premium:.2f} spread={_sp}")
         super().__init__(
             f"No hay contrato {side} 0 DTE con premium en [{premium_min:.2f}, "
             f"{premium_max:.2f}] USD (óptimo/extendido) que pase la compuerta de "
