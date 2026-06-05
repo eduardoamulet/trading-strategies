@@ -2254,7 +2254,9 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                        .format(_fmt, na_rep="—")
                        .hide(axis="index"))
             st.caption("⬅ CALLS · Strike · PUTS ➡   ·   azul claro = ITM · amarillo claro = OTM · negrita = contrato elegido")
-            st.dataframe(_styled, use_container_width=True, height=430)
+            # Columnas a la mitad del ancho: la tabla ocupa solo la mitad izquierda.
+            _half, _ = st.columns(2)
+            _half.dataframe(_styled, use_container_width=True, height=430)
 
     # Key único por (fecha, iteración) — en range mode todos los días tienen
     # iteration=1, así que necesitamos la fecha para evitar colisiones.
