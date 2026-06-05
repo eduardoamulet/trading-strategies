@@ -2213,17 +2213,28 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
 
             _sel_c = getattr(it, "call_strike", None) if _show_call else None
             _sel_p = getattr(it, "put_strike", None) if _show_put else None
+            _spot = getattr(it, "spot_at_start", None)
+            _ITM = "background-color: #cfe2ff"   # azul claro = in the money
+            _OTM = "background-color: #fff3cd"   # amarillo claro = out of the money
 
             def _hl_chain(row):
-                k = row["Strike"]
-                _ic = _sel_c is not None and abs(float(k) - float(_sel_c)) < 1e-9
-                _ip = _sel_p is not None and abs(float(k) - float(_sel_p)) < 1e-9
+                k = float(row["Strike"])
+                _ic = _sel_c is not None and abs(k - float(_sel_c)) < 1e-9
+                _ip = _sel_p is not None and abs(k - float(_sel_p)) < 1e-9
                 out = []
                 for col in row.index:
-                    hit = ((col == "Strike" and (_ic or _ip))
-                           or (col.startswith("C ") and _ic)
-                           or (col.startswith("P ") and _ip))
-                    out.append("background-color: #cce5ff; font-weight: bold" if hit else "")
+                    style = ""
+                    if col.startswith("C ") and _spot is not None:
+                        style = _ITM if k < _spot else _OTM      # CALL ITM: strike < spot
+                        if _ic:
+                            style += "; font-weight: bold"
+                    elif col.startswith("P ") and _spot is not None:
+                        style = _ITM if k > _spot else _OTM      # PUT ITM: strike > spot
+                        if _ip:
+                            style += "; font-weight: bold"
+                    elif col == "Strike" and (_ic or _ip):
+                        style = "font-weight: bold"
+                    out.append(style)
                 return out
 
             def _fmt2nz(v):
@@ -2242,7 +2253,7 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                        .apply(_hl_chain, axis=1)
                        .format(_fmt, na_rep="—")
                        .hide(axis="index"))
-            st.caption("⬅ CALLS  ·  Strike  ·  PUTS ➡   ·   fila azul = contrato elegido")
+            st.caption("⬅ CALLS · Strike · PUTS ➡   ·   azul claro = ITM · amarillo claro = OTM · negrita = contrato elegido")
             st.dataframe(_styled, use_container_width=True, height=430)
 
     # Key único por (fecha, iteración) — en range mode todos los días tienen
