@@ -2171,59 +2171,68 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         f"Strikes probados (CALL: {len(it.call_probes)} · PUT: {len(it.put_probes)})",
         expanded=False,
     ):
+        # Cadena de opciones estilo thinkorswim: CALLS (izq) · Strike (centro) · PUTS
+        # (der). Bid/Ask pegados al strike; Prima/Spread/|b-a|×100 hacia afuera.
+        # Strikes ascendentes; fila azul = el contrato elegido por cada leg.
         _it_mode = getattr(it, "mode", "both")
-        _show_call_probes = _it_mode != "put_only"
-        _show_put_probes = _it_mode != "call_only"
-        if _show_call_probes and _show_put_probes:
-            pc1, pc2 = st.columns(2)
-        elif _show_call_probes:
-            pc1 = st.container()
-            pc2 = None
-        else:
-            pc1 = None
-            pc2 = st.container()
-        def _probe_row(p):
-            _bid = getattr(p, "bid", None)
-            _ask = getattr(p, "ask", None)
-            # Costo del spread por contrato = |bid - ask| * 100 (1 contrato = 100).
-            _ba100 = abs(_bid - _ask) * 100.0 if (_bid is not None and _ask is not None) else None
-            return {
-                "strike": p.strike,
-                "open premium": p.opening_premium,
-                "bid": _bid,
-                "ask": _ask,
-                "spread": getattr(p, "spread", None),
-                "|bid-ask|×100": _ba100,
-                "spread ok": getattr(p, "spread_ok", None),
-                "óptimo": p.in_range,
-                "extendido": getattr(p, "in_extended", None),
-            }
-        def _probes_styled(probes, selected_strike):
-            """DataFrame de probes con la fila del strike SELECCIONADO resaltada
-            en azul claro."""
-            pdf = pd.DataFrame([_probe_row(p) for p in probes])
-            if pdf.empty:
-                return pdf
-            def _hl_selected(row):
-                try:
-                    is_sel = abs(float(row["strike"]) - float(selected_strike)) < 1e-9
-                except (TypeError, ValueError):
-                    is_sel = False
-                return ["background-color: #cce5ff; font-weight: bold" if is_sel else "" for _ in row]
-            return pdf.style.apply(_hl_selected, axis=1).format(
-                {"strike": "{:.2f}", "open premium": "{:.2f}", "bid": "{:.2f}",
-                 "ask": "{:.2f}", "spread": "{:.2f}", "|bid-ask|×100": "{:.2f}"},
-                na_rep="—",
-            )
+        _show_call = _it_mode != "put_only"
+        _show_put = _it_mode != "call_only"
 
-        if pc1 is not None:
-            pc1.markdown("**CALL probes**")
-            pc1.dataframe(_probes_styled(it.call_probes, it.call_strike),
-                          use_container_width=True, height=200)
-        if pc2 is not None:
-            pc2.markdown("**PUT probes**")
-            pc2.dataframe(_probes_styled(it.put_probes, it.put_strike),
-                          use_container_width=True, height=200)
+        def _ba100(p):
+            b, a = getattr(p, "bid", None), getattr(p, "ask", None)
+            return abs(b - a) * 100.0 if (b is not None and a is not None) else None
+
+        def _leg_df(probes, s):
+            rows = [{
+                "Strike": p.strike,
+                f"{s} Prima": p.opening_premium,
+                f"{s} |b-a|×100": _ba100(p),
+                f"{s} Spread": getattr(p, "spread", None),
+                f"{s} Bid": getattr(p, "bid", None),
+                f"{s} Ask": getattr(p, "ask", None),
+            } for p in probes]
+            return pd.DataFrame(rows).set_index("Strike") if rows else pd.DataFrame()
+
+        _cdf = _leg_df(it.call_probes, "C") if _show_call else pd.DataFrame()
+        _pdf = _leg_df(it.put_probes, "P") if _show_put else pd.DataFrame()
+        if not _cdf.empty and not _pdf.empty:
+            _chain = _cdf.join(_pdf, how="outer")
+        elif not _cdf.empty:
+            _chain = _cdf
+        else:
+            _chain = _pdf
+
+        if _chain.empty:
+            st.caption("Sin contratos probados.")
+        else:
+            _chain = _chain.sort_index().reset_index()
+            _cc = ["C Prima", "C |b-a|×100", "C Spread", "C Bid", "C Ask"]
+            _pc = ["P Bid", "P Ask", "P Spread", "P |b-a|×100", "P Prima"]
+            _order = ([c for c in _cc if c in _chain.columns] + ["Strike"]
+                      + [c for c in _pc if c in _chain.columns])
+            _chain = _chain[_order]
+
+            _sel_c = getattr(it, "call_strike", None) if _show_call else None
+            _sel_p = getattr(it, "put_strike", None) if _show_put else None
+
+            def _hl_chain(row):
+                k = row["Strike"]
+                _ic = _sel_c is not None and abs(float(k) - float(_sel_c)) < 1e-9
+                _ip = _sel_p is not None and abs(float(k) - float(_sel_p)) < 1e-9
+                out = []
+                for col in row.index:
+                    hit = ((col == "Strike" and (_ic or _ip))
+                           or (col.startswith("C ") and _ic)
+                           or (col.startswith("P ") and _ip))
+                    out.append("background-color: #cce5ff; font-weight: bold" if hit else "")
+                return out
+
+            _styled = (_chain.style
+                       .apply(_hl_chain, axis=1)
+                       .format({c: "{:.2f}" for c in _chain.columns}, na_rep="—")
+                       .hide(axis="index"))
+            st.caption("⬅ CALLS  ·  Strike  ·  PUTS ➡   ·   fila azul = contrato elegido")
+            st.dataframe(_styled, use_container_width=True, height=430)
 
     # Key único por (fecha, iteración) — en range mode todos los días tienen
     # iteration=1, así que necesitamos la fecha para evitar colisiones.
