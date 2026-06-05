@@ -961,9 +961,16 @@ with st.sidebar.container(border=True):
             on_change=_reset_hora_on_date_change,
             help=f"Fecha de inicio del rango (inclusiva). Default: 10 meses atrás ({default_start_date}).",
         )
+        # Robustez: la final NO puede ser < inicial. Si la guardada quedó anterior a
+        # la inicial (porque el usuario movió la inicial más adelante), la subimos a
+        # la inicial ANTES de crear el widget — si no, Streamlit crashea con
+        # "value must lie between min_value and max_value".
+        if (st.session_state.get("sel_fecha_final") is not None
+                and st.session_state["sel_fecha_final"] < sel_start):
+            st.session_state["sel_fecha_final"] = sel_start
         sel_end = c_fecha_fin.date_input(
             "Fecha final",
-            value=default_date,
+            value=max(default_date, sel_start),
             format="YYYY-MM-DD",
             min_value=sel_start,
             key="sel_fecha_final",
