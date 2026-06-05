@@ -344,7 +344,7 @@ def build_chart(res) -> go.Figure:
     return fig
 
 
-def render_temporal_distribution(iterations: list, chart_key: str = "temporal_dist_chart") -> None:
+def render_temporal_distribution(iterations: list, entrada, chart_key: str = "temporal_dist_chart") -> None:
     """Distribución temporal de operaciones EXITOSAS: tiempo desde la apertura hasta
     que se cumplió la condición de salida de la estrategia (exit_reason ==
     "100%_threshold"), agrupado por "Espaciado en minutos" (n) y graficado en barras.
@@ -369,14 +369,20 @@ def render_temporal_distribution(iterations: list, chart_key: str = "temporal_di
                  "hasta que se cumplió la condición de salida. La gráfica se actualiza "
                  "al cambiarlo.",
         ))
-        # Tiempo (min) de cada operación exitosa: apertura -> condición cumplida.
-        _mins = [max(0, int(round((it.end_dt - it.start_dt).total_seconds() / 60.0)))
+        # Minutos desde el Horario de ENTRADA hasta el cierre de cada operación
+        # (hora de cierre - entrada). En rango todas entran a la misma hora, así que
+        # esto es el tiempo a salida; en single refleja la hora real del cierre.
+        _ent_min = entrada.hour * 60 + entrada.minute
+        _mins = [max(0, (it.end_dt.hour * 60 + it.end_dt.minute) - _ent_min)
                  for it in _wins]
-        # Bins: bin 1 = [0..n], bin k = [(k-1)*n+1 .. k*n]  (ej. n=15: 0-15, 16-30, …)
+        # Bins de tamaño n alineados a la entrada → etiquetas con RANGO DE HORA real.
         def _bink(m):
             return 1 if m <= 0 else (m + _esp - 1) // _esp
+        def _clock(total_min):
+            h, mm = divmod(int(total_min), 60)
+            return f"{h:02d}:{mm:02d}"
         _maxk = max(_bink(m) for m in _mins)
-        _labels = [f"{0 if k == 1 else (k - 1) * _esp + 1}-{k * _esp}"
+        _labels = [f"{_clock(_ent_min + (k - 1) * _esp)} - {_clock(_ent_min + k * _esp)}"
                    for k in range(1, _maxk + 1)]
         _counts = [0] * _maxk
         for m in _mins:
@@ -387,19 +393,19 @@ def render_temporal_distribution(iterations: list, chart_key: str = "temporal_di
             text=_counts, textposition="outside",
         ))
         _fig.update_layout(
-            xaxis=dict(title="Tiempo a salida (min)", categoryorder="array",
+            xaxis=dict(title="Rango de hora de cierre", categoryorder="array",
                        categoryarray=_labels),
             yaxis=dict(title="Operaciones exitosas"),
             height=360, margin=dict(l=10, r=10, t=40, b=10),
-            title=f"Distribución temporal — n={_esp} min · {len(_wins)} exitosas",
+            title=f"Distribución temporal — bloques de {_esp} min · {len(_wins)} exitosas",
         )
         st.plotly_chart(_fig, use_container_width=True, key=chart_key)
         _avg = sum(_mins) / len(_mins)
-        _med = sorted(_mins)[len(_mins) // 2]
         st.caption(
-            f"Promedio: {_avg:.1f} min · mediana: {_med} min · "
-            f"más rápida: {min(_mins)} min · más lenta: {max(_mins)} min  "
-            f"(solo operaciones que cumplieron la condición de salida)"
+            f"Cierre promedio: {_clock(_ent_min + round(_avg))} · "
+            f"más temprano: {_clock(_ent_min + min(_mins))} · "
+            f"más tarde: {_clock(_ent_min + max(_mins))}  "
+            f"(desde la entrada {_clock(_ent_min)}; solo operaciones exitosas)"
         )
 
 
@@ -2452,7 +2458,8 @@ if _mode == "range":
 
     # Distribución temporal de operaciones exitosas (tiempo a salida) — modo RANGO.
     render_temporal_distribution(
-        [r.get("iteration") for r in day_runs], chart_key="temporal_chart_range"
+        [r.get("iteration") for r in day_runs],
+        entrada=replay_state["order_time"], chart_key="temporal_chart_range",
     )
 
     # ------------------------------------------------------------------
@@ -2784,7 +2791,9 @@ tc[4].metric("Triggers ejecutados", f"{n_trig} / {len(iterations)}")
 
 # Distribución temporal de operaciones exitosas — modo SINGLE: las "operaciones"
 # son las iteraciones del loop (cada reentrada al cumplirse el +100%).
-render_temporal_distribution(iterations, chart_key="temporal_chart_single")
+render_temporal_distribution(
+    iterations, entrada=replay_state["order_time"], chart_key="temporal_chart_single",
+)
 
 # Espacio arriba de la primera iteración igual al que hay entre iteraciones.
 st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
