@@ -2183,12 +2183,17 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
             pc1 = None
             pc2 = st.container()
         def _probe_row(p):
+            _bid = getattr(p, "bid", None)
+            _ask = getattr(p, "ask", None)
+            # Costo del spread por contrato = |bid - ask| * 100 (1 contrato = 100).
+            _ba100 = abs(_bid - _ask) * 100.0 if (_bid is not None and _ask is not None) else None
             return {
                 "strike": p.strike,
                 "open premium": p.opening_premium,
-                "bid": getattr(p, "bid", None),
-                "ask": getattr(p, "ask", None),
+                "bid": _bid,
+                "ask": _ask,
                 "spread": getattr(p, "spread", None),
+                "|bid-ask|×100": _ba100,
                 "spread ok": getattr(p, "spread_ok", None),
                 "óptimo": p.in_range,
                 "extendido": getattr(p, "in_extended", None),
@@ -2207,7 +2212,7 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                 return ["background-color: #cce5ff; font-weight: bold" if is_sel else "" for _ in row]
             return pdf.style.apply(_hl_selected, axis=1).format(
                 {"strike": "{:.2f}", "open premium": "{:.2f}", "bid": "{:.2f}",
-                 "ask": "{:.2f}", "spread": "{:.2f}"},
+                 "ask": "{:.2f}", "spread": "{:.2f}", "|bid-ask|×100": "{:.2f}"},
                 na_rep="—",
             )
 
