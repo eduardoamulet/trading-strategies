@@ -2181,8 +2181,8 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         def _leg_df(probes, s):
             def _sp(p):
                 b, a = getattr(p, "bid", None), getattr(p, "ask", None)
-                # Spread positivo: |Ask - Bid| (nunca negativo).
-                return abs(a - b) if (b is not None and a is not None) else None
+                # Spread = |Ask - Bid| × 100 (costo del spread por contrato, en $).
+                return abs(a - b) * 100.0 if (b is not None and a is not None) else None
             rows = [{
                 "Strike": p.strike,
                 f"{s} Last": p.opening_premium,
