@@ -2254,15 +2254,14 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                        .format(_fmt, na_rep="—")
                        .hide(axis="index"))
             st.caption("⬅ CALLS · Strike · PUTS ➡   ·   azul claro = ITM · amarillo claro = OTM · negrita = contrato elegido")
-            # Tabla al 40% del ancho, con las columnas AJUSTADAS al panel: render HTML
-            # con table-layout:fixed → las columnas se reparten para llenar el
-            # contenedor (entran todas, sin scroll horizontal). Scroll vertical a 430px.
-            _half, _ = st.columns([2, 3])
+            # Render HTML con table-layout:fixed → las columnas se reparten para
+            # AJUSTARSE al panel (entran todas, sin scroll horizontal). Ancho completo:
+            # con 9 columnas, a <50% los headers quedan ilegibles (apilados).
             _tbl_html = _styled.set_table_attributes(
                 'style="width:100%; table-layout:fixed; border-collapse:collapse; '
-                'font-size:0.72rem; text-align:right"'
+                'font-size:0.8rem; text-align:right"'
             ).to_html()
-            _half.markdown(
+            st.markdown(
                 f'<div style="max-height:430px; overflow:auto">{_tbl_html}</div>',
                 unsafe_allow_html=True,
             )
