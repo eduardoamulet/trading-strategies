@@ -1119,11 +1119,8 @@ with st.sidebar.container(border=True):
         _params = adjust_trading_parameters(manual_prob, _predictor_cfg)
         _mode_lbl = _mode_map[_params["mode"]]
 
-    if is_range:
-        st.info(
-            "🤖 **Modo rango** — los **Parámetros por iteración** de abajo se aplican "
-            "a **todos los días** del rango (un solo set de parámetros para el batch)."
-        )
+    # El aviso de "Modo rango" se muestra como tooltip ⓘ en el header
+    # "Parámetros por iteración" (más abajo), solo cuando is_range.
 
     # Parámetros por iteración — VISIBLES EN AMBOS MODOS (single y rango). En rango,
     # estos mismos valores (auto-aplicados desde el slider, editables a mano) se usan
@@ -1154,8 +1151,17 @@ with st.sidebar.container(border=True):
         )
 
         st.markdown("---")
+        _range_tip = (
+            "🤖&#10;Modo rango — los Parámetros por iteración de abajo se aplican a "
+            "todos los días del rango (un solo set de parámetros para el batch)."
+        )
+        _range_info = (
+            f" <span title='{_range_tip}' style='cursor:help; color:#888; "
+            "font-weight:normal;'>ⓘ</span>"
+        ) if is_range else ""
         st.markdown(
-            "<p style='text-align:left; font-weight:bold; margin: 0.3rem 0 0.8rem 0;'>Parámetros por iteración</p>",
+            "<p style='text-align:left; font-weight:bold; margin: 0.3rem 0 0.8rem 0;'>"
+            f"Parámetros por iteración{_range_info}</p>",
             unsafe_allow_html=True,
         )
 
@@ -1394,12 +1400,18 @@ with st.sidebar.container(border=True):
             # CALL o PUT (plus): la 1ª pierna que alcanza el "Umbral de salida (%)" se
             # vende y banca su ganancia; la otra se vende cuando, sumando lo bancado +
             # su valor, se recupera la inversión TOTAL. Si no, cierran al fin del día.
-            st.info(
-                "🎯 **CALL o PUT (plus)** — la **1ª pierna** que alcanza el **Umbral de "
-                "salida (%)** se vende y banca su ganancia. La **otra** se vende cuando, "
-                "sumando lo bancado + su valor, se **recupera la inversión total** "
-                "(CALL + PUT). Si no se cumple antes de la **Hora de salida**, ambas se "
-                "venden a esa hora."
+            _plus_tip = (
+                "🎯&#10;CALL o PUT (plus) — la 1ª pierna que alcanza el Umbral de salida "
+                "(%) se vende y banca su ganancia. La otra se vende cuando, sumando lo "
+                "bancado + su valor, se recupera la inversión total (CALL + PUT). Si no "
+                "se cumple antes de la Hora de salida, ambas se venden a esa hora."
+            )
+            st.markdown(
+                "<p style='text-align:left; font-weight:bold; margin: 0.2rem 0 0.5rem 0;'>"
+                "🎯 CALL o PUT (plus) "
+                f"<span title='{_plus_tip}' style='cursor:help; color:#888; "
+                "font-weight:normal;'>ⓘ</span></p>",
+                unsafe_allow_html=True,
             )
             cps, chs = st.columns(2)
             exit_plus_threshold_pct = cps.number_input(
@@ -1407,12 +1419,38 @@ with st.sidebar.container(border=True):
                 step=5.0, min_value=1.0, format="%.2f",
                 help="ROI% al que se vende la PRIMERA pierna (la que llegue primero al umbral).",
             ) / 100.0
+            # Hora de salida — con `key` + init explícito en session_state para que el
+            # cambio del usuario se LEA de forma confiable en el rerun del botón (sin
+            # key el valor no siempre propagaba). El init a 15:30 evita el bug de
+            # Streamlit de "defaultear a la hora actual" cuando hay key sin valor.
+            if "exit_plus_time" not in st.session_state:
+                st.session_state["exit_plus_time"] = time_cls(15, 30)
             exit_plus_time = chs.time_input(
-                "Hora de salida", value=time_cls(15, 30), step=300,
+                "Hora de salida", key="exit_plus_time", step=300,
                 help=("Hora MÁXIMA de venta de AMBAS piernas (debe ser POSTERIOR a la "
                       "hora de orden). Si la estrategia no se cumple antes, se liquidan "
                       "a esta hora en vez de esperar al cierre (16:00)."),
             )
+            # Autocorrección (NO bloquea): si la Hora de salida quedó en/antes de la
+            # hora de orden, la ventana sería vacía. Elegimos una hora válida posterior
+            # (15:30 si cabe, sino el cierre); si ni eso sirve, sin cap → cierre del día.
+            if exit_plus_time is not None and exit_plus_time <= hora_orden:
+                _safe_exit = next(
+                    (c for c in (time_cls(15, 30), t_end) if c > hora_orden), None
+                )
+                if _safe_exit is not None:
+                    st.warning(
+                        f"La **'Hora de salida'** debe ser posterior a la hora de orden "
+                        f"({hora_orden:%H:%M}). Se usará **{_safe_exit:%H:%M}** "
+                        f"(cambiá el campo si querés otra)."
+                    )
+                    exit_plus_time = _safe_exit
+                else:
+                    st.warning(
+                        f"La hora de orden ({hora_orden:%H:%M}) es muy tardía para una "
+                        f"'Hora de salida' posterior; se liquidará al **cierre del día**."
+                    )
+                    exit_plus_time = None
             exit_threshold_pct = exit_plus_threshold_pct   # referencia de estilo
             stop_loss_pct = -1.0
             call_exit_threshold_pct = put_exit_threshold_pct = exit_plus_threshold_pct
@@ -1498,14 +1536,8 @@ def _validate_form() -> bool:
             )
             return False
 
-    # "CALL o PUT (plus)": la Hora de salida debe ser POSTERIOR a la hora de orden,
-    # sino la ventana queda vacía y todos los días fallarían.
-    if is_call_or_put_plus and exit_plus_time is not None and exit_plus_time <= hora_orden:
-        st.error(
-            f"La **'Hora de salida'** ({exit_plus_time:%H:%M}) debe ser **posterior** a la "
-            f"hora de orden ({hora_orden:%H:%M}). Ajustala (default 15:30)."
-        )
-        return False
+    # ("CALL o PUT (plus)": la Hora de salida se autocorrige más arriba, junto al
+    #  widget, para que sea siempre posterior a la hora de orden — sin bloquear acá.)
     return True
 
 
@@ -1698,8 +1730,11 @@ if btn_iniciar:
                 if not _was_skip:
                     with totals_placeholder.container():
                         render_batch_totals(
+                            # total_days = días INTENTADOS (con 0DTE), NO los 218 hábiles:
+                            # los pre-saltados sin 0DTE no van en day_runs. Antes era
+                            # len(day_list) → mostraba un "X / 218" que parecía procesar todos.
                             day_runs,
-                            total_days=len(day_list),
+                            total_days=len(day_runs),
                             title="💼 Totales del backtest (preliminar)",
                         )
                 progress.progress(

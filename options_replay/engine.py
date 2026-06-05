@@ -22,6 +22,11 @@ from downloader import Downloader
 DEFAULT_TIME_START = time(9, 30)
 DEFAULT_TIME_END = time(16, 0)
 MAX_STRIKES_TO_PROBE = 25  # per side; safety cap
+# En el FALLBACK (sin match de premium) sólo pedimos NBBO de los N strikes MÁS
+# cercanos a ATM — ahí se concentran los spreads chicos (lo que el fallback busca).
+# Evita decenas de llamadas NBBO por día en weekly caros (SOXL ~$230). Subir si se
+# quiere buscar el spread mínimo más lejos del dinero (más lento).
+FALLBACK_QUOTE_CAP = 10
 
 
 @dataclass
@@ -265,6 +270,27 @@ class NoMatchError(ValueError):
         )
 
 
+def _fallback_max_spread(spot: Optional[float]) -> Optional[float]:
+    """Spread bid-ask (en $) máximo aceptable para el FALLBACK, por precio del
+    subyacente. Se ignora el rango de premium: solo importa la liquidez.
+
+        $100-$300   -> $5
+        $300-$600   -> $10
+        $600-$1200  -> $25
+
+    Fuera de $100-$1200 -> None (sin tope; se elige por menor spread y cercanía
+    a ITM). Cuanto más chico el spread, mejor."""
+    if spot is None:
+        return None
+    if 100.0 <= spot <= 300.0:
+        return 5.0
+    if 300.0 < spot <= 600.0:
+        return 10.0
+    if 600.0 < spot <= 1200.0:
+        return 25.0
+    return None
+
+
 def _probe_premium_range(
     downloader: Downloader,
     ticker: str,
@@ -377,7 +403,40 @@ def _probe_premium_range(
     if cand_ext:
         return min(cand_ext, key=_sort_key), probes, "extended"
 
-    # c. Fallback: nadie pasó spread dentro de rango → premium más cercano al óptimo.
+    # c. Fallback (nadie pasó óptimo/extendido + spread): se IGNORA el rango de
+    #    premium. Se elige el contrato cercano a ITM con el MENOR bid-ask spread,
+    #    con el spread <= tope del bucket de precio del subyacente ($100-300->$5,
+    #    $300-600->$10, $600-1200->$25); fuera de $100-1200 sin tope. Prioridad:
+    #    1º menor spread, 2º más cercano a ITM. Cuanto más chico el spread, mejor.
+    fb_max = _fallback_max_spread(spot)
+    # Rellenar el NBBO de los candidatos cercanos a ATM que aún no lo tengan (no se
+    # les pidió quote porque su premium quedó fuera del rango de fetch óptimo∪ext).
+    # CAP: sólo los FALLBACK_QUOTE_CAP strikes más cercanos a ATM (`valid` viene
+    # ordenado por cercanía). Los lejanos tienen spreads anchos y no ganarían; así
+    # el batch de un weekly caro pasa de ~50 a ~20 NBBO/día (las quotes se cachean).
+    if spread_enabled:
+        _fetched = 0
+        for p in valid:
+            if _fetched >= FALLBACK_QUOTE_CAP:
+                break
+            if p.spread is None and p.opening_premium is not None:
+                q = downloader.option_quote(p.occ, date, start_ts)
+                p.bid, p.ask, p.spread = q.get("bid"), q.get("ask"), q.get("spread")
+                _fetched += 1
+
+    with_spread = [p for p in valid if p.spread is not None]
+    if with_spread:
+        pool = with_spread if fb_max is None else [p for p in with_spread if p.spread <= fb_max]
+        if not pool:                        # ninguno bajo el tope → el de menor spread igual
+            pool = with_spread
+
+        def _fb_key(p: StrikeProbe):
+            itm_rank = p.itm_depth if p.itm_depth >= 0 else abs(p.itm_depth) + 1e6
+            return (round(p.spread, 2), itm_rank)   # 1º menor spread, 2º cercano a ITM
+        return min(pool, key=_fb_key), probes, "fallback"
+
+    # Sin NBBO disponible (filtro de spread off, o sin quotes para ningún strike) →
+    # fallback histórico: el premium de apertura más cercano al rango óptimo.
     def _dist_to_range(v: float) -> float:
         if v < premium_min:
             return premium_min - v
