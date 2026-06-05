@@ -344,6 +344,65 @@ def build_chart(res) -> go.Figure:
     return fig
 
 
+def render_temporal_distribution(iterations: list, chart_key: str = "temporal_dist_chart") -> None:
+    """Distribución temporal de operaciones EXITOSAS: tiempo desde la apertura hasta
+    que se cumplió la condición de salida de la estrategia (exit_reason ==
+    "100%_threshold"), agrupado por "Espaciado en minutos" (n) y graficado en barras.
+    `iterations` = lista de IterationResult (los None se ignoran). Las que salieron por
+    stop_loss o por fin de ventana (timeout) se EXCLUYEN. Sirve para single y rango."""
+    _wins = [it for it in iterations
+             if it is not None and getattr(it, "exit_reason", "") == "100%_threshold"]
+    with st.expander(
+        f"⏱️ Distribución temporal de operaciones exitosas ({len(_wins)})",
+        expanded=True,
+    ):
+        if not _wins:
+            st.caption(
+                "No hubo operaciones que cumplieran la condición de salida de la "
+                "estrategia (todas salieron por stop loss o por fin de ventana)."
+            )
+            return
+        _esp = int(st.number_input(
+            "Espaciado en minutos", min_value=1, max_value=240, value=15, step=5,
+            key="temporal_spacing_min",
+            help="Tamaño n de cada intervalo para agrupar el tiempo desde la apertura "
+                 "hasta que se cumplió la condición de salida. La gráfica se actualiza "
+                 "al cambiarlo.",
+        ))
+        # Tiempo (min) de cada operación exitosa: apertura -> condición cumplida.
+        _mins = [max(0, int(round((it.end_dt - it.start_dt).total_seconds() / 60.0)))
+                 for it in _wins]
+        # Bins: bin 1 = [0..n], bin k = [(k-1)*n+1 .. k*n]  (ej. n=15: 0-15, 16-30, …)
+        def _bink(m):
+            return 1 if m <= 0 else (m + _esp - 1) // _esp
+        _maxk = max(_bink(m) for m in _mins)
+        _labels = [f"{0 if k == 1 else (k - 1) * _esp + 1}-{k * _esp}"
+                   for k in range(1, _maxk + 1)]
+        _counts = [0] * _maxk
+        for m in _mins:
+            _counts[_bink(m) - 1] += 1
+        import plotly.graph_objects as _go
+        _fig = _go.Figure(_go.Bar(
+            x=_labels, y=_counts, marker_color="#2e7d32",
+            text=_counts, textposition="outside",
+        ))
+        _fig.update_layout(
+            xaxis=dict(title="Tiempo a salida (min)", categoryorder="array",
+                       categoryarray=_labels),
+            yaxis=dict(title="Operaciones exitosas"),
+            height=360, margin=dict(l=10, r=10, t=40, b=10),
+            title=f"Distribución temporal — n={_esp} min · {len(_wins)} exitosas",
+        )
+        st.plotly_chart(_fig, use_container_width=True, key=chart_key)
+        _avg = sum(_mins) / len(_mins)
+        _med = sorted(_mins)[len(_mins) // 2]
+        st.caption(
+            f"Promedio: {_avg:.1f} min · mediana: {_med} min · "
+            f"más rápida: {min(_mins)} min · más lenta: {max(_mins)} min  "
+            f"(solo operaciones que cumplieron la condición de salida)"
+        )
+
+
 def render_batch_totals(
     day_runs: list,
     total_days: int,
@@ -915,8 +974,9 @@ with st.sidebar.container(border=True):
     # Backward-compat: el resto del código usa `sel_date` para single-day.
     sel_date = sel_start
 
-    if not is_range:
-        # Hora de orden — Step + verificación de ROI arriba; Hora + Minuto abajo.
+    # "Horario de entrada" configurable en AMBOS modos (single y rango).
+    if True:
+        # Horario de entrada — Step + verificación de ROI arriba; Hora + Minuto abajo.
         # El Step define la granularidad del dropdown de minutos.
         st.markdown(
             "<p style='font-weight:bold; margin: 0.4rem 0 0.2rem 0;'>Horario de entrada</p>",
@@ -933,8 +993,10 @@ with st.sidebar.container(border=True):
         # de instanciar CUALQUIER widget cuyo key se vaya a modificar (selectboxes
         # step, hora y minuto). Streamlit prohíbe escribir session_state[key] de un
         # widget ya creado.
+        # La sugerencia de "próxima iteración" (end+1min del último single) solo se
+        # aplica en modo single — en rango la entrada no debe heredarla.
         _pending_sync = st.session_state.pop("_pending_hora_sync", None)
-        if _pending_sync is not None:
+        if _pending_sync is not None and not is_range:
             if len(_pending_sync) == 3:
                 _ph, _pm, _pstep = _pending_sync
                 st.session_state["hora_orden_step"] = int(_pstep)
@@ -1024,10 +1086,6 @@ with st.sidebar.container(border=True):
 
         hora_orden = time_cls(int(selected_hour), int(selected_minute))
 
-    else:
-        # En modo rango usamos 09:30 fijo (apertura) como horario de entrada.
-        hora_orden = time_cls(9, 30)
-        sell_check_min = int(st.session_state.get("sell_check_min", 1))
 
     # Horario de salida (GENERAL, para las 5 estrategias) — fin de la ventana
     # operativa. Reemplaza el cierre fijo 16:00 en la lógica. Lo que quede sin
@@ -2392,65 +2450,10 @@ if _mode == "range":
             f"viernes vencen el mismo día). No cuentan como error ni en los totales."
         )
 
-    # ------------------------------------------------------------------
-    # Distribución temporal de operaciones EXITOSAS (tiempo a salida)
-    # ------------------------------------------------------------------
-    # "Exitosa" = se cumplió la condición de salida de la estrategia
-    # (exit_reason == "100%_threshold"), en CUALQUIER modo (CALL y PUT, Sólo
-    # CALL/PUT, CALL o PUT, CALL o PUT plus). Las que salieron por stop_loss o
-    # por fin de sesión / Hora de salida (timeout) se EXCLUYEN del cálculo.
-    _wins = [r["iteration"] for r in successful
-             if getattr(r["iteration"], "exit_reason", "") == "100%_threshold"]
-    with st.expander(
-        f"⏱️ Distribución temporal de operaciones exitosas ({len(_wins)})",
-        expanded=True,
-    ):
-        if not _wins:
-            st.caption(
-                "No hubo operaciones que cumplieran la condición de salida de la "
-                "estrategia (todas salieron por stop loss o por fin de sesión)."
-            )
-        else:
-            _esp = int(st.number_input(
-                "Espaciado en minutos", min_value=1, max_value=240, value=15, step=5,
-                key="temporal_spacing_min",
-                help="Tamaño n de cada intervalo para agrupar el tiempo desde la "
-                     "apertura de la posición hasta que se cumplió la condición de "
-                     "salida de la estrategia. La gráfica se actualiza al cambiarlo.",
-            ))
-            # Tiempo (min) de cada operación exitosa: apertura -> condición cumplida.
-            _mins = [max(0, int(round((it.end_dt - it.start_dt).total_seconds() / 60.0)))
-                     for it in _wins]
-            # Bins: bin 1 = [0..n], bin k = [(k-1)*n+1 .. k*n]  (ej. n=15: 0-15, 16-30, …)
-            def _bink(m):
-                return 1 if m <= 0 else (m + _esp - 1) // _esp
-            _maxk = max(_bink(m) for m in _mins)
-            _labels = [f"{0 if k == 1 else (k - 1) * _esp + 1}-{k * _esp}"
-                       for k in range(1, _maxk + 1)]
-            _counts = [0] * _maxk
-            for m in _mins:
-                _counts[_bink(m) - 1] += 1
-
-            import plotly.graph_objects as _go
-            _fig = _go.Figure(_go.Bar(
-                x=_labels, y=_counts, marker_color="#2e7d32",
-                text=_counts, textposition="outside",
-            ))
-            _fig.update_layout(
-                xaxis=dict(title="Tiempo a salida (min)", categoryorder="array",
-                           categoryarray=_labels),
-                yaxis=dict(title="Operaciones exitosas"),
-                height=360, margin=dict(l=10, r=10, t=40, b=10),
-                title=f"Distribución temporal — n={_esp} min · {len(_wins)} exitosas",
-            )
-            st.plotly_chart(_fig, use_container_width=True, key="temporal_dist_chart")
-            _avg = sum(_mins) / len(_mins)
-            _med = sorted(_mins)[len(_mins) // 2]
-            st.caption(
-                f"Promedio: {_avg:.1f} min · mediana: {_med} min · "
-                f"más rápida: {min(_mins)} min · más lenta: {max(_mins)} min  "
-                f"(solo operaciones que cumplieron la condición de salida)"
-            )
+    # Distribución temporal de operaciones exitosas (tiempo a salida) — modo RANGO.
+    render_temporal_distribution(
+        [r.get("iteration") for r in day_runs], chart_key="temporal_chart_range"
+    )
 
     # ------------------------------------------------------------------
     # Días con resultados — tabla + descargas dentro de un expander
@@ -2778,6 +2781,10 @@ tc[2].markdown(
 )
 tc[3].metric("Capital final", f"${final_capital:,.2f}")
 tc[4].metric("Triggers ejecutados", f"{n_trig} / {len(iterations)}")
+
+# Distribución temporal de operaciones exitosas — modo SINGLE: las "operaciones"
+# son las iteraciones del loop (cada reentrada al cumplirse el +100%).
+render_temporal_distribution(iterations, chart_key="temporal_chart_single")
 
 # Espacio arriba de la primera iteración igual al que hay entre iteraciones.
 st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
