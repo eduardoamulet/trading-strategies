@@ -71,6 +71,15 @@ class Downloader:
         return q
 
     def nearest_expiry(self, ticker: str, on_or_after: str) -> Optional[str]:
-        """Return the smallest expiration >= on_or_after, or None."""
+        """Return the smallest expiration >= on_or_after, or None.
+
+        Fallback: el filtro `expiration_date.gte` de Polygon a veces NO incluye la
+        expiración del MISMO día (el 0DTE de hoy), aunque los contratos existan. Si
+        la lista viene vacía pero la consulta EXACTA de la cadena para esa fecha trae
+        contratos, ese día sí tiene 0DTE → devolvemos esa fecha."""
         exps = self.adapter.list_expirations(ticker, on_or_after)
-        return exps[0] if exps else None
+        if exps:
+            return exps[0]
+        if not self.adapter.options_chain(ticker, on_or_after).empty:
+            return on_or_after
+        return None
