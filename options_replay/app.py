@@ -2172,24 +2172,22 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         expanded=False,
     ):
         # Cadena de opciones estilo thinkorswim: CALLS (izq) · Strike (centro) · PUTS
-        # (der). Bid/Ask pegados al strike; Prima/Spread/|b-a|×100 hacia afuera.
-        # Strikes ascendentes; fila azul = el contrato elegido por cada leg.
+        # (der). Orden: Last, Bid, Ask, Spread | Strike | Bid, Ask, Spread, Last.
+        # Spread = Ask - Bid. Strikes ascendentes; fila azul = el contrato elegido.
         _it_mode = getattr(it, "mode", "both")
         _show_call = _it_mode != "put_only"
         _show_put = _it_mode != "call_only"
 
-        def _ba100(p):
-            b, a = getattr(p, "bid", None), getattr(p, "ask", None)
-            return abs(b - a) * 100.0 if (b is not None and a is not None) else None
-
         def _leg_df(probes, s):
+            def _sp(p):
+                b, a = getattr(p, "bid", None), getattr(p, "ask", None)
+                return (a - b) if (b is not None and a is not None) else None
             rows = [{
                 "Strike": p.strike,
-                f"{s} Prima": p.opening_premium,
-                f"{s} |b-a|×100": _ba100(p),
-                f"{s} Spread": getattr(p, "spread", None),
+                f"{s} Last": p.opening_premium,
                 f"{s} Bid": getattr(p, "bid", None),
                 f"{s} Ask": getattr(p, "ask", None),
+                f"{s} Spread": _sp(p),
             } for p in probes]
             return pd.DataFrame(rows).set_index("Strike") if rows else pd.DataFrame()
 
@@ -2206,8 +2204,8 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
             st.caption("Sin contratos probados.")
         else:
             _chain = _chain.sort_index().reset_index()
-            _cc = ["C Prima", "C |b-a|×100", "C Spread", "C Bid", "C Ask"]
-            _pc = ["P Bid", "P Ask", "P Spread", "P |b-a|×100", "P Prima"]
+            _cc = ["C Last", "C Bid", "C Ask", "C Spread"]
+            _pc = ["P Bid", "P Ask", "P Spread", "P Last"]
             _order = ([c for c in _cc if c in _chain.columns] + ["Strike"]
                       + [c for c in _pc if c in _chain.columns])
             _chain = _chain[_order]
