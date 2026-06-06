@@ -389,6 +389,20 @@ def _probe_premium_range(
             return True
         return p.spread_ok
 
+    # Opción 2/3 ("value"): IGNORA el rango óptimo/extendido Y el spread. Elige, entre
+    # TODOS los strikes con prima válida, el más cercano al "Valor objetivo del
+    # contrato" (value_target); desempata por cercanía a ITM. El rango óptimo/extendido
+    # NO aplica a este criterio (no se filtra por prima mínima/máxima).
+    if selection_criterion == "value":
+        pick = _select(valid)
+        # Traer el NBBO del contrato ELEGIDO para el display (su prima suele caer
+        # fuera del rango de fetch óptimo/extendido, así que aún no se pidió). No
+        # afecta la selección (el spread se ignora), solo completa la tabla.
+        if spread_enabled and pick.spread is None and pick.occ:
+            q = downloader.option_quote(pick.occ, date, start_ts)
+            pick.bid, pick.ask, pick.spread = q.get("bid"), q.get("ask"), q.get("spread")
+        return pick, probes, "value"
+
     # a. Óptimo + pasa spread
     cand_opt = [p for p in valid if p.in_range and _passes_spread(p)]
     if cand_opt:

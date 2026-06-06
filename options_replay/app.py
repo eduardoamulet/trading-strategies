@@ -1163,7 +1163,11 @@ with st.sidebar.container(border=True):
             "Valor objetivo del contrato ($)", key="value_target",
             min_value=0.05, step=0.25, format="%.2f",
             help=("Elige el contrato cuya prima de ENTRADA sea más cercana a este valor "
-                  "(CALL y PUT por igual), ignorando el spread."),
+                  "(CALL y PUT por igual), ignorando el spread Y el rango óptimo/extendido."),
+        )
+        st.caption(
+            "ℹ️ Con este criterio el **Rango óptimo/extendido NO aplica**: entre TODOS los "
+            "strikes se elige el de prima más cercana a este valor (desempate: cercanía a ITM)."
         )
     if selection_criterion == "salto_1dte":
         st.info(
@@ -2279,6 +2283,7 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
             "optimo": "<span style='color:#2e7d32'>óptimo</span>",
             "extended": "<span style='color:#e65100'>extendido</span>",
             "fallback": "<span style='color:#b71c1c'>fallback</span>",
+            "value": "<span style='color:#1565c0'>valor</span>",
         }.get(tier, tier or "")
         return (f"<b>{label}:</b> bid ${bid:.2f} / ask ${ask:.2f} · "
                 f"spread <b>${spread:.2f}</b> · {_tier_badge}")
