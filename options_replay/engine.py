@@ -660,6 +660,7 @@ def run_next_iteration(
     exit_plus_time: Optional[time] = None,
     selection_criterion: str = "itm",
     value_target: float = 2.0,
+    salto_exit_time: Optional[time] = None,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -680,6 +681,7 @@ def run_next_iteration(
             invest_call, invest_put, start_ts,
             iteration_idx=iteration_idx, max_strikes_to_probe=max_strikes_to_probe,
             mode=mode, ext_min=ext_min, ext_max=ext_max, value_target=value_target,
+            exit_time=salto_exit_time,
         )
 
     under_full = downloader.underlying(ticker, date)
@@ -761,15 +763,18 @@ def run_overnight_1dte(
     ext_max: Optional[float] = None,
     value_target: float = 2.0,
     sell_date: Optional[str] = None,
+    exit_time: Optional[time] = None,
 ) -> IterationResult:
     """Opción 3 'Salto 1 DTE': compra un contrato que VENCE el día hábil siguiente,
-    en `date` a la hora de entrada, y lo vende el día hábil siguiente a la MISMA
-    hora. Selección por value (prima de compra ≈ value_target). Sin umbral ni stop:
-    el único evento de salida es la venta del día siguiente. exit_reason=
-    'overnight_1dte'. Lanza ValueError si no hay día hábil siguiente con datos."""
+    en `date` a la hora de entrada, y lo vende el día hábil siguiente al `exit_time`
+    (Horario de salida). Si exit_time es None, vende a la misma hora de entrada.
+    Selección por value (prima de compra ≈ value_target). Sin umbral ni stop: el
+    único evento de salida es la venta del día siguiente. exit_reason='overnight_1dte'.
+    Lanza ValueError si no hay día hábil siguiente con datos."""
     ticker = ticker.upper().strip()
     buy_ts = pd.Timestamp(start_ts)
     entry_time = buy_ts.time()
+    sell_time = exit_time or entry_time   # hora de venta del día siguiente (Horario de salida)
 
     if sell_date is None:
         sell_date = next_trading_day(downloader, ticker, date)
@@ -778,7 +783,7 @@ def run_overnight_1dte(
             f"Salto 1DTE: no hay día hábil siguiente con datos para {ticker} tras "
             f"{date} (¿fecha demasiado reciente/futura?)."
         )
-    sell_ts = pd.Timestamp.combine(pd.Timestamp(sell_date).date(), entry_time)
+    sell_ts = pd.Timestamp.combine(pd.Timestamp(sell_date).date(), sell_time)
     if buy_ts.tz is not None:
         sell_ts = sell_ts.tz_localize(buy_ts.tz)
 
@@ -857,7 +862,7 @@ def run_overnight_1dte(
     put_exit = _sell_premium(put_pick.occ) if mode != "call_only" else 0.0
     if call_exit is None or put_exit is None:
         raise ValueError(
-            f"Salto 1DTE: sin barras de venta el {sell_date} a las {entry_time:%H:%M} "
+            f"Salto 1DTE: sin barras de venta el {sell_date} a las {sell_time:%H:%M} "
             f"(CALL={call_exit}, PUT={put_exit})."
         )
 

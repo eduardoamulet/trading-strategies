@@ -1145,8 +1145,8 @@ with st.sidebar.container(border=True):
               "Rango óptimo. Opción 2 'Valor ≈ objetivo': IGNORA el spread y elige el "
               "contrato cuya prima de ENTRADA sea más cercana al valor objetivo (default "
               "$2), CALL y PUT. Opción 3 'Salto 1 DTE': compra un contrato que VENCE el "
-              "día hábil siguiente y lo vende ese día a la MISMA hora de entrada "
-              "(overnight); selecciona por valor; sin umbral/stop; ignora Horario de salida."),
+              "día hábil siguiente (a la Horario de entrada) y lo vende ese día a la "
+              "Horario de salida (overnight); selecciona por valor; sin umbral/stop."),
     )
     if _sel_crit_label.startswith("Opción 1"):
         selection_criterion = "spread"
@@ -1168,9 +1168,9 @@ with st.sidebar.container(border=True):
     if selection_criterion == "salto_1dte":
         st.info(
             "🌙 **Salto 1 DTE** — compra un contrato que **vence el día hábil siguiente** "
-            "y lo vende ese día a la **misma hora de entrada** (overnight). Selección por "
-            "valor (prima ≈ objetivo); **sin** Umbral de ROI ni Stop loss. El **Horario "
-            "de salida no aplica** (la venta es la hora de entrada del día siguiente)."
+            "a la **Horario de entrada**, y lo vende **ese día a la Horario de salida** "
+            "(overnight). Selección por valor (prima ≈ objetivo); **sin** Umbral de ROI "
+            "ni Stop loss. Ej.: compra viernes 09:30 → vende lunes a la Horario de salida."
         )
 
     # Cargar config del predictor — necesario en ambos modos.
@@ -1704,6 +1704,7 @@ if btn_iniciar:
                         exit_plus_time=exit_plus_time,
                         selection_criterion=selection_criterion,
                         value_target=float(value_target),
+                        salto_exit_time=horario_salida,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1832,6 +1833,7 @@ if btn_iniciar:
                         exit_plus_time=exit_plus_time,
                         selection_criterion=selection_criterion,
                         value_target=float(value_target),
+                        salto_exit_time=horario_salida,
                     )
                     if selection_criterion == "salto_1dte":
                         expiry = it.end_dt.strftime("%Y-%m-%d")  # venta = vencimiento 1DTE
@@ -1963,6 +1965,7 @@ elif btn_proxima:
                         exit_plus_time=exit_plus_time,
                         selection_criterion=selection_criterion,
                         value_target=float(value_target),
+                        salto_exit_time=horario_salida,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
