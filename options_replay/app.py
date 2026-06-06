@@ -1782,6 +1782,7 @@ if btn_iniciar:
                     _valid_wd = None   # sin info → chequear todos (comportamiento previo)
 
             _skipped_no0dte = 0
+            _skipped_1dte = 0   # Opción 3: días sin "día hábil siguiente" con datos
             for i, d in enumerate(day_list):
                 date_str = d.isoformat()
                 # Fin de la ventana = Horario de salida - 1 min (liquida lo pendiente
@@ -1792,7 +1793,8 @@ if btn_iniciar:
                 # Pre-skip RÁPIDO (sin API): si el día de semana no tiene 0DTE para este
                 # ticker y NO hay chain cacheado, se salta directo. Evita un nearest_expiry
                 # por cada Lun-Jue de un weekly → el backtest es muchísimo más rápido.
-                if (_valid_wd is not None and d.weekday() not in _valid_wd
+                if (selection_criterion != "salto_1dte"
+                        and _valid_wd is not None and d.weekday() not in _valid_wd
                         and not (DATA_DIR / "chain" / f"{ticker}_{date_str}.parquet").exists()):
                     _skipped_no0dte += 1
                     progress.progress(
@@ -1804,7 +1806,12 @@ if btn_iniciar:
 
                 _was_skip = False
                 try:
-                    expiry = validate_0dte_session(dl, ticker, date_str)
+                    # Opción 3 (Salto 1DTE): el día de COMPRA no necesita 0DTE; el
+                    # vencimiento es el día hábil siguiente (lo resuelve el motor).
+                    if selection_criterion == "salto_1dte":
+                        expiry = None
+                    else:
+                        expiry = validate_0dte_session(dl, ticker, date_str)
                     it = run_next_iteration(
                         dl, ticker, date_str,
                         float(premium_min), float(premium_max),
@@ -1826,6 +1833,8 @@ if btn_iniciar:
                         selection_criterion=selection_criterion,
                         value_target=float(value_target),
                     )
+                    if selection_criterion == "salto_1dte":
+                        expiry = it.end_dt.strftime("%Y-%m-%d")  # venta = vencimiento 1DTE
                     day_runs.append({
                         "date": date_str,
                         "expiry": expiry,
@@ -1847,7 +1856,14 @@ if btn_iniciar:
                     # Día sin 0DTE (tickers weekly como SOXL/MSTR: solo viernes tienen
                     # 0DTE) → SALTAR silenciosamente, NO listarlo como error. Otros
                     # ValueError (sin data, etc.) sí se reportan como error real.
-                    if "No 0 DTE option" in str(e):
+                    _msg = str(e)
+                    if _msg.startswith("Salto 1DTE:"):
+                        # Opción 3: no hay día hábil siguiente con datos (último día del
+                        # rango / siguiente futuro) o el siguiente no tiene cadena → SALTO
+                        # LIMPIO con aviso, sin cortar la corrida ni listarlo como error.
+                        _skipped_1dte += 1
+                        _was_skip = True
+                    elif "No 0 DTE option" in _msg:
                         _skipped_no0dte += 1
                         _was_skip = True
                     else:
@@ -1876,11 +1892,15 @@ if btn_iniciar:
                             total_days=len(day_runs),
                             title="💼 Totales del backtest (preliminar)",
                         )
+                _skip_txt = ""
+                if _skipped_no0dte:
+                    _skip_txt += f"  ·  {_skipped_no0dte} sin 0DTE saltados"
+                if _skipped_1dte:
+                    _skip_txt += f"  ·  {_skipped_1dte} sin día siguiente saltados"
                 progress.progress(
                     (i + 1) / len(day_list),
                     text=(f"Backtest {ticker}: {i + 1}/{len(day_list)} días"
-                          + (f"  ·  {_skipped_no0dte} sin 0DTE saltados"
-                             if _skipped_no0dte else f" procesados ({date_str})")),
+                          + (_skip_txt or f" procesados ({date_str})")),
                 )
             progress.empty()
             totals_placeholder.empty()
@@ -1894,6 +1914,7 @@ if btn_iniciar:
                 "order_time": hora_orden,
                 "day_runs": day_runs,
                 "skipped_no0dte": _skipped_no0dte,
+                "skipped_1dte": _skipped_1dte,
             }
             st.rerun()
 
@@ -2534,6 +2555,13 @@ if _mode == "range":
         st.caption(
             f"ℹ️ Se saltaron **{_n_skipped}** días sin 0DTE (ticker weekly: solo los "
             f"viernes vencen el mismo día). No cuentan como error ni en los totales."
+        )
+    _n_skip_1dte = int(replay_state.get("skipped_1dte", 0))
+    if _n_skip_1dte:
+        st.caption(
+            f"🌙 Salto 1 DTE: se saltaron **{_n_skip_1dte}** días sin **día hábil "
+            f"siguiente** con datos (último(s) día(s) del rango o vencimiento futuro). "
+            f"No cuentan como error ni en los totales."
         )
 
     # Distribución temporal de operaciones exitosas (tiempo a salida) — modo RANGO.
