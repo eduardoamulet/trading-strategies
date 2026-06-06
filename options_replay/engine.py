@@ -285,6 +285,7 @@ def _probe_premium_range(
     ext_max: Optional[float] = None,
     spot: Optional[float] = None,
     spread_cfg: Optional[dict] = None,
+    selection_criterion: str = "itm",   # "itm" (cercano a ITM) | "spread" (menor spread)
 ) -> tuple[Optional[StrikeProbe], list[StrikeProbe], str]:
     """Selector de contrato: filtro de spread (compuerta dura) + Óptimo/Extendido.
 
@@ -359,13 +360,16 @@ def _probe_premium_range(
         return None, probes, ""
 
     def _sort_key(p: StrikeProbe):
-        # Prioridad: (1) MÁS CERCANO A ITM (el spread ya es compuerta dura, no
-        # criterio de selección). Desempates: (2) menor spread, (3) mayor volumen.
+        # El spread ya es compuerta dura; acá decide SOLO el orden de selección:
+        #   "itm"    (default, opción 2): 1º más cercano a ITM, 2º menor spread.
+        #   "spread" (opción 1):          1º menor spread, 2º más cercano a ITM.
         if p.itm_depth >= 0:
             itm_rank = p.itm_depth           # ITM: menor profundidad = "1-ITM"
         else:
             itm_rank = abs(p.itm_depth) + 1e6  # OTM: después de todos los ITM
         sp = round(p.spread, 2) if p.spread is not None else 9.99
+        if selection_criterion == "spread":
+            return (sp, itm_rank, -(p.volume or 0.0))
         return (itm_rank, sp, -(p.volume or 0.0))
 
     def _passes_spread(p: StrikeProbe) -> bool:
@@ -642,6 +646,7 @@ def run_next_iteration(
     put_stop_loss_pct: float = -1.0,
     exit_plus_threshold_pct: float = 0.50,
     exit_plus_time: Optional[time] = None,
+    selection_criterion: str = "itm",
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -693,6 +698,7 @@ def run_next_iteration(
         put_stop_loss_pct=put_stop_loss_pct,
         exit_plus_threshold_pct=exit_plus_threshold_pct,
         exit_plus_time=exit_plus_time,
+        selection_criterion=selection_criterion,
     )
 
 
@@ -724,6 +730,7 @@ def _run_one_iteration(
     put_stop_loss_pct: float = -1.0,
     exit_plus_threshold_pct: float = 0.50,
     exit_plus_time: Optional[time] = None,
+    selection_criterion: str = "itm",
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -755,6 +762,7 @@ def _run_one_iteration(
             downloader, ticker, date, calls_sorted, "C", start_ts, end_ts,
             premium_min, premium_max, max_strikes_to_probe,
             ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
+            selection_criterion=selection_criterion,
         )
         if call_pick is None:
             raise NoMatchError("CALL", call_probes, premium_min, premium_max)
@@ -776,6 +784,7 @@ def _run_one_iteration(
             downloader, ticker, date, puts_sorted, "P", start_ts, end_ts,
             premium_min, premium_max, max_strikes_to_probe,
             ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
+            selection_criterion=selection_criterion,
         )
         if put_pick is None:
             raise NoMatchError("PUT", put_probes, premium_min, premium_max)

@@ -1124,6 +1124,29 @@ with st.sidebar.container(border=True):
         )
         horario_salida = t_end
 
+    # Criterio de selección de contrato — entre los que PASAN la compuerta de spread,
+    # cuál se elige. Default: opción 2 (más cercano a ITM), el comportamiento actual.
+    st.markdown(
+        "<p style='font-weight:bold; margin: 0.5rem 0 0.2rem 0;'>Criterio de selección de contrato</p>",
+        unsafe_allow_html=True,
+    )
+    _crit_options = [
+        "Opción 1 — Menor spread (en Rango óptimo)",
+        "Opción 2 — Más cercano a ITM (spread como 2º)",
+    ]
+    _sel_crit_label = st.selectbox(
+        "Criterio de selección de contrato",
+        options=_crit_options,
+        index=1,   # default = Opción 2 (más cercano a ITM = lo que corre hoy)
+        key="selection_criterion_label",
+        label_visibility="collapsed",
+        help=("Entre los contratos que pasan la compuerta de spread: 'Más cercano a ITM' "
+              "(opción 2, default) elige el más cercano a ITM con el spread de desempate; "
+              "'Menor spread' (opción 1) elige el de menor bid-ask. El spread sigue siendo "
+              "compuerta dura en ambas."),
+    )
+    selection_criterion = "spread" if _sel_crit_label.startswith("Opción 1") else "itm"
+
     # Cargar config del predictor — necesario en ambos modos.
     _predictor_cfg = load_predictor_config()
 
@@ -1637,6 +1660,7 @@ if btn_iniciar:
                         put_stop_loss_pct=float(put_stop_loss_pct),
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                         exit_plus_time=exit_plus_time,
+                        selection_criterion=selection_criterion,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1756,6 +1780,7 @@ if btn_iniciar:
                         put_stop_loss_pct=float(put_stop_loss_pct),
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                         exit_plus_time=exit_plus_time,
+                        selection_criterion=selection_criterion,
                     )
                     day_runs.append({
                         "date": date_str,
@@ -1871,6 +1896,7 @@ elif btn_proxima:
                         put_stop_loss_pct=float(put_stop_loss_pct),
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                         exit_plus_time=exit_plus_time,
+                        selection_criterion=selection_criterion,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
