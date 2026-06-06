@@ -1308,15 +1308,16 @@ with st.sidebar.container(border=True):
 
         _straddle_mode = st.radio(
             "Modo",
-            options=["CALL y PUT", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)"],
+            options=["CALL y PUT", "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)"],
             index=0,
             horizontal=True,
             key="straddle_mode_radio",
             on_change=_sync_straddle_mode_changed,
             label_visibility="collapsed",
             help=(
-                "CALL y PUT: salida combinada por ROI total. · Sólo CALL / Sólo PUT: "
-                "una pierna. · CALL o PUT: se venden AMBAS cuando cualquiera llega a "
+                "CALL y PUT: salida combinada por ROI total. · CALL y PUT (plus): se "
+                "venden ambas SOLO en el Horario de salida (sin umbral ni stop). · Sólo "
+                "CALL / Sólo PUT: una pierna. · CALL o PUT: se venden AMBAS cuando cualquiera llega a "
                 "+100%. · CALL o PUT (plus): la 1ª pierna que alcanza el 'Umbral de "
                 "salida (%)' se vende; la otra se vende cuando entre lo bancado y su "
                 "valor se recupera la inversión total."
@@ -1326,6 +1327,7 @@ with st.sidebar.container(border=True):
         only_put_now = _straddle_mode == "Sólo PUT"
         is_call_or_put = _straddle_mode == "CALL o PUT"
         is_call_or_put_plus = _straddle_mode == "CALL o PUT (plus)"
+        is_both_plus = _straddle_mode == "CALL y PUT (plus)"
         if only_call_now:
             engine_mode = "call_only"
         elif only_put_now:
@@ -1334,6 +1336,8 @@ with st.sidebar.container(border=True):
             engine_mode = "call_or_put"
         elif is_call_or_put_plus:
             engine_mode = "call_or_put_plus"
+        elif is_both_plus:
+            engine_mode = "both_plus"
         else:
             engine_mode = "both"
 
@@ -1511,6 +1515,18 @@ with st.sidebar.container(border=True):
                 "Umbral de ROI ni Stop loss. Termina al +100% o al **cierre del día**."
             )
             exit_threshold_pct = 1.0          # +100% (solo referencia de estilo)
+            stop_loss_pct = -1.0
+            call_exit_threshold_pct = put_exit_threshold_pct = 1.0
+            call_stop_loss_pct = put_stop_loss_pct = -1.0
+        elif is_both_plus:
+            # CALL y PUT (plus): se compran ambas y se venden las DOS SOLO al llegar al
+            # Horario de salida (1 min antes). NO usa Umbral de ROI ni Stop loss.
+            st.info(
+                "🎯 **CALL y PUT (plus)** — se compran ambas piernas y se **venden las dos "
+                "al llegar al Horario de salida** (1 min antes). No depende de Umbral de "
+                "ROI ni Stop loss; no hay salida anticipada."
+            )
+            exit_threshold_pct = 1.0          # ignorado por el modo both_plus
             stop_loss_pct = -1.0
             call_exit_threshold_pct = put_exit_threshold_pct = 1.0
             call_stop_loss_pct = put_stop_loss_pct = -1.0

@@ -359,18 +359,22 @@ def _probe_premium_range(
     if not valid:
         return None, probes, ""
 
-    def _sort_key(p: StrikeProbe):
-        # El spread ya es compuerta dura; acá decide SOLO el orden de selección:
-        #   "itm"    (default, opción 2): 1º más cercano a ITM, 2º menor spread.
-        #   "spread" (opción 1):          1º menor spread, 2º más cercano a ITM.
-        if p.itm_depth >= 0:
-            itm_rank = p.itm_depth           # ITM: menor profundidad = "1-ITM"
-        else:
-            itm_rank = abs(p.itm_depth) + 1e6  # OTM: después de todos los ITM
-        sp = round(p.spread, 2) if p.spread is not None else 9.99
+    def _itm_rank(p: StrikeProbe):
+        # ITM: menor profundidad = "1-ITM"; OTM: después de todos los ITM.
+        return p.itm_depth if p.itm_depth >= 0 else abs(p.itm_depth) + 1e6
+
+    def _sp(p: StrikeProbe):
+        return round(p.spread, 2) if p.spread is not None else 9.99
+
+    def _select(cands: list[StrikeProbe]) -> StrikeProbe:
+        # El spread ya es compuerta dura; acá se decide CUÁL se elige:
+        #   "spread" (opción 1): el de MENOR spread (desempate: cercano a ITM, volumen).
+        #   "itm"    (opción 2, default): de los 2 contratos de MENOR spread, el MÁS
+        #            CERCANO A ITM (igual para CALL y para PUT).
         if selection_criterion == "spread":
-            return (sp, itm_rank, -(p.volume or 0.0))
-        return (itm_rank, sp, -(p.volume or 0.0))
+            return min(cands, key=lambda p: (_sp(p), _itm_rank(p), -(p.volume or 0.0)))
+        top2 = sorted(cands, key=lambda p: (_sp(p), _itm_rank(p)))[:2]
+        return min(top2, key=lambda p: (_itm_rank(p), _sp(p)))
 
     def _passes_spread(p: StrikeProbe) -> bool:
         if not spread_enabled:
@@ -380,12 +384,12 @@ def _probe_premium_range(
     # a. Óptimo + pasa spread
     cand_opt = [p for p in valid if p.in_range and _passes_spread(p)]
     if cand_opt:
-        return min(cand_opt, key=_sort_key), probes, "optimo"
+        return _select(cand_opt), probes, "optimo"
 
     # b. Extendido + pasa spread
     cand_ext = [p for p in valid if p.in_extended and _passes_spread(p)]
     if cand_ext:
-        return min(cand_ext, key=_sort_key), probes, "extended"
+        return _select(cand_ext), probes, "extended"
 
     # c. SIN FALLBACK: si nadie quedó dentro del Óptimo/Extendido pasando el filtro
     #    de spread, NO se compra. No hay mecanismo alternativo de selección.
@@ -937,6 +941,12 @@ def _run_one_iteration(
             else:
                 put_exit_idx, put_exit_reason = a_idx, "100%_threshold"
                 call_exit_idx, call_exit_reason = b_idx, b_reason
+    elif mode == "both_plus":
+        # ----- CALL y PUT (plus): se compran ambas piernas y se venden las DOS SOLO
+        # al llegar a la Hora de salida (end_ts). NO usa Umbral de ROI ni Stop loss. -----
+        trigger_pos = None
+        exit_reason = "session_end"
+        merged = merged.reset_index(drop=True)
     else:
         # ----- Salida combinada / single-leg (modos existentes) -----
         if exit_metric == "call":
