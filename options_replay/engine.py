@@ -785,10 +785,12 @@ def run_overnight_1dte(
     # Spot en el día de compra a la hora de entrada.
     under_b = downloader.underlying(ticker, date)
     if under_b.empty:
-        raise ValueError(f"Sin subyacente para {ticker} en {date}")
+        # Día de compra sin sesión (feriado, etc.) → error "Salto 1DTE:" para que el
+        # backtest de rango lo SALTE limpio en vez de listarlo como error.
+        raise ValueError(f"Salto 1DTE: sin datos del subyacente {ticker} en {date} (¿feriado/sin sesión?).")
     ub = under_b[under_b["timestamp"] >= buy_ts]
     if ub.empty:
-        raise ValueError(f"Sin barras de {ticker} tras {buy_ts:%H:%M} en {date}")
+        raise ValueError(f"Salto 1DTE: sin barras de {ticker} tras {buy_ts:%H:%M} en {date}.")
     spot_at_start = float(ub.iloc[0]["open"])
 
     # Cadena que VENCE el día hábil siguiente (= 1DTE el día de compra).
