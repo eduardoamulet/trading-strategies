@@ -1133,6 +1133,7 @@ with st.sidebar.container(border=True):
     _crit_options = [
         "Opción 1 — Menor spread (en Rango óptimo)",
         "Opción 2 — Valor del contrato ≈ objetivo (sin spread)",
+        "Opción 3 — Salto 1 DTE (overnight, vende día hábil siguiente)",
     ]
     _sel_crit_label = st.selectbox(
         "Criterio de selección de contrato",
@@ -1143,19 +1144,33 @@ with st.sidebar.container(border=True):
         help=("Opción 1 'Menor spread': compuerta de spread + el de menor bid-ask en el "
               "Rango óptimo. Opción 2 'Valor ≈ objetivo': IGNORA el spread y elige el "
               "contrato cuya prima de ENTRADA sea más cercana al valor objetivo (default "
-              "$2), tanto CALL como PUT; desempata por cercanía a ITM."),
+              "$2), CALL y PUT. Opción 3 'Salto 1 DTE': compra un contrato que VENCE el "
+              "día hábil siguiente y lo vende ese día a la MISMA hora de entrada "
+              "(overnight); selecciona por valor; sin umbral/stop; ignora Horario de salida."),
     )
-    selection_criterion = "spread" if _sel_crit_label.startswith("Opción 1") else "value"
-    # Valor objetivo de la prima para la Opción 2 (configurable, default $2).
+    if _sel_crit_label.startswith("Opción 1"):
+        selection_criterion = "spread"
+    elif _sel_crit_label.startswith("Opción 3"):
+        selection_criterion = "salto_1dte"
+    else:
+        selection_criterion = "value"
+    # Valor objetivo de la prima — lo usan la Opción 2 y la Opción 3 (ambas "value").
     if "value_target" not in st.session_state:
         st.session_state["value_target"] = 2.0
     value_target = 2.0
-    if selection_criterion == "value":
+    if selection_criterion in ("value", "salto_1dte"):
         value_target = st.number_input(
             "Valor objetivo del contrato ($)", key="value_target",
             min_value=0.05, step=0.25, format="%.2f",
-            help=("Opción 2 elige el contrato cuya prima de ENTRADA sea más cercana a este "
-                  "valor (CALL y PUT por igual), ignorando el spread."),
+            help=("Elige el contrato cuya prima de ENTRADA sea más cercana a este valor "
+                  "(CALL y PUT por igual), ignorando el spread."),
+        )
+    if selection_criterion == "salto_1dte":
+        st.info(
+            "🌙 **Salto 1 DTE** — compra un contrato que **vence el día hábil siguiente** "
+            "y lo vende ese día a la **misma hora de entrada** (overnight). Selección por "
+            "valor (prima ≈ objetivo); **sin** Umbral de ROI ni Stop loss. El **Horario "
+            "de salida no aplica** (la venta es la hora de entrada del día siguiente)."
         )
 
     # Cargar config del predictor — necesario en ambos modos.
@@ -2484,11 +2499,13 @@ _REASON_LABELS = {
     "100%_threshold": "Exit por umbral de profit",
     "stop_loss": "Exit por STOP LOSS",
     "session_end": "Sin trigger — corre hasta cierre",
+    "overnight_1dte": "Venta overnight (1 DTE, día hábil siguiente)",
 }
 _REASON_ICONS = {
     "100%_threshold": "🎯",
     "stop_loss": "🛑",
     "session_end": "🕓",
+    "overnight_1dte": "🌙",
 }
 
 if _mode == "range":

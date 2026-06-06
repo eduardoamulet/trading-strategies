@@ -670,6 +670,18 @@ def run_next_iteration(
         raise ValueError("premium_min cannot be negative")
 
     ticker = ticker.upper().strip()
+
+    # Opción 3 "Salto 1 DTE": despacha al flujo OVERNIGHT (compra en buy_date a la
+    # hora de entrada, vende el día hábil siguiente a la MISMA hora). Selección por
+    # value (prima ≈ value_target); ignora Umbral/Stop/Horario de salida.
+    if selection_criterion == "salto_1dte":
+        return run_overnight_1dte(
+            downloader, ticker, date, premium_min, premium_max,
+            invest_call, invest_put, start_ts,
+            iteration_idx=iteration_idx, max_strikes_to_probe=max_strikes_to_probe,
+            mode=mode, ext_min=ext_min, ext_max=ext_max, value_target=value_target,
+        )
+
     under_full = downloader.underlying(ticker, date)
     if under_full.empty:
         raise ValueError(f"No underlying data for {ticker} on {date}")
@@ -713,6 +725,181 @@ def run_next_iteration(
         exit_plus_time=exit_plus_time,
         selection_criterion=selection_criterion,
         value_target=value_target,
+    )
+
+
+def next_trading_day(downloader: Downloader, ticker: str, date: str,
+                     max_lookahead: int = 6) -> Optional[str]:
+    """Primer día hábil posterior a `date` con barras de subyacente (salta findes
+    y feriados). None si ninguno dentro de `max_lookahead` días (p.ej. fecha futura
+    cuyo día siguiente aún no tiene datos)."""
+    d = pd.Timestamp(date)
+    for _ in range(max_lookahead):
+        d = d + pd.Timedelta(days=1)
+        ds = d.strftime("%Y-%m-%d")
+        try:
+            if not downloader.underlying(ticker, ds).empty:
+                return ds
+        except Exception:
+            pass
+    return None
+
+
+def run_overnight_1dte(
+    downloader: Downloader,
+    ticker: str,
+    date: str,                         # buy_date
+    premium_min: float,
+    premium_max: float,
+    invest_call: float,
+    invest_put: float,
+    start_ts: pd.Timestamp,            # entrada en buy_date (date + Horario de entrada)
+    iteration_idx: int = 0,
+    max_strikes_to_probe: int = 25,
+    mode: str = "both",
+    ext_min: Optional[float] = None,
+    ext_max: Optional[float] = None,
+    value_target: float = 2.0,
+    sell_date: Optional[str] = None,
+) -> IterationResult:
+    """Opción 3 'Salto 1 DTE': compra un contrato que VENCE el día hábil siguiente,
+    en `date` a la hora de entrada, y lo vende el día hábil siguiente a la MISMA
+    hora. Selección por value (prima de compra ≈ value_target). Sin umbral ni stop:
+    el único evento de salida es la venta del día siguiente. exit_reason=
+    'overnight_1dte'. Lanza ValueError si no hay día hábil siguiente con datos."""
+    ticker = ticker.upper().strip()
+    buy_ts = pd.Timestamp(start_ts)
+    entry_time = buy_ts.time()
+
+    if sell_date is None:
+        sell_date = next_trading_day(downloader, ticker, date)
+    if sell_date is None:
+        raise ValueError(
+            f"Salto 1DTE: no hay día hábil siguiente con datos para {ticker} tras "
+            f"{date} (¿fecha demasiado reciente/futura?)."
+        )
+    sell_ts = pd.Timestamp.combine(pd.Timestamp(sell_date).date(), entry_time)
+    if buy_ts.tz is not None:
+        sell_ts = sell_ts.tz_localize(buy_ts.tz)
+
+    # Spot en el día de compra a la hora de entrada.
+    under_b = downloader.underlying(ticker, date)
+    if under_b.empty:
+        raise ValueError(f"Sin subyacente para {ticker} en {date}")
+    ub = under_b[under_b["timestamp"] >= buy_ts]
+    if ub.empty:
+        raise ValueError(f"Sin barras de {ticker} tras {buy_ts:%H:%M} en {date}")
+    spot_at_start = float(ub.iloc[0]["open"])
+
+    # Cadena que VENCE el día hábil siguiente (= 1DTE el día de compra).
+    chain = downloader.chain(ticker, sell_date)
+    if chain.empty:
+        raise ValueError(f"Salto 1DTE: sin cadena venciendo {sell_date} para {ticker}")
+    calls_chain = chain[chain["contract_type"].str.lower() == "call"].copy()
+    puts_chain = chain[chain["contract_type"].str.lower() == "put"].copy()
+
+    if mode == "call_only":
+        invest_put = 0.0
+    elif mode == "put_only":
+        invest_call = 0.0
+
+    calls_sorted = calls_chain.assign(
+        _d=(calls_chain["strike_price"] - spot_at_start).abs()
+    ).sort_values(["_d", "strike_price"])
+    puts_sorted = puts_chain.assign(
+        _d=(puts_chain["strike_price"] - spot_at_start).abs()
+    ).sort_values(["_d", "strike_price"])
+
+    spread_cfg = load_spread_config()
+    probe_end = buy_ts + pd.Timedelta(minutes=1)
+
+    def _pick(sorted_chain, right):
+        # Probing en buy_date: lee la prima de COMPRA al minuto de entrada y elige
+        # por value (más cercano a value_target). El criterio "value" ignora spread.
+        return _probe_premium_range(
+            downloader, ticker, date, sorted_chain, right, buy_ts, probe_end,
+            premium_min, premium_max, max_strikes_to_probe,
+            ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
+            selection_criterion="value", value_target=value_target,
+        )
+
+    _empty = StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False)
+    if mode != "put_only":
+        call_pick, call_probes, call_tier = _pick(calls_sorted, "C")
+        if call_pick is None:
+            raise NoMatchError("CALL", call_probes, premium_min, premium_max)
+    else:
+        call_pick, call_probes, call_tier = _empty, [], ""
+    if mode != "call_only":
+        put_pick, put_probes, put_tier = _pick(puts_sorted, "P")
+        if put_pick is None:
+            raise NoMatchError("PUT", put_probes, premium_min, premium_max)
+    else:
+        put_pick, put_probes, put_tier = _empty, [], ""
+
+    call_entry = float(call_pick.opening_premium or 0.0)
+    put_entry = float(put_pick.opening_premium or 0.0)
+
+    def _sell_premium(occ: str) -> Optional[float]:
+        if not occ:
+            return 0.0
+        sb = downloader.option(occ, sell_date)
+        if sb.empty:
+            return None
+        sin_ = sb[sb["timestamp"] >= sell_ts]
+        if sin_.empty:
+            return float(sb.iloc[-1]["open"])   # sin barra a esa hora → última del día
+        return float(sin_.iloc[0]["open"])
+
+    call_exit = _sell_premium(call_pick.occ) if mode != "put_only" else 0.0
+    put_exit = _sell_premium(put_pick.occ) if mode != "call_only" else 0.0
+    if call_exit is None or put_exit is None:
+        raise ValueError(
+            f"Salto 1DTE: sin barras de venta el {sell_date} a las {entry_time:%H:%M} "
+            f"(CALL={call_exit}, PUT={put_exit})."
+        )
+
+    initial_total = invest_call + invest_put
+    fc = invest_call * (call_exit / call_entry) if call_entry else 0.0
+    fp = invest_put * (put_exit / put_entry) if put_entry else 0.0
+    final_total = fc + fp
+
+    # Spot del día de venta + df mínimo de 2 puntos (compra → venta overnight) para
+    # que build_chart / _build_display_df rendericen igual que en intradía.
+    under_s = downloader.underlying(ticker, sell_date)
+    us = under_s[under_s["timestamp"] >= sell_ts] if not under_s.empty else under_s
+    spot_at_sell = float(us.iloc[0]["open"]) if not us.empty else spot_at_start
+    _ce, _pe = (call_exit or 0.0), (put_exit or 0.0)
+    overnight_df = pd.DataFrame({
+        "timestamp": [buy_ts, sell_ts],
+        "spot": [spot_at_start, spot_at_sell],
+        "call_px": [call_entry, _ce],
+        "put_px": [put_entry, _pe],
+        "total": [call_entry + put_entry, _ce + _pe],
+        "pnl_acum": [0.0, final_total - initial_total],
+    })
+
+    return IterationResult(
+        iteration=iteration_idx,
+        invest_call=invest_call, invest_put=invest_put,
+        premium_min=premium_min, premium_max=premium_max,
+        exit_threshold_pct=0.0, exit_metric="total", stop_loss_pct=-1.0,
+        start_dt=buy_ts, end_dt=sell_ts, exit_reason="overnight_1dte",
+        spot_at_start=spot_at_start,
+        call_strike=call_pick.strike, put_strike=put_pick.strike,
+        call_occ=call_pick.occ, put_occ=put_pick.occ,
+        call_entry_premium=call_entry, put_entry_premium=put_entry,
+        call_exit_premium=(call_exit or 0.0), put_exit_premium=(put_exit or 0.0),
+        initial_total=initial_total, final_total=final_total,
+        max_total=max(initial_total, final_total), max_total_dt=sell_ts,
+        min_total=min(initial_total, final_total), min_total_dt=sell_ts,
+        call_probes=call_probes, put_probes=put_probes, df=overnight_df,
+        mode=mode,
+        call_bid=call_pick.bid, call_ask=call_pick.ask, call_spread=call_pick.spread,
+        call_range_tier=call_tier,
+        put_bid=put_pick.bid, put_ask=put_pick.ask, put_spread=put_pick.spread,
+        put_range_tier=put_tier,
+        call_exit_reason="overnight_1dte", put_exit_reason="overnight_1dte",
     )
 
 
