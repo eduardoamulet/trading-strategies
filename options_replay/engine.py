@@ -285,7 +285,8 @@ def _probe_premium_range(
     ext_max: Optional[float] = None,
     spot: Optional[float] = None,
     spread_cfg: Optional[dict] = None,
-    selection_criterion: str = "itm",   # "itm" (cercano a ITM) | "spread" (menor spread)
+    selection_criterion: str = "itm",   # "itm" (cercano a ITM) | "spread" (menor spread) | "value" (prima ≈ value_target, IGNORA spread)
+    value_target: float = 2.0,          # objetivo de prima ($) para selection_criterion="value"
 ) -> tuple[Optional[StrikeProbe], list[StrikeProbe], str]:
     """Selector de contrato: filtro de spread (compuerta dura) + Óptimo/Extendido.
 
@@ -367,16 +368,23 @@ def _probe_premium_range(
         return round(p.spread, 2) if p.spread is not None else 9.99
 
     def _select(cands: list[StrikeProbe]) -> StrikeProbe:
-        # El spread ya es compuerta dura; acá se decide CUÁL se elige:
+        # Acá se decide CUÁL contrato se elige entre los candidatos:
         #   "spread" (opción 1): el de MENOR spread (desempate: cercano a ITM, volumen).
-        #   "itm"    (opción 2, default): de los 2 contratos de MENOR spread, el MÁS
-        #            CERCANO A ITM (igual para CALL y para PUT).
+        #   "value"  (opción 2): IGNORA el spread; el de prima de entrada MÁS CERCANA a
+        #            value_target ($2 default), igual para CALL y PUT. Desempate: ITM.
+        #   "itm"    (legado): de los 2 de menor spread, el más cercano a ITM.
         if selection_criterion == "spread":
             return min(cands, key=lambda p: (_sp(p), _itm_rank(p), -(p.volume or 0.0)))
+        if selection_criterion == "value":
+            return min(cands, key=lambda p: (round(abs((p.opening_premium or 0.0) - value_target), 4),
+                                             _itm_rank(p)))
         top2 = sorted(cands, key=lambda p: (_sp(p), _itm_rank(p)))[:2]
         return min(top2, key=lambda p: (_itm_rank(p), _sp(p)))
 
     def _passes_spread(p: StrikeProbe) -> bool:
+        # Opción 2 ("value") NO considera el spread → la compuerta no aplica.
+        if selection_criterion == "value":
+            return True
         if not spread_enabled:
             return True
         return p.spread_ok
@@ -651,6 +659,7 @@ def run_next_iteration(
     exit_plus_threshold_pct: float = 0.50,
     exit_plus_time: Optional[time] = None,
     selection_criterion: str = "itm",
+    value_target: float = 2.0,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -703,6 +712,7 @@ def run_next_iteration(
         exit_plus_threshold_pct=exit_plus_threshold_pct,
         exit_plus_time=exit_plus_time,
         selection_criterion=selection_criterion,
+        value_target=value_target,
     )
 
 
@@ -735,6 +745,7 @@ def _run_one_iteration(
     exit_plus_threshold_pct: float = 0.50,
     exit_plus_time: Optional[time] = None,
     selection_criterion: str = "itm",
+    value_target: float = 2.0,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -766,7 +777,7 @@ def _run_one_iteration(
             downloader, ticker, date, calls_sorted, "C", start_ts, end_ts,
             premium_min, premium_max, max_strikes_to_probe,
             ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
-            selection_criterion=selection_criterion,
+            selection_criterion=selection_criterion, value_target=value_target,
         )
         if call_pick is None:
             raise NoMatchError("CALL", call_probes, premium_min, premium_max)
@@ -788,7 +799,7 @@ def _run_one_iteration(
             downloader, ticker, date, puts_sorted, "P", start_ts, end_ts,
             premium_min, premium_max, max_strikes_to_probe,
             ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
-            selection_criterion=selection_criterion,
+            selection_criterion=selection_criterion, value_target=value_target,
         )
         if put_pick is None:
             raise NoMatchError("PUT", put_probes, premium_min, premium_max)

@@ -1108,11 +1108,11 @@ with st.sidebar.container(border=True):
         unsafe_allow_html=True,
     )
     if "horario_salida" not in st.session_state:
-        st.session_state["horario_salida"] = time_cls(16, 0)
+        st.session_state["horario_salida"] = time_cls(15, 59)
     horario_salida = st.time_input(
-        "Horario de salida", key="horario_salida", step=300,
+        "Horario de salida", key="horario_salida", step=60,
         label_visibility="collapsed",
-        help=("Fin de la ventana operativa (default 16:00). Toda evaluación, compra y "
+        help=("Fin de la ventana operativa (default 15:59). Toda evaluación, compra y "
               "venta ocurre dentro de [Horario de entrada, Horario de salida]; lo que "
               "quede sin vender se liquida en el minuto ANTES de esta hora."),
     )
@@ -1132,20 +1132,31 @@ with st.sidebar.container(border=True):
     )
     _crit_options = [
         "Opción 1 — Menor spread (en Rango óptimo)",
-        "Opción 2 — Más cercano a ITM (spread como 2º)",
+        "Opción 2 — Valor del contrato ≈ objetivo (sin spread)",
     ]
     _sel_crit_label = st.selectbox(
         "Criterio de selección de contrato",
         options=_crit_options,
-        index=1,   # default = Opción 2 (más cercano a ITM = lo que corre hoy)
+        index=1,   # default = Opción 2
         key="selection_criterion_label",
         label_visibility="collapsed",
-        help=("Entre los contratos que pasan la compuerta de spread: 'Más cercano a ITM' "
-              "(opción 2, default) elige el más cercano a ITM con el spread de desempate; "
-              "'Menor spread' (opción 1) elige el de menor bid-ask. El spread sigue siendo "
-              "compuerta dura en ambas."),
+        help=("Opción 1 'Menor spread': compuerta de spread + el de menor bid-ask en el "
+              "Rango óptimo. Opción 2 'Valor ≈ objetivo': IGNORA el spread y elige el "
+              "contrato cuya prima de ENTRADA sea más cercana al valor objetivo (default "
+              "$2), tanto CALL como PUT; desempata por cercanía a ITM."),
     )
-    selection_criterion = "spread" if _sel_crit_label.startswith("Opción 1") else "itm"
+    selection_criterion = "spread" if _sel_crit_label.startswith("Opción 1") else "value"
+    # Valor objetivo de la prima para la Opción 2 (configurable, default $2).
+    if "value_target" not in st.session_state:
+        st.session_state["value_target"] = 2.0
+    value_target = 2.0
+    if selection_criterion == "value":
+        value_target = st.number_input(
+            "Valor objetivo del contrato ($)", key="value_target",
+            min_value=0.05, step=0.25, format="%.2f",
+            help=("Opción 2 elige el contrato cuya prima de ENTRADA sea más cercana a este "
+                  "valor (CALL y PUT por igual), ignorando el spread."),
+        )
 
     # Cargar config del predictor — necesario en ambos modos.
     _predictor_cfg = load_predictor_config()
@@ -1677,6 +1688,7 @@ if btn_iniciar:
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                         exit_plus_time=exit_plus_time,
                         selection_criterion=selection_criterion,
+                        value_target=float(value_target),
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1797,6 +1809,7 @@ if btn_iniciar:
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                         exit_plus_time=exit_plus_time,
                         selection_criterion=selection_criterion,
+                        value_target=float(value_target),
                     )
                     day_runs.append({
                         "date": date_str,
@@ -1913,6 +1926,7 @@ elif btn_proxima:
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                         exit_plus_time=exit_plus_time,
                         selection_criterion=selection_criterion,
+                        value_target=float(value_target),
                     )
                 except NoMatchError as e:
                     st.error(str(e))
