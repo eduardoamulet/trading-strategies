@@ -32,6 +32,12 @@ simulation = st.Page(
     url_path="simulation",   # explícito: ambos scripts se llaman app.py
     default=True,
 )
+signals = st.Page(
+    "options_replay/signals_app.py",
+    title="Señales",
+    icon="📡",
+    url_path="signals",
+)
 live = st.Page(
     "live_trader/ui/app.py",
     title="Live",
@@ -40,7 +46,7 @@ live = st.Page(
 )
 
 pg = st.navigation(
-    {"Secciones": [simulation, live]},
+    {"Secciones": [simulation, signals, live]},
     position="sidebar",
 )
 pg.run()
