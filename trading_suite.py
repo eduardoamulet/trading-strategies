@@ -1,19 +1,14 @@
-"""Trading Suite — entry point unificado con dos secciones:
+"""Trading Suite — entry point con menú lateral (estilo Investep).
 
-  🔬 Simulation  → options_replay (backtest histórico con datos de Polygon)
-  🟢 Live        → live_trader (trading de opciones en vivo, Tradier SANDBOX)
+Menú (izquierda):
+  🏠 Dashboard · 🔔 Alertas · 🎯 Estrategias · 📈 Activos · 💬 Yoel AI · 👤 Perfil · ❓ Ayuda
+  Herramientas: 🔬 Backtesting · 🟢 Live
 
-Correr desde la raíz del proyecto (Traiding/):
+Correr desde la raíz (Traiding/):
     py -m streamlit run trading_suite.py
 
-Notas de arquitectura:
-- Cada sección es un script Streamlit independiente; st.navigation los corre como
-  "páginas". set_page_config se llama una sola vez acá (los sub-apps lo envuelven
-  en try/except para seguir funcionando standalone).
-- No hay colisión de módulos: options_replay usa `config` (Polygon) y live_trader
-  usa `settings` (Tradier) — nombres distintos a propósito.
-- La sección Live solo CONTROLA/visualiza; el monitoreo + auto-TP corren en el
-  daemon aparte:  cd live_trader && py -m daemon.runner
+Notas: cada página es un script Streamlit independiente; set_page_config se llama una
+sola vez acá (los sub-apps lo envuelven en try/except para correr standalone).
 """
 from __future__ import annotations
 
@@ -25,28 +20,32 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-simulation = st.Page(
-    "options_replay/app.py",
-    title="Simulation",
-    icon="🔬",
-    url_path="simulation",   # explícito: ambos scripts se llaman app.py
-    default=True,
-)
-signals = st.Page(
-    "options_replay/signals_app.py",
-    title="Señales",
-    icon="📡",
-    url_path="signals",
-)
-live = st.Page(
-    "live_trader/ui/app.py",
-    title="Live",
-    icon="🟢",
-    url_path="live",
-)
+# ── Menú principal (espejo de Investep) ──────────────────────────────────────
+dashboard = st.Page("options_replay/dashboard_app.py", title="Dashboard", icon="🏠",
+                    url_path="dashboard", default=True)
+alertas = st.Page("options_replay/signals_app.py", title="Alertas", icon="🔔",
+                  url_path="alertas")
+estrategias = st.Page("options_replay/estrategias_app.py", title="Estrategias", icon="🎯",
+                      url_path="estrategias")
+activos = st.Page("options_replay/activos_app.py", title="Activos", icon="📈",
+                  url_path="activos")
+yoel = st.Page("options_replay/yoel_ai_app.py", title="Yoel AI", icon="💬",
+               url_path="yoel-ai")
+perfil = st.Page("options_replay/perfil_app.py", title="Perfil", icon="👤",
+                 url_path="perfil")
+ayuda = st.Page("options_replay/ayuda_app.py", title="Ayuda", icon="❓",
+                url_path="ayuda")
+
+# ── Herramientas propias ─────────────────────────────────────────────────────
+backtesting = st.Page("options_replay/app.py", title="Backtesting", icon="🔬",
+                      url_path="simulation")
+live = st.Page("live_trader/ui/app.py", title="Live", icon="🟢", url_path="live")
 
 pg = st.navigation(
-    {"Secciones": [simulation, signals, live]},
+    {
+        "Menú": [dashboard, alertas, estrategias, activos, yoel, perfil, ayuda],
+        "Herramientas": [backtesting, live],
+    },
     position="sidebar",
 )
 pg.run()
