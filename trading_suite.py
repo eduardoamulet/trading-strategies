@@ -1,7 +1,7 @@
 """Trading Suite — entry point con menú lateral (estilo Investep).
 
 Menú (izquierda):
-  🏠 Dashboard · 🔔 Alertas · 🎯 Estrategias · 📈 Activos · 💬 Yoel AI · 👤 Perfil · ❓ Ayuda
+  🏠 Dashboard · 🔔 Alertas · 🎯 Estrategias · 📈 Activos · 👤 Perfil · ❓ Ayuda
   Herramientas: 🔬 Backtesting · 🟢 Live
 
 Correr desde la raíz (Traiding/):
@@ -29,8 +29,6 @@ estrategias = st.Page("options_replay/estrategias_app.py", title="Estrategias", 
                       url_path="estrategias")
 activos = st.Page("options_replay/activos_app.py", title="Activos", icon="📈",
                   url_path="activos")
-yoel = st.Page("options_replay/yoel_ai_app.py", title="Yoel AI", icon="💬",
-               url_path="yoel-ai")
 perfil = st.Page("options_replay/perfil_app.py", title="Perfil", icon="👤",
                  url_path="perfil")
 ayuda = st.Page("options_replay/ayuda_app.py", title="Ayuda", icon="❓",
@@ -43,7 +41,7 @@ live = st.Page("live_trader/ui/app.py", title="Live", icon="🟢", url_path="liv
 
 pg = st.navigation(
     {
-        "Menú": [dashboard, alertas, estrategias, activos, yoel, perfil, ayuda],
+        "Menú": [dashboard, alertas, estrategias, activos, perfil, ayuda],
         "Herramientas": [backtesting, live],
     },
     position="sidebar",
