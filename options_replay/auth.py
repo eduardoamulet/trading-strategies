@@ -89,10 +89,11 @@ def top_user_menu(user, perfil_page=None) -> None:
     y Cerrar sesión (como en el sitio)."""
     if not user:
         return
-    # Fijar el menú en la esquina superior derecha (fuera del flujo del contenido).
+    # Fijar el menú en la esquina superior derecha, POR ENCIMA del header de Streamlit
+    # (z-index muy alto: sino el header lo tapaba y "desaparecía").
     st.markdown(
-        "<style>div[data-testid='stPopover']{position:fixed; top:10px; right:22px; "
-        "z-index:1000;}</style>", unsafe_allow_html=True)
+        "<style>div[data-testid='stPopover']{position:fixed; top:6px; right:16px; "
+        "z-index:9999999 !important;}</style>", unsafe_allow_html=True)
     with st.popover(f"👤 {_initials(user)}"):
         st.markdown(
             f"**{user.get('nombre') or user['email']}**  \n"
