@@ -1,26 +1,31 @@
-"""Trading Suite — entry point con menú lateral (estilo Investep).
+"""Trading Suite — entry point con login + menú lateral (estilo Investep).
 
-Menú (izquierda):
-  🏠 Dashboard · 🔔 Alertas · 🎯 Estrategias · 📈 Activos · 👤 Perfil · ❓ Ayuda
-  Herramientas: 🔬 Backtesting · 🟢 Live
+Flujo:
+  1) Gate de autenticación (auth.require_login): si no hay sesión → login; si no hay
+     usuarios → crea el primer admin. Frena la app hasta entrar.
+  2) Menú según rol: la sección Administración (👥 Usuarios) solo la ven los admin.
 
-Correr desde la raíz (Traiding/):
-    py -m streamlit run trading_suite.py
+Menú: 🏠 Dashboard · 🔔 Alertas · 🎯 Estrategias · 📈 Activos · 👤 Perfil · ❓ Ayuda
+Herramientas: 🔬 Backtesting · 🟢 Live   ·   Administración (admin): 👥 Usuarios
 
-Notas: cada página es un script Streamlit independiente; set_page_config se llama una
-sola vez acá (los sub-apps lo envuelven en try/except para correr standalone).
+Correr desde la raíz (Traiding/):  py -m streamlit run trading_suite.py
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import streamlit as st
 
-st.set_page_config(
-    page_title="Trading Suite",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Trading Suite", layout="wide", initial_sidebar_state="expanded")
 
-# ── Menú principal (espejo de Investep) ──────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).parent / "options_replay"))
+import auth  # noqa: E402
+
+# ── 1) Gate de autenticación ─────────────────────────────────────────────────
+user = auth.require_login()   # frena si no hay sesión / crea el primer admin
+
+# ── 2) Páginas ───────────────────────────────────────────────────────────────
 dashboard = st.Page("options_replay/dashboard_app.py", title="Dashboard", icon="🏠",
                     url_path="dashboard", default=True)
 alertas = st.Page("options_replay/signals_app.py", title="Alertas", icon="🔔",
@@ -29,26 +34,22 @@ estrategias = st.Page("options_replay/estrategias_app.py", title="Estrategias", 
                       url_path="estrategias")
 activos = st.Page("options_replay/activos_app.py", title="Activos", icon="📈",
                   url_path="activos")
-perfil = st.Page("options_replay/perfil_app.py", title="Perfil", icon="👤",
-                 url_path="perfil")
-ayuda = st.Page("options_replay/ayuda_app.py", title="Ayuda", icon="❓",
-                url_path="ayuda")
-
-# ── Herramientas propias ─────────────────────────────────────────────────────
+perfil = st.Page("options_replay/perfil_app.py", title="Perfil", icon="👤", url_path="perfil")
+ayuda = st.Page("options_replay/ayuda_app.py", title="Ayuda", icon="❓", url_path="ayuda")
 backtesting = st.Page("options_replay/app.py", title="Backtesting", icon="🔬",
                       url_path="simulation")
 live = st.Page("live_trader/ui/app.py", title="Live", icon="🟢", url_path="live")
-
-# ── Administración ───────────────────────────────────────────────────────────
 usuarios = st.Page("options_replay/usuarios_app.py", title="Usuarios", icon="👥",
                    url_path="usuarios")
 
-pg = st.navigation(
-    {
-        "Menú": [dashboard, alertas, estrategias, activos, perfil, ayuda],
-        "Herramientas": [backtesting, live],
-        "Administración": [usuarios],
-    },
-    position="sidebar",
-)
+# ── 3) Navegación según rol ──────────────────────────────────────────────────
+nav = {
+    "Menú": [dashboard, alertas, estrategias, activos, perfil, ayuda],
+    "Herramientas": [backtesting, live],
+}
+if user.get("rol") == "admin":
+    nav["Administración"] = [usuarios]
+
+auth.logout_button()
+pg = st.navigation(nav, position="sidebar")
 pg.run()

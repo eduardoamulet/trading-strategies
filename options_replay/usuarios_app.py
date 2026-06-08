@@ -13,11 +13,14 @@ import streamlit as st
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 import users_db as udb  # noqa: E402
+import auth  # noqa: E402
 
 try:
     st.set_page_config(page_title="Usuarios", layout="wide")
 except Exception:
     pass
+
+auth.require_role("admin")   # defensa en profundidad: solo admin
 
 st.title("👥 Administración de Usuarios")
 st.caption("Alta, edición y baja de usuarios. Contraseñas hasheadas (PBKDF2 + salt).")
