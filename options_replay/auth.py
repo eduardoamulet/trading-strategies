@@ -90,10 +90,15 @@ def top_user_menu(user, perfil_page=None) -> None:
     if not user:
         return
     # Fijar el menú en la esquina superior derecha, POR ENCIMA del header de Streamlit
-    # (z-index muy alto: sino el header lo tapaba y "desaparecía").
+    # (z-index alto: sino el header lo tapaba). width:auto para que el botón NO se
+    # estire a todo el ancho (Streamlit le pone width:100% al contenedor por defecto).
     st.markdown(
-        "<style>div[data-testid='stPopover']{position:fixed; top:6px; right:16px; "
-        "z-index:9999999 !important;}</style>", unsafe_allow_html=True)
+        "<style>"
+        "div[data-testid='stPopover']{position:fixed !important; top:6px; right:16px;"
+        " left:auto !important; width:auto !important; min-width:0 !important;"
+        " z-index:9999999 !important;}"
+        "div[data-testid='stPopover'] > button{width:auto !important;}"
+        "</style>", unsafe_allow_html=True)
     with st.popover(f"👤 {_initials(user)}"):
         st.markdown(
             f"**{user.get('nombre') or user['email']}**  \n"
