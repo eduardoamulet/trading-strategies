@@ -1,11 +1,12 @@
-"""Almacén SQLite de señales/alertas.
+"""Almacén SQLite de señales/alertas (Historial de Señales de investepacademyia).
 
-Por qué SQLite (vs Parquet): ingreso INCREMENTAL (cada email trae alertas nuevas),
-DEDUP por clave única, UPDATE de estado/ganancia por fila, y queries — todo en un
-archivo local sin servidor. Consistente con live_trader (que ya usa SQLite).
+Por qué SQLite: ingreso INCREMENTAL, DEDUP por `id` (UUID estable de cada señal),
+UPDATE de estado/ganancia por fila, y queries — todo en un archivo local sin
+servidor. Consistente con live_trader.
 
-DB en data/signals.db (gitignored). Tabla `alerts` con UNIQUE(accion,fecha,hora,
-estrategia,tipo) para que reprocesar el mismo correo no duplique.
+DB en data/signals.db (gitignored). Dedup por PRIMARY KEY `id` (INSERT OR IGNORE),
+así reimportar el mismo payload no duplica ni pisa tus ediciones locales
+(estado/ganancia/notas).
 """
 from __future__ import annotations
 
@@ -18,10 +19,11 @@ import pandas as pd
 HERE = Path(__file__).parent
 DB_PATH = HERE / "data" / "signals.db"   # gitignored (*.db)
 
-# Columnas expuestas (espejo del Historial de Señales + metadata de ingesta).
+# Columnas expuestas (modelo de la API + metadata de ingesta).
 COLUMNS = [
-    "accion", "hora", "fecha", "estrategia", "cumplimiento", "tipo",
-    "estado", "ganancia", "fuente", "message_id", "recibido_en", "importado_en",
+    "id", "symbol", "tipo", "estrategia", "estrategia_raw", "probabilidad",
+    "fecha", "hora", "estado", "ganancia", "is_active", "criterios",
+    "chart_url", "creado_en", "fuente", "importado_en",
 ]
 
 
@@ -37,20 +39,22 @@ def init_db() -> None:
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS alerts (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                accion       TEXT NOT NULL,
-                hora         TEXT,
-                fecha        TEXT,
-                estrategia   TEXT,
-                cumplimiento REAL,
-                tipo         TEXT,
-                estado       TEXT,
-                ganancia     REAL DEFAULT 0,
-                fuente       TEXT,
-                message_id   TEXT,
-                recibido_en  TEXT,
-                importado_en TEXT,
-                UNIQUE(accion, fecha, hora, estrategia, tipo)
+                id             TEXT PRIMARY KEY,
+                symbol         TEXT NOT NULL,
+                tipo           TEXT,
+                estrategia     TEXT,
+                estrategia_raw TEXT,
+                probabilidad   REAL,
+                fecha          TEXT,
+                hora           TEXT,
+                estado         TEXT,
+                ganancia       REAL DEFAULT 0,
+                is_active      INTEGER,
+                criterios      TEXT,
+                chart_url      TEXT,
+                creado_en      TEXT,
+                fuente         TEXT,
+                importado_en   TEXT
             )
             """
         )
@@ -70,24 +74,20 @@ def _na(v):
 
 
 def upsert_signals(df: pd.DataFrame) -> int:
-    """Inserta las señales nuevas (dedup por la clave única). Devuelve cuántas
-    filas NUEVAS se insertaron (las duplicadas se ignoran)."""
+    """Inserta las señales nuevas (dedup por `id`). Devuelve cuántas son NUEVAS.
+    Las ya existentes se IGNORAN (no se pisan tus ediciones locales)."""
     if df is None or df.empty:
         return 0
     init_db()
-    _cols = ("accion", "hora", "fecha", "estrategia", "cumplimiento", "tipo", "estado",
-             "ganancia", "fuente", "message_id", "recibido_en", "importado_en")
     inserted = 0
     with _conn() as con:
         for _, r in df.iterrows():
-            vals = [_na(r.get(c)) for c in _cols]
-            if vals[7] is None:            # ganancia → 0 por defecto
-                vals[7] = 0.0
+            vals = [_na(r.get(c)) for c in COLUMNS]
+            if vals[COLUMNS.index("ganancia")] is None:
+                vals[COLUMNS.index("ganancia")] = 0.0
             cur = con.execute(
-                "INSERT OR IGNORE INTO alerts "
-                "(accion,hora,fecha,estrategia,cumplimiento,tipo,estado,ganancia,"
-                "fuente,message_id,recibido_en,importado_en) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                f"INSERT OR IGNORE INTO alerts ({','.join(COLUMNS)}) "
+                f"VALUES ({','.join('?' * len(COLUMNS))})",
                 vals,
             )
             inserted += cur.rowcount
@@ -99,9 +99,8 @@ def load_signals() -> pd.DataFrame:
     init_db()
     with _conn() as con:
         df = pd.read_sql_query(
-            "SELECT accion,hora,fecha,estrategia,cumplimiento,tipo,estado,ganancia,"
-            "fuente,message_id,recibido_en,importado_en "
-            "FROM alerts ORDER BY fecha DESC, hora DESC",
+            f"SELECT {','.join(COLUMNS)} FROM alerts "
+            "ORDER BY fecha DESC, hora DESC, creado_en DESC",
             con,
         )
     return df
@@ -113,9 +112,9 @@ def count() -> int:
         return int(con.execute("SELECT COUNT(*) FROM alerts").fetchone()[0])
 
 
-def update_status(accion: str, fecha: str, hora: str, estrategia: str, tipo: str,
-                  estado: Optional[str] = None, ganancia: Optional[float] = None) -> int:
-    """Actualiza estado/ganancia de una señal puntual. Devuelve filas afectadas."""
+def update_user_fields(signal_id: str, estado: Optional[str] = None,
+                       ganancia: Optional[float] = None) -> int:
+    """Actualiza estado/ganancia de una señal puntual (por id). Filas afectadas."""
     init_db()
     sets, vals = [], []
     if estado is not None:
@@ -124,11 +123,7 @@ def update_status(accion: str, fecha: str, hora: str, estrategia: str, tipo: str
         sets.append("ganancia=?"); vals.append(ganancia)
     if not sets:
         return 0
-    vals += [accion, fecha, hora, estrategia, tipo]
+    vals.append(signal_id)
     with _conn() as con:
-        cur = con.execute(
-            f"UPDATE alerts SET {', '.join(sets)} "
-            "WHERE accion=? AND fecha=? AND hora=? AND estrategia=? AND tipo=?",
-            vals,
-        )
+        cur = con.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", vals)
         return cur.rowcount

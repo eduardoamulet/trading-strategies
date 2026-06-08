@@ -1,11 +1,12 @@
-"""Página 'Señales' de la Trading Suite — Historial de Señales importado de
-investepacademyia.com/app/alertas (lectura + importación con botón).
+"""Página 'Señales' de la Trading Suite — Historial de Señales de investepacademyia.
 
-Standalone-safe: set_page_config envuelto en try/except (lo llama trading_suite).
+Importación: pegar el JSON del Historial (manual, funciona ya) o, a futuro, ingesta
+automática por email. Standalone-safe (set_page_config en try/except).
 """
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -21,77 +22,79 @@ except Exception:
     pass
 
 st.title("📡 Señales")
-st.caption("Historial de Señales importado de investepacademyia.com/app/alertas")
+st.caption("Historial de Señales — investepacademyia (estrategia Trend Reversal)")
 
-# ── Botones de importación ───────────────────────────────────────────────────
-cmail, cweb, _ = st.columns([1, 1, 2])
-do_email = cmail.button("📧 Revisar correo (alertas)", type="primary",
-                        use_container_width=True)
-do_web = cweb.button("🔄 Importar del sitio", use_container_width=True)
+# ── Importar pegando el JSON del Historial de Señales ────────────────────────
+with st.expander("📥 Importar señales (pegar JSON del Historial)", expanded=False):
+    st.caption("Pegá el JSON que devuelve el Historial de Señales (el objeto con "
+               "`items`). Se importan con dedup por `id` (reimportar no duplica).")
+    _txt = st.text_area("JSON", height=160, label_visibility="collapsed",
+                        placeholder='{ "items": [ { "id": "...", "symbol": "AAPL", ... } ], ... }')
+    if st.button("Importar JSON", type="primary"):
+        try:
+            n = xs.import_payload(_txt, now_iso=datetime.now().isoformat(timespec="seconds"))
+            if n:
+                st.success(f"Importadas {n} señales nuevas.")
+            else:
+                st.info("Sin señales nuevas (ya estaban todas, o el JSON venía vacío).")
+        except Exception as e:
+            st.error(f"No se pudo parsear el JSON: {e}")
 
-df = xs.load_signals()
-
-
-def _run_import(fn, label):
+# ── Ingesta automática por email (a futuro) ──────────────────────────────────
+if st.button("📧 Revisar correo (alertas) — automático"):
     try:
-        with st.spinner(f"{label}…"):
-            n = fn()
+        n = xs.fetch_from_email()
         st.success(f"Importadas {n} señales nuevas.")
-        return xs.load_signals()
     except xs.ScraperNotConfigured as e:
         st.warning(str(e))
     except Exception as e:  # pragma: no cover
         st.error(f"Error: {e}")
-    return df
 
+df = xs.load_signals()
 
-if do_email:
-    df = _run_import(xs.fetch_from_email, "Revisando correo")
-elif do_web:
-    df = _run_import(xs.fetch_and_store, "Importando del sitio")
-
-if len(df) and (df["fuente"] == "demo").all():
-    st.info("ℹ️ Mostrando **señales de ejemplo** (de tus capturas). El botón de "
-            "importación en vivo se activa apenas conectemos el acceso al sitio.")
+if df.empty:
+    st.info("Todavía no hay señales. Importá pegando el JSON del Historial (arriba).")
+    st.stop()
 
 # ── Filtros ──────────────────────────────────────────────────────────────────
 f1, f2, f3, f4 = st.columns(4)
-_estr = ["(todas)"] + sorted(df["estrategia"].dropna().unique().tolist())
-_acc = ["(todas)"] + sorted(df["accion"].dropna().unique().tolist())
-_est = ["(todos)"] + sorted(df["estado"].dropna().unique().tolist())
-sel_estr = f1.selectbox("Estrategia", _estr)
-sel_acc = f2.selectbox("Acción", _acc)
-sel_est = f3.selectbox("Estado", _est)
+sel_estr = f1.selectbox("Estrategia", ["(todas)"] + sorted(df["estrategia"].dropna().unique().tolist()))
+sel_sym = f2.selectbox("Acción", ["(todas)"] + sorted(df["symbol"].dropna().unique().tolist()))
+sel_est = f3.selectbox("Estado", ["(todos)"] + sorted(df["estado"].dropna().unique().tolist()))
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
 
 fdf = df.copy()
 if sel_estr != "(todas)":
     fdf = fdf[fdf["estrategia"] == sel_estr]
-if sel_acc != "(todas)":
-    fdf = fdf[fdf["accion"] == sel_acc]
+if sel_sym != "(todas)":
+    fdf = fdf[fdf["symbol"] == sel_sym]
 if sel_est != "(todos)":
     fdf = fdf[fdf["estado"] == sel_est]
 if sel_tipo != "(todos)":
     fdf = fdf[fdf["tipo"] == sel_tipo]
 
 # ── Métricas ─────────────────────────────────────────────────────────────────
-m1, m2, m3 = st.columns(3)
+m1, m2, m3, m4 = st.columns(4)
 m1.metric("Señales en lista", len(fdf))
 m2.metric("💲 Dinero ganado (lista)", f"${fdf['ganancia'].sum():,.2f}")
 m3.metric("CALL / PUT", f"{int((fdf['tipo'] == 'CALL').sum())} / {int((fdf['tipo'] == 'PUT').sum())}")
+m4.metric("Activas", int((fdf["is_active"] == 1).sum()))
 
 # ── Tabla ────────────────────────────────────────────────────────────────────
-show = fdf[["accion", "hora", "fecha", "estrategia", "cumplimiento",
-            "tipo", "estado", "ganancia"]].copy()
-show["cumplimiento"] = show["cumplimiento"].map(
-    lambda x: f"{x:.0f}%" if pd.notna(x) else "")
-show["ganancia"] = show["ganancia"].map(
-    lambda x: f"${x:,.0f}" if pd.notna(x) else "")
+show = fdf[["symbol", "hora", "fecha", "estrategia", "probabilidad", "tipo",
+            "criterios", "estado", "ganancia", "is_active", "chart_url"]].copy()
+show["probabilidad"] = show["probabilidad"].map(lambda x: f"{x:.0f}%" if pd.notna(x) else "")
+show["ganancia"] = show["ganancia"].map(lambda x: f"${x:,.0f}" if pd.notna(x) else "")
+show["is_active"] = show["is_active"].map(lambda x: "🟢" if x == 1 else "⚪")
 show = show.rename(columns={
-    "accion": "Acción", "hora": "Hora", "fecha": "Fecha", "estrategia": "Estrategia",
-    "cumplimiento": "% Cumpl.", "tipo": "Tipo", "estado": "Estado", "ganancia": "Ganancia",
+    "symbol": "Acción", "hora": "Hora", "fecha": "Fecha", "estrategia": "Estrategia",
+    "probabilidad": "Probabilidad", "tipo": "Tipo", "criterios": "Criterios",
+    "estado": "Estado", "ganancia": "Ganancia", "is_active": "Activa", "chart_url": "Gráfica",
 })
-st.dataframe(show, use_container_width=True, hide_index=True)
+st.dataframe(
+    show, use_container_width=True, hide_index=True,
+    column_config={"Gráfica": st.column_config.LinkColumn("Gráfica", display_text="📈 Ver")},
+)
 
-st.caption("Las señales importadas se guardan localmente y quedan disponibles para "
-           "el backtester (próximo paso: backtestear una señal con un click).")
+st.caption("Dedup por `id`. Las señales quedan en SQLite local (gitignored) y "
+           "disponibles para el backtester (próximo: backtestear una señal con un click).")
