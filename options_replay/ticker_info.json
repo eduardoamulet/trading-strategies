@@ -698,5 +698,19 @@
     "min": 35.0,
     "max": 70.0,
     "fecha_analisis": "5/19/2026"
+  },
+  "OKLO": {
+    "ticker": "OKLO",
+    "nombre": "Oklo Inc.",
+    "indice": "NYSE",
+    "bloque_sector": "NUCLEAR ENERGY",
+    "sectores": "Utilities | Renewable Utilities",
+    "rango_optimo_text": null,
+    "rango_optimo_lo": null,
+    "rango_optimo_hi": null,
+    "min_max_text": null,
+    "min": null,
+    "max": null,
+    "fecha_analisis": null
   }
 }
