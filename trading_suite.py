@@ -19,10 +19,11 @@ import streamlit as st
 
 st.set_page_config(page_title="Trading Suite", layout="wide", initial_sidebar_state="expanded")
 
-# Ocultar la barra superior de Streamlit (Deploy + menú ⋮): se consolida en el menú
-# de usuario propio (arriba a la derecha).
-st.markdown("<style>[data-testid='stToolbar']{display:none !important;}</style>",
-            unsafe_allow_html=True)
+# Ocultar SOLO el botón Deploy y el menú ⋮ de Streamlit (no toda la barra: si se
+# oculta stToolbar entero se pierde el control para re-expandir la barra lateral).
+st.markdown(
+    "<style>[data-testid='stAppDeployButton'],[data-testid='stMainMenu']"
+    "{display:none !important;}</style>", unsafe_allow_html=True)
 
 sys.path.insert(0, str(Path(__file__).parent / "options_replay"))
 import auth  # noqa: E402
