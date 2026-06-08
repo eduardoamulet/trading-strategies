@@ -50,6 +50,6 @@ nav = {
 if user.get("rol") == "admin":
     nav["Administración"] = [usuarios]
 
-auth.logout_button()
 pg = st.navigation(nav, position="sidebar")
+auth.top_user_menu(user, perfil)   # menú de usuario arriba a la derecha
 pg.run()

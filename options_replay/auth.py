@@ -78,15 +78,38 @@ def require_login() -> dict:
     st.stop()
 
 
-def logout_button() -> None:
+def _initials(user) -> str:
+    name = user.get("nombre") or user.get("email", "")
+    parts = [p for p in name.replace("@", " ").replace(".", " ").split() if p]
+    return ("".join(p[0] for p in parts[:2]).upper() or "U")
+
+
+def top_user_menu(user, perfil_page=None) -> None:
+    """Menú de usuario ARRIBA A LA DERECHA: avatar (iniciales) → nombre/rol, Ajustes
+    y Cerrar sesión (como en el sitio)."""
+    if not user:
+        return
+    _, right = st.columns([7, 1])
+    with right:
+        with st.popover(f"👤 {_initials(user)}", use_container_width=True):
+            st.markdown(
+                f"**{user.get('nombre') or user['email']}**  \n"
+                f"<span style='color:#888;font-size:12px'>{user['email']} · "
+                f"{user['rol']}</span>", unsafe_allow_html=True)
+            st.divider()
+            if perfil_page is not None:
+                st.page_link(perfil_page, label="Ajustes", icon="⚙️")
+            if st.button("↪ Cerrar sesión", use_container_width=True, key="logout_top"):
+                st.session_state.pop("auth_user", None)
+                st.rerun()
+
+
+def logout_button() -> None:  # compat: variante en la barra lateral (no se usa)
     user = st.session_state.get("auth_user")
     if not user:
         return
     with st.sidebar:
         st.divider()
-        st.markdown(f"👤 **{user.get('nombre') or user['email']}**  \n"
-                    f"<span style='color:#888;font-size:12px'>{user['email']} · "
-                    f"`{user['rol']}`</span>", unsafe_allow_html=True)
         if st.button("Cerrar sesión", use_container_width=True):
             st.session_state.pop("auth_user", None)
             st.rerun()
