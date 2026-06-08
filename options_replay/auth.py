@@ -59,6 +59,13 @@ def require_login() -> dict:
     user = st.session_state.get("auth_user")
     if user:
         return user
+    # Sin sesión: ocultar el menú lateral (que st.navigation deja "pegado") para que
+    # la pantalla de login quede limpia.
+    st.markdown(
+        "<style>section[data-testid='stSidebar']{display:none !important;}"
+        "[data-testid='collapsedControl']{display:none !important;}</style>",
+        unsafe_allow_html=True,
+    )
     if udb.count() == 0:
         _bootstrap_admin()
     else:
