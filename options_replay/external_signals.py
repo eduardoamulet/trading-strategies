@@ -20,8 +20,9 @@ from typing import Optional
 
 import pandas as pd
 
+import signals_db as db
+
 HERE = Path(__file__).parent
-STORE_PATH = HERE / "data" / "external_signals.parquet"   # gitignored (*.parquet)
 BASE_URL = "https://investepacademyia.com"
 ALERTAS_URL = f"{BASE_URL}/app/alertas"
 
@@ -66,22 +67,16 @@ def _demo_signals() -> pd.DataFrame:
 
 
 def load_signals() -> pd.DataFrame:
-    """Lee el almacén local. Si no existe, devuelve las señales demo (sin guardar)."""
-    if STORE_PATH.exists():
-        try:
-            df = pd.read_parquet(STORE_PATH)
-            for c in COLUMNS:
-                if c not in df.columns:
-                    df[c] = None
-            return df[COLUMNS]
-        except Exception:
-            pass
+    """Señales guardadas en SQLite. Si la DB está vacía, devuelve las demo (sin
+    guardarlas) para que la página no se vea vacía hasta la 1ª importación real."""
+    if db.count() > 0:
+        return db.load_signals()
     return _demo_signals()
 
 
-def save_signals(df: pd.DataFrame) -> None:
-    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    df[COLUMNS].to_parquet(STORE_PATH, index=False)
+def store_signals(df: pd.DataFrame) -> int:
+    """Upsert (dedup) de señales en SQLite. Devuelve cuántas son nuevas."""
+    return db.upsert_signals(df)
 
 
 def parse_signals(payload, fmt: str = "auto") -> pd.DataFrame:
@@ -108,4 +103,33 @@ def fetch_and_store(now_iso: Optional[str] = None) -> int:
         "esa página logueada, o pasá la request desde DevTools → Network). Una vez "
         "hecho, este botón traerá las señales reales. Mientras tanto se muestran las "
         "señales de ejemplo."
+    )
+
+
+# ── Ingesta por EMAIL (recomendado) ──────────────────────────────────────────
+# Flujo: el sitio te manda un email por cada alerta nueva → un poller IMAP lee tu
+# Gmail (filtrando por remitente/asunto), parsea cada correo y hace upsert en SQLite.
+# Auth: Gmail APP PASSWORD en archivo gitignored (NO tu clave principal); este módulo
+# solo lo lee. Pendiente: (1) email de ejemplo (parser), (2) remitente/asunto, (3) app
+# password.
+IMAP_HOST = "imap.gmail.com"
+
+
+def parse_alert_email(raw_bytes: bytes) -> pd.DataFrame:
+    """Parsea UN email de alerta → DataFrame de señales (COLUMNS). Se completa con
+    un email de ejemplo real (su estructura HTML/texto)."""
+    raise ScraperNotConfigured(
+        "Falta un email de alerta de ejemplo para escribir el parser."
+    )
+
+
+def fetch_from_email(max_emails: int = 50) -> int:
+    """Lee el Gmail vía IMAP, parsea los emails de alerta nuevos y hace upsert en
+    SQLite. Devuelve cuántas señales NUEVAS se importaron.
+    Pendiente: app password (gitignored) + remitente/asunto + parser."""
+    raise ScraperNotConfigured(
+        "La ingesta por email todavía no está conectada. Necesito: (1) un email de "
+        "alerta de EJEMPLO (para el parser), (2) el remitente/asunto de esos correos, "
+        "(3) un Gmail App Password en archivo gitignored (lo generás vos; yo no lo "
+        "toco). Con eso, un poller IMAP lee tu Gmail y mete las alertas en la app."
     )

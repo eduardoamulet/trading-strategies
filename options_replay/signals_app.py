@@ -23,23 +23,32 @@ except Exception:
 st.title("📡 Señales")
 st.caption("Historial de Señales importado de investepacademyia.com/app/alertas")
 
-# ── Botón de importación (scraper en vivo) ───────────────────────────────────
-cimp, _ = st.columns([1, 2])
-do_import = cimp.button("🔄 Importar de investepacademyia", type="primary",
+# ── Botones de importación ───────────────────────────────────────────────────
+cmail, cweb, _ = st.columns([1, 1, 2])
+do_email = cmail.button("📧 Revisar correo (alertas)", type="primary",
                         use_container_width=True)
+do_web = cweb.button("🔄 Importar del sitio", use_container_width=True)
 
 df = xs.load_signals()
 
-if do_import:
+
+def _run_import(fn, label):
     try:
-        with st.spinner("Importando señales del sitio…"):
-            n = xs.fetch_and_store()
-        st.success(f"Importadas {n} señales.")
-        df = xs.load_signals()
+        with st.spinner(f"{label}…"):
+            n = fn()
+        st.success(f"Importadas {n} señales nuevas.")
+        return xs.load_signals()
     except xs.ScraperNotConfigured as e:
         st.warning(str(e))
     except Exception as e:  # pragma: no cover
-        st.error(f"Error al importar: {e}")
+        st.error(f"Error: {e}")
+    return df
+
+
+if do_email:
+    df = _run_import(xs.fetch_from_email, "Revisando correo")
+elif do_web:
+    df = _run_import(xs.fetch_and_store, "Importando del sitio")
 
 if len(df) and (df["fuente"] == "demo").all():
     st.info("ℹ️ Mostrando **señales de ejemplo** (de tus capturas). El botón de "

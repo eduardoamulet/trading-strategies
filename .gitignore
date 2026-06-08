@@ -7,6 +7,11 @@ config.py
 data_cache/
 *.parquet
 
+# ===== Bases de datos locales (señales/alertas, etc.) — datos del usuario =====
+*.db
+*.sqlite
+*.sqlite3
+
 # ===== Backtest result files (large CSVs) =====
 optimizer_results/
 
