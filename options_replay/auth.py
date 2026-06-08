@@ -89,29 +89,31 @@ def top_user_menu(user, perfil_page=None) -> None:
     y Cerrar sesión (como en el sitio)."""
     if not user:
         return
-    _, right = st.columns([7, 1])
-    with right:
-        with st.popover(f"👤 {_initials(user)}", use_container_width=True):
-            st.markdown(
-                f"**{user.get('nombre') or user['email']}**  \n"
-                f"<span style='color:#888;font-size:12px'>{user['email']} · "
-                f"{user['rol']}</span>", unsafe_allow_html=True)
-            st.divider()
-            if perfil_page is not None:
-                st.page_link(perfil_page, label="Ajustes", icon="⚙️")
-            if st.button("🔄 Recargar (rerun)", use_container_width=True, key="rerun_top"):
-                st.rerun()
-            if st.button("🧹 Limpiar caché", use_container_width=True, key="clearcache_top"):
-                try:
-                    st.cache_data.clear()
-                    st.cache_resource.clear()
-                except Exception:
-                    pass
-                st.toast("Caché limpiada")
-            st.divider()
-            if st.button("↪ Cerrar sesión", use_container_width=True, key="logout_top"):
-                st.session_state.pop("auth_user", None)
-                st.rerun()
+    # Fijar el menú en la esquina superior derecha (fuera del flujo del contenido).
+    st.markdown(
+        "<style>div[data-testid='stPopover']{position:fixed; top:10px; right:22px; "
+        "z-index:1000;}</style>", unsafe_allow_html=True)
+    with st.popover(f"👤 {_initials(user)}"):
+        st.markdown(
+            f"**{user.get('nombre') or user['email']}**  \n"
+            f"<span style='color:#888;font-size:12px'>{user['email']} · "
+            f"{user['rol']}</span>", unsafe_allow_html=True)
+        st.divider()
+        if perfil_page is not None:
+            st.page_link(perfil_page, label="Ajustes", icon="⚙️")
+        if st.button("🔄 Recargar (rerun)", use_container_width=True, key="rerun_top"):
+            st.rerun()
+        if st.button("🧹 Limpiar caché", use_container_width=True, key="clearcache_top"):
+            try:
+                st.cache_data.clear()
+                st.cache_resource.clear()
+            except Exception:
+                pass
+            st.toast("Caché limpiada")
+        st.divider()
+        if st.button("↪ Cerrar sesión", use_container_width=True, key="logout_top"):
+            st.session_state.pop("auth_user", None)
+            st.rerun()
 
 
 def logout_button() -> None:  # compat: variante en la barra lateral (no se usa)
