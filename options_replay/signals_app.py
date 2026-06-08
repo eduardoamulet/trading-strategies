@@ -24,6 +24,8 @@ try:
 except Exception:
     pass
 
+st.markdown("<style>.block-container{padding-top:2rem !important;}</style>",
+            unsafe_allow_html=True)
 st.title("📡 Historial de Señales")
 st.caption("Alertas de investepacademyia (Trend Reversal) — importadas a tu app")
 
@@ -91,16 +93,6 @@ m4.metric("Aprovechadas", int((fdf["estado"] == "Aprovechada").sum()))
 
 st.divider()
 
-if "sig_open" not in st.session_state:
-    st.session_state["sig_open"] = None
-
-_W = [0.9, 0.7, 1.0, 2.2, 1.0, 0.7, 1.3, 0.8, 0.5]
-_h = st.columns(_W)
-for col, lbl in zip(_h, ["ACCIÓN", "HORA", "FECHA", "ESTRATEGIA", "% CUMPL.", "TIPO",
-                         "ESTADO", "GANANCIA", ""]):
-    col.markdown(f"<span style='color:#888;font-size:12px;font-weight:600'>{lbl}</span>",
-                 unsafe_allow_html=True)
-
 
 def _render_detalle(r):
     d1, d2 = st.columns([1, 1.3])
@@ -132,23 +124,34 @@ def _render_detalle(r):
         st.toast("Guardado"); st.rerun()
 
 
-for _, r in fdf.iterrows():
-    sid = r["id"]
-    c = st.columns(_W)
-    c[0].markdown(f"**{r['symbol']}**")
-    c[1].write(r["hora"] or "")
-    c[2].write(r["fecha"] or "")
-    c[3].write(r["estrategia"] or "")
-    c[4].write(f"{r['probabilidad']:.0f}%" if pd.notna(r["probabilidad"]) else "")
-    _tcol = "#ef4444" if r["tipo"] == "PUT" else "#10b981"
-    c[5].markdown(f"<span style='color:{_tcol};font-weight:600'>{r['tipo']}</span>",
-                  unsafe_allow_html=True)
-    c[6].write(r["estado"] or "Por definir")
-    c[7].write(f"${float(r['ganancia'] or 0):,.0f}")
-    _open = st.session_state["sig_open"] == sid
-    if c[8].button("🔼" if _open else "🔽", key=f"exp_{sid}"):
-        st.session_state["sig_open"] = None if _open else sid
-        st.rerun()
-    if st.session_state["sig_open"] == sid:
-        _render_detalle(r)
+# Tabla ORDENABLE (clic en encabezados, redimensionar, buscar) — misma flexibilidad
+# que el backtesting. El detalle (criterios + gráfica + editar) se abre al SELECCIONAR
+# una fila.
+fdf = fdf.reset_index(drop=True)
+_show = pd.DataFrame({
+    "Acción": fdf["symbol"].values,
+    "Hora": fdf["hora"].values,
+    "Fecha": fdf["fecha"].values,
+    "Estrategia": fdf["estrategia"].values,
+    "% Cumpl.": pd.to_numeric(fdf["probabilidad"], errors="coerce").values,
+    "Tipo": fdf["tipo"].values,
+    "Criterios": fdf["criterios"].values,
+    "Estado": fdf["estado"].values,
+    "Ganancia": pd.to_numeric(fdf["ganancia"], errors="coerce").fillna(0.0).values,
+    "Gráfica": fdf["chart_url"].values,
+})
+_sel = st.dataframe(
+    _show, use_container_width=True, hide_index=True,
+    on_select="rerun", selection_mode="single-row",
+    column_config={
+        "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%"),
+        "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
+        "Gráfica": st.column_config.LinkColumn("Gráfica", display_text="📈 Ver"),
+    },
+)
+st.caption("Clic en los **encabezados** para ordenar · clic en una **fila** para ver "
+           "los criterios + la gráfica y editar Estado/Ganancia.")
+_rows = _sel.selection.rows if (_sel and getattr(_sel, "selection", None)) else []
+if _rows:
     st.divider()
+    _render_detalle(fdf.iloc[_rows[0]])

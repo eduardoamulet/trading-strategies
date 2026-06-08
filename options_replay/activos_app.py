@@ -49,8 +49,10 @@ def _detalle(tk):
     i = info.get(tk, {})
     st.subheader(f"{tk} — {i.get('nombre') or ''}")
     c1, c2 = st.columns(2)
-    c1.metric("Índice", i.get("indice") or "—")
-    c2.metric("Sector", i.get("bloque_sector") or "—")
+    c1.markdown("<span style='color:#888;font-size:12px'>Índice</span><br>"
+                f"<b style='font-size:15px'>{i.get('indice') or '—'}</b>", unsafe_allow_html=True)
+    c2.markdown("<span style='color:#888;font-size:12px'>Sector</span><br>"
+                f"<b style='font-size:15px'>{i.get('bloque_sector') or '—'}</b>", unsafe_allow_html=True)
     st.write(f"**Rango óptimo:** {i.get('rango_optimo_text') or '—'}  ·  "
              f"**Mín/Máx:** {i.get('min_max_text') or '—'}")
     est, _ = _estado(tk)
