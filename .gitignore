@@ -2,6 +2,8 @@
 config.py
 *.env
 .env
+options_replay/signals_secrets.py
+signals_secrets.py
 
 # ===== Cached data (large, regenerable from Alpaca) =====
 data_cache/
