@@ -39,10 +39,15 @@ backtesting = st.Page("options_replay/app.py", title="Backtesting", icon="🔬",
                       url_path="simulation")
 live = st.Page("live_trader/ui/app.py", title="Live", icon="🟢", url_path="live")
 
+# ── Administración ───────────────────────────────────────────────────────────
+usuarios = st.Page("options_replay/usuarios_app.py", title="Usuarios", icon="👥",
+                   url_path="usuarios")
+
 pg = st.navigation(
     {
         "Menú": [dashboard, alertas, estrategias, activos, perfil, ayuda],
         "Herramientas": [backtesting, live],
+        "Administración": [usuarios],
     },
     position="sidebar",
 )
