@@ -22,7 +22,7 @@ import users_db as udb  # noqa: E402
 
 
 def _login_form() -> None:
-    _, c, _ = st.columns([1, 1.3, 1])   # centrado + estrecho
+    _, c, _ = st.columns([1.5, 1, 1.5])   # centrado + estrecho
     with c:
         st.markdown("## 🔐 Iniciar sesión")
         st.caption("Ingresá con tu email y contraseña.")
@@ -39,7 +39,7 @@ def _login_form() -> None:
 
 
 def _bootstrap_admin() -> None:
-    _, c, _ = st.columns([1, 1.3, 1])   # centrado + estrecho
+    _, c, _ = st.columns([1.5, 1, 1.5])   # centrado + estrecho
     with c:
         st.markdown("## 👋 Bienvenido")
         st.caption("No hay usuarios todavía. Creá el primer usuario **administrador**.")
