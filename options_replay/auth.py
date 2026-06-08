@@ -22,35 +22,40 @@ import users_db as udb  # noqa: E402
 
 
 def _login_form() -> None:
-    st.title("🔐 Iniciar sesión")
-    st.caption("Ingresá con tu email y contraseña.")
-    with st.form("login_form"):
-        email = st.text_input("Email")
-        pwd = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Entrar", type="primary"):
-            u = udb.verify(email, pwd)
-            if u:
-                st.session_state["auth_user"] = u
-                st.rerun()
-            else:
-                st.error("Email o contraseña incorrectos (o usuario inactivo).")
+    _, c, _ = st.columns([1, 1.3, 1])   # centrado + estrecho
+    with c:
+        st.markdown("## 🔐 Iniciar sesión")
+        st.caption("Ingresá con tu email y contraseña.")
+        with st.form("login_form"):
+            email = st.text_input("Email")
+            pwd = st.text_input("Contraseña", type="password")
+            if st.form_submit_button("Entrar", type="primary", use_container_width=True):
+                u = udb.verify(email, pwd)
+                if u:
+                    st.session_state["auth_user"] = u
+                    st.rerun()
+                else:
+                    st.error("Email o contraseña incorrectos (o usuario inactivo).")
 
 
 def _bootstrap_admin() -> None:
-    st.title("👋 Bienvenido")
-    st.caption("No hay usuarios todavía. Creá el primer usuario **administrador** para entrar.")
-    with st.form("bootstrap_form"):
-        nombre = st.text_input("Nombre")
-        email = st.text_input("Email")
-        pwd = st.text_input("Contraseña", type="password", help="Mínimo 6 caracteres")
-        if st.form_submit_button("Crear administrador", type="primary"):
-            try:
-                udb.add_user(nombre, email, pwd, "admin", True,
-                             creado_en=datetime.now().isoformat(timespec="seconds"))
-                st.session_state["auth_user"] = udb.verify(email, pwd)
-                st.rerun()
-            except ValueError as e:
-                st.error(str(e))
+    _, c, _ = st.columns([1, 1.3, 1])   # centrado + estrecho
+    with c:
+        st.markdown("## 👋 Bienvenido")
+        st.caption("No hay usuarios todavía. Creá el primer usuario **administrador**.")
+        with st.form("bootstrap_form"):
+            nombre = st.text_input("Nombre")
+            email = st.text_input("Email")
+            pwd = st.text_input("Contraseña", type="password", help="Mínimo 6 caracteres")
+            if st.form_submit_button("Crear administrador", type="primary",
+                                     use_container_width=True):
+                try:
+                    udb.add_user(nombre, email, pwd, "admin", True,
+                                 creado_en=datetime.now().isoformat(timespec="seconds"))
+                    st.session_state["auth_user"] = udb.verify(email, pwd)
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
 
 
 def require_login() -> dict:
