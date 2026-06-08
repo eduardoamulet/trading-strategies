@@ -99,6 +99,16 @@ def top_user_menu(user, perfil_page=None) -> None:
             st.divider()
             if perfil_page is not None:
                 st.page_link(perfil_page, label="Ajustes", icon="⚙️")
+            if st.button("🔄 Recargar (rerun)", use_container_width=True, key="rerun_top"):
+                st.rerun()
+            if st.button("🧹 Limpiar caché", use_container_width=True, key="clearcache_top"):
+                try:
+                    st.cache_data.clear()
+                    st.cache_resource.clear()
+                except Exception:
+                    pass
+                st.toast("Caché limpiada")
+            st.divider()
             if st.button("↪ Cerrar sesión", use_container_width=True, key="logout_top"):
                 st.session_state.pop("auth_user", None)
                 st.rerun()

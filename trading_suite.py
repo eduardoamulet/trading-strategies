@@ -19,6 +19,11 @@ import streamlit as st
 
 st.set_page_config(page_title="Trading Suite", layout="wide", initial_sidebar_state="expanded")
 
+# Ocultar la barra superior de Streamlit (Deploy + menú ⋮): se consolida en el menú
+# de usuario propio (arriba a la derecha).
+st.markdown("<style>[data-testid='stToolbar']{display:none !important;}</style>",
+            unsafe_allow_html=True)
+
 sys.path.insert(0, str(Path(__file__).parent / "options_replay"))
 import auth  # noqa: E402
 
