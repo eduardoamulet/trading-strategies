@@ -44,6 +44,41 @@ def init_db() -> None:
             )
             """
         )
+        con.execute("CREATE TABLE IF NOT EXISTS settings (clave TEXT PRIMARY KEY, valor TEXT)")
+
+
+def get_setting(clave: str, default: str = "") -> str:
+    init_db()
+    with _conn() as con:
+        row = con.execute("SELECT valor FROM settings WHERE clave=?", (clave,)).fetchone()
+    return row["valor"] if row else default
+
+
+def set_setting(clave: str, valor: str) -> None:
+    init_db()
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO settings (clave,valor) VALUES (?,?) "
+            "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
+            (clave, "" if valor is None else str(valor)),
+        )
+
+
+def get_profile() -> dict:
+    """Datos del perfil del dueño de la app (nombre/apellido/país + notificaciones)."""
+    return {
+        "nombre": get_setting("perfil_nombre"),
+        "apellido": get_setting("perfil_apellido"),
+        "pais": get_setting("perfil_pais", "Estados Unidos"),
+        "notif_email": get_setting("perfil_notif_email", "1") == "1",
+    }
+
+
+def save_profile(nombre: str, apellido: str, pais: str, notif_email: bool = True) -> None:
+    set_setting("perfil_nombre", nombre)
+    set_setting("perfil_apellido", apellido)
+    set_setting("perfil_pais", pais)
+    set_setting("perfil_notif_email", "1" if notif_email else "0")
 
 
 def _hash(password: str, salt: Optional[bytes] = None) -> tuple[str, str]:
