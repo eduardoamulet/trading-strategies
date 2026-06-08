@@ -22,7 +22,7 @@ DB_PATH = HERE / "data" / "signals.db"   # gitignored (*.db)
 # Columnas expuestas (modelo de la API + metadata de ingesta).
 COLUMNS = [
     "id", "symbol", "tipo", "estrategia", "estrategia_raw", "probabilidad",
-    "fecha", "hora", "estado", "ganancia", "is_active", "criterios",
+    "fecha", "hora", "estado", "ganancia", "is_active", "criterios", "criterios_json",
     "chart_url", "creado_en", "fuente", "importado_en",
 ]
 
@@ -51,6 +51,7 @@ def init_db() -> None:
                 ganancia       REAL DEFAULT 0,
                 is_active      INTEGER,
                 criterios      TEXT,
+                criterios_json TEXT,
                 chart_url      TEXT,
                 creado_en      TEXT,
                 fuente         TEXT,
@@ -59,6 +60,10 @@ def init_db() -> None:
             """
         )
         con.execute("CREATE INDEX IF NOT EXISTS ix_alerts_fecha ON alerts(fecha)")
+        try:  # migración para DBs viejas
+            con.execute("ALTER TABLE alerts ADD COLUMN criterios_json TEXT")
+        except sqlite3.OperationalError:
+            pass
 
 
 def _na(v):

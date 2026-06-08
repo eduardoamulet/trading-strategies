@@ -41,6 +41,13 @@ STRAT_LABEL = {
 }
 # Estados posibles de una señal (como en el sitio).
 ESTADOS = ["Por definir", "Aprovechada", "No aprovechada"]
+# Nombres de los criterios por estrategia (para el detalle expandible del JSON).
+CRITERIA_NAMES = {
+    "trend-reversal": ["Tendencia Previa (+2 Días)", "Ruptura Línea de Tendencia y MM20H",
+                       "Tendencia B15m", "Integridad MM"],
+    "trend-reversal-15m": ["Cierre de ayer vs SMA20", "Precio actual vs SMA20 recalculado",
+                           "Posición respecto a Bandas de Bollinger", "Confirmación de ruptura"],
+}
 _MESES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
           "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12}
 
@@ -91,7 +98,11 @@ def parse_api_payload(payload: Union[str, dict, list]) -> pd.DataFrame:
         if not isinstance(it, dict):
             continue
         cd = it.get("criteriaData") or {}
-        n_ok = sum(1 for i in (1, 2, 3, 4) if cd.get(f"criterio{i}"))
+        crit_flags = [bool(cd.get(f"criterio{i}")) for i in (1, 2, 3, 4)]
+        n_ok = sum(crit_flags)
+        _cnames = CRITERIA_NAMES.get(it.get("strategyName"),
+                                     [f"Criterio {i}" for i in (1, 2, 3, 4)])
+        crit_list = [{"nombre": _cnames[i], "ok": crit_flags[i]} for i in range(4)]
         fecha, hora = _to_et(it.get("createdAt") or it.get("lastNotificationAt"))
         prob, gain, used = it.get("probability"), it.get("userGain"), it.get("userUsedSignal")
         chart = it.get("chartUrl")
@@ -108,6 +119,7 @@ def parse_api_payload(payload: Union[str, dict, list]) -> pd.DataFrame:
             "ganancia": float(gain) if gain not in (None, "") else 0.0,
             "is_active": 1 if it.get("isActive") else 0,
             "criterios": f"{n_ok}/4",
+            "criterios_json": _json.dumps(crit_list, ensure_ascii=False),
             "chart_url": chart, "creado_en": it.get("createdAt"),
             "fuente": "api", "importado_en": None,
         })
@@ -160,9 +172,13 @@ def parse_alert_email(raw) -> pd.DataFrame:
         strat_raw = msb.group(1) if msb else None
         strat_label = (msb.group(2).strip() if msb
                        else STRAT_LABEL.get(strat_raw, strat_raw))
-        n_pass = len(_re.findall(r'class="pass"', ch))
-        n_fail = len(_re.findall(r'class="fail"', ch))
-        crit = f"{n_pass}/{n_pass + n_fail}" if (n_pass + n_fail) else None
+        crit_list = []
+        for cls, txt in _re.findall(r'class="(pass|fail)"[^>]*>([^<]+)</span>', ch):
+            name = _re.sub(r'\s*(?:&#10004;|&#10008;|✔|✘)\s*$', '', txt).strip()
+            if name:
+                crit_list.append({"nombre": name, "ok": cls == "pass"})
+        n_pass = sum(1 for c in crit_list if c["ok"])
+        crit = f"{n_pass}/{len(crit_list)}" if crit_list else None
         mi = _re.search(r'<img[^>]+src="([^"]+)"', ch)
         chart = mi.group(1) if mi else None
         rows.append({
@@ -171,7 +187,9 @@ def parse_alert_email(raw) -> pd.DataFrame:
             "estrategia": strat_label, "estrategia_raw": strat_raw,
             "probabilidad": prob, "fecha": fecha, "hora": hora,
             "estado": "Por definir", "ganancia": 0.0, "is_active": 1,
-            "criterios": crit, "chart_url": chart, "creado_en": None,
+            "criterios": crit,
+            "criterios_json": _json.dumps(crit_list, ensure_ascii=False),
+            "chart_url": chart, "creado_en": None,
             "fuente": "email", "importado_en": None,
         })
     return pd.DataFrame(rows, columns=COLUMNS) if rows else pd.DataFrame(columns=COLUMNS)
