@@ -758,8 +758,8 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         _t0 = time.perf_counter()
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
-            _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, _scfg)
-                     for s in _specs]
+            _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, _scfg, _i)
+                     for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):
                 try:
@@ -775,16 +775,13 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
                     _render_sig_results(_res, _el, partial=True)
         _pr.empty()
         _lv.empty()
-        st.session_state["sig_bt"] = {"results": _res, "elapsed": time.perf_counter() - _t0}
+        # Guardar como el "replay" actual (modo señales) → se renderiza RICO más abajo,
+        # igual que un backtest manual (Totales + detalle por iteración con render_iteration).
+        st.session_state["replay"] = {
+            "mode": "signals", "sig_results": _res,
+            "sig_elapsed": time.perf_counter() - _t0, "sig_workers": _wk,
+        }
         st.rerun()
-
-    _sbres = st.session_state.get("sig_bt")
-    if _sbres:
-        st.markdown("##### Resultados")
-        if st.button("🧹 Limpiar resultados", key="sig_clear"):
-            st.session_state.pop("sig_bt", None)
-            st.rerun()
-        _render_sig_results(_sbres["results"], _sbres.get("elapsed", 0.0), partial=False)
 
 
 # ----- Sidebar form -----
@@ -2693,6 +2690,73 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
 # ============================================================================
 # Render: header + totals + status + per-iteration sections
 # ============================================================================
+
+# Modo SEÑALES (multi-iteración): cada señal = 1 "sesión" rica, REUSANDO render_iteration
+# (Totales + detalle por iteración), igual que un backtest manual.
+def _render_signals_session(rs):
+    results = rs.get("sig_results", [])
+    oks = [r for r in results if r.get("iteration") is not None]
+    errs = [r for r in results if r.get("iteration") is None]
+    _h1, _h2 = st.columns([4, 1])
+    _h1.subheader("🔬 Backtest de señales — resultados")
+    if _h2.button("🧹 Limpiar", key="sig_clear_render", use_container_width=True):
+        st.session_state.pop("replay", None)
+        st.rerun()
+    _tot_inv = sum(r["iteration"].invest_total for r in oks)
+    _tot_gain = sum(r["iteration"].gain_total for r in oks)
+    _nwin = sum(1 for r in oks if r["iteration"].gain_total > 0)
+    _roi = _tot_gain / _tot_inv if _tot_inv else 0.0
+    st.markdown("### 💼 Totales de las señales")
+    _tc = st.columns(5)
+    _tc[0].metric("# señales", len(results))
+    _tc[1].metric("Con resultado", len(oks))
+    _tc[2].metric("Inversión total", f"${_tot_inv:,.2f}")
+    if _tot_gain > 0:
+        _gbg, _gdc, _gar = "rgba(33, 195, 84, 0.1)", "#2e7d32", "▲"
+    elif _tot_gain < 0:
+        _gbg, _gdc, _gar = "#ffcdd2", "#b71c1c", "▼"
+    else:
+        _gbg, _gdc, _gar = "#f0f2f6", "#555", "–"
+    _gdt = f"{_gar} {abs(_roi):.1%}" if _tot_inv else ""
+    _tc[3].markdown(
+        f"<div style='border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem; "
+        f"padding:0.85rem 1rem; background-color:{_gbg};'>"
+        f"<div style='font-size:0.85rem; font-weight:bold; color:rgba(49,51,63,0.65); "
+        f"margin-bottom:0.35rem;'>Ganancia total</div>"
+        f"<div style='font-size:1.75rem; font-weight:600; line-height:1.15;'>${_tot_gain:+,.2f}</div>"
+        f"<div style='font-size:0.85rem; color:{_gdc}; margin-top:0.25rem;'>{_gdt}</div></div>",
+        unsafe_allow_html=True,
+    )
+    _tc[4].metric("Ganadoras", f"{_nwin}/{len(oks)}" if oks else "0/0")
+    if rs.get("sig_elapsed") is not None:
+        st.caption(f"⏱️ Completado en {rs['sig_elapsed']:0.1f}s · "
+                   f"{rs.get('sig_workers', 1)} en paralelo")
+    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    for r in sorted(oks, key=lambda x: (x.get("fecha") or "", x.get("hora") or "",
+                                        x.get("ticker") or "")):
+        it = r["iteration"]
+        _reason = _REASON_LABELS.get(it.exit_reason, it.exit_reason)
+        if it.gain_total >= 0:
+            _icon, _gp = ":green[▲]", f":green[**${it.gain_total:+,.2f}**]"
+        else:
+            _icon, _gp = ":red[▼]", f":red[**${it.gain_total:+,.2f}**]"
+        _title = (f"{_icon} {r['ticker']} {r['tipo']}  ·  {r['fecha']} {r['hora']}  ·  "
+                  f"{_reason}  ·  Ganancia: {_gp}")
+        with st.expander(_title, expanded=(len(oks) == 1)):
+            st.markdown(f"**{r['ticker']} — {r['fecha']}  ·  0 DTE  ·  Ventana 09:30–16:00**")
+            render_iteration(it, r["ticker"], r["fecha"])
+    if errs:
+        st.divider()
+        st.markdown("**Señales sin resultado:**")
+        for r in errs:
+            st.caption(f"⚠ {r.get('ticker', '?')} {r.get('tipo', '')} {r.get('fecha', '')} "
+                       f"{r.get('hora', '')} — {r.get('error', 'error')}")
+
+
+if replay_state.get("mode") == "signals":
+    _render_signals_session(replay_state)
+    st.stop()
+
 ticker_str = replay_state["ticker"]
 _mode = replay_state.get("mode", "single")
 

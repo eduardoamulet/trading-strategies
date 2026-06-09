@@ -95,34 +95,37 @@ m4.metric("Aprovechadas", int((fdf["estado"] == "Aprovechada").sum()))
 st.divider()
 
 
+@st.dialog("📊 Detalle de la señal")
 def _render_detalle(r):
-    d1, d2 = st.columns([1, 1.3])
-    with d1:
-        st.markdown("**Criterios de la estrategia:**")
-        try:
-            crits = json.loads(r["criterios_json"]) if r.get("criterios_json") else []
-        except Exception:
-            crits = []
-        if crits:
-            for c in crits:
-                st.markdown(("✅ " if c.get("ok") else "❌ ") + str(c.get("nombre", "")))
-        else:
-            st.caption(f"Sin detalle de criterios ({r.get('criterios') or '—'}).")
-    with d2:
-        st.markdown("**Gráfica de la señal:**")
-        if r.get("chart_url"):
-            st.image(r["chart_url"], use_container_width=True)
-        else:
-            st.caption("Sin gráfica.")
-    e1, e2, e3 = st.columns([1, 1, 1])
+    st.markdown(
+        f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
+        f"{r.get('fecha', '')} {r.get('hora', '')}** — {r.get('estrategia', '')}"
+    )
+    st.markdown("**Criterios de la estrategia:**")
+    try:
+        crits = json.loads(r["criterios_json"]) if r.get("criterios_json") else []
+    except Exception:
+        crits = []
+    if crits:
+        for c in crits:
+            st.markdown(("✅ " if c.get("ok") else "❌ ") + str(c.get("nombre", "")))
+    else:
+        st.caption(f"Sin detalle de criterios ({r.get('criterios') or '—'}).")
+
+    st.markdown("**Gráfica de la señal:**")
+    if r.get("chart_url"):
+        st.image(r["chart_url"], use_container_width=True)
+    else:
+        st.caption("Sin gráfica.")
+
     _i = xs.ESTADOS.index(r["estado"]) if r["estado"] in xs.ESTADOS else 0
-    ne = e1.selectbox("Estado", xs.ESTADOS, index=_i, key=f"est_{r['id']}")
-    ng = e2.number_input("Ganancia ($)", value=float(r["ganancia"] or 0), step=10.0,
+    ne = st.selectbox("Estado", xs.ESTADOS, index=_i, key=f"est_{r['id']}")
+    ng = st.number_input("Ganancia ($)", value=float(r["ganancia"] or 0), step=10.0,
                          key=f"gan_{r['id']}")
-    e3.markdown("<br>", unsafe_allow_html=True)
-    if e3.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True):
+    if st.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
         db.update_user_fields(r["id"], estado=ne, ganancia=float(ng))
-        st.toast("Guardado"); st.rerun()
+        st.toast("Guardado")
+        st.rerun()   # cierra el modal y refresca
 
 
 # Tabla ORDENABLE con selección MULTI-fila (casillas a la izquierda).
@@ -152,10 +155,11 @@ st.caption("Clic en los **encabezados** para ordenar · marcá las **casillas** 
            "izquierda para seleccionar señales (1 fila → ver detalle · varias → backtest).")
 _rows = _sel.selection.rows if (_sel and getattr(_sel, "selection", None)) else []
 
-# Detalle (criterios + gráfica + editar) solo cuando hay EXACTAMENTE 1 seleccionada.
+# Detalle en MODAL: al seleccionar 1 fila aparece "Ver detalle" → abre el modal
+# (Criterios + Gráfica + Estado/Ganancia). La selección sola NO vuelca nada inline.
 if len(_rows) == 1:
-    st.divider()
-    _render_detalle(fdf.iloc[_rows[0]])
+    if st.button("📈 Ver detalle de la señal seleccionada", use_container_width=True):
+        _render_detalle(fdf.iloc[_rows[0]])
 
 # ── Backtest de señales seleccionadas → redirige a la página Backtesting ─────
 st.divider()
