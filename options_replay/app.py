@@ -1008,7 +1008,7 @@ with st.sidebar.container(border=True):
     _col_ent, _col_sal = st.columns(2)
     with _col_ent:
         st.markdown(
-            "<p style='font-weight:bold; margin: 0.4rem 0 0.2rem 0;'>Horario de entrada</p>",
+            "<p style='font-weight:normal; margin: 0.4rem 0 0.2rem 0;'>Horario de entrada</p>",
             unsafe_allow_html=True,
         )
         hora_orden = st.time_input(
@@ -1019,7 +1019,7 @@ with st.sidebar.container(border=True):
         )
     with _col_sal:
         st.markdown(
-            "<p style='font-weight:bold; margin: 0.4rem 0 0.2rem 0;'>Horario de salida</p>",
+            "<p style='font-weight:normal; margin: 0.4rem 0 0.2rem 0;'>Horario de salida</p>",
             unsafe_allow_html=True,
         )
         horario_salida = st.time_input(
@@ -1050,40 +1050,38 @@ with st.sidebar.container(border=True):
     sell_check_min = 1
 
     # Criterio de selección de contrato — entre los que PASAN la compuerta de spread,
-    # cuál se elige. Default: opción 2 (más cercano a ITM), el comportamiento actual.
+    # cuál se elige. Default: Opción 1 (menor spread).
     st.markdown(
-        "<p style='font-weight:bold; margin: 0.5rem 0 0.2rem 0;'>Criterio de selección de contrato</p>",
+        "<p style='font-weight:normal; margin: 0.5rem 0 0.2rem 0;'>Criterio de selección de contrato</p>",
         unsafe_allow_html=True,
     )
     _crit_options = [
         "Opción 1 — Menor spread (en Rango óptimo)",
-        "Opción 2 — Valor del contrato ≈ objetivo (sin spread)",
         "Opción 3 — Salto 1 DTE (overnight, vende día hábil siguiente)",
     ]
+    # Migración: si quedó guardada la (removida) Opción 2, volver al default.
+    if st.session_state.get("selection_criterion_label") not in _crit_options:
+        st.session_state.pop("selection_criterion_label", None)
     _sel_crit_label = st.selectbox(
         "Criterio de selección de contrato",
         options=_crit_options,
-        index=1,   # default = Opción 2
+        index=0,   # default = Opción 1
         key="selection_criterion_label",
         label_visibility="collapsed",
         help=("Opción 1 'Menor spread': compuerta de spread + el de menor bid-ask en el "
-              "Rango óptimo. Opción 2 'Valor ≈ objetivo': IGNORA el spread y elige el "
-              "contrato cuya prima de ENTRADA sea más cercana al valor objetivo (default "
-              "$2), CALL y PUT. Opción 3 'Salto 1 DTE': compra un contrato que VENCE el "
+              "Rango óptimo. Opción 3 'Salto 1 DTE': compra un contrato que VENCE el "
               "día hábil siguiente (a la Horario de entrada) y lo vende ese día a la "
               "Horario de salida (overnight); selecciona por valor; sin umbral/stop."),
     )
-    if _sel_crit_label.startswith("Opción 1"):
-        selection_criterion = "spread"
-    elif _sel_crit_label.startswith("Opción 3"):
+    if _sel_crit_label.startswith("Opción 3"):
         selection_criterion = "salto_1dte"
     else:
-        selection_criterion = "value"
-    # Valor objetivo de la prima — lo usan la Opción 2 y la Opción 3 (ambas "value").
+        selection_criterion = "spread"
+    # Valor objetivo de la prima — lo usa la Opción 3 (Salto 1 DTE, selección por valor).
     if "value_target" not in st.session_state:
         st.session_state["value_target"] = 2.0
     value_target = 2.0
-    if selection_criterion in ("value", "salto_1dte"):
+    if selection_criterion == "salto_1dte":
         value_target = st.number_input(
             "Valor objetivo del contrato ($)", key="value_target",
             min_value=0.05, step=0.25, format="%.2f",
