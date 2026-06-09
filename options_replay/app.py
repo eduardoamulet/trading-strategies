@@ -1057,9 +1057,10 @@ with st.sidebar.container(border=True):
     )
     _crit_options = [
         "Opción 1 — Menor spread (en Rango óptimo)",
-        "Opción 3 — Salto 1 DTE (overnight, vende día hábil siguiente)",
+        "Opción 2 — Salto 1 DTE (overnight, vende día hábil siguiente)",
     ]
-    # Migración: si quedó guardada la (removida) Opción 2, volver al default.
+    # Migración: si quedó guardada una etiqueta vieja que ya no está en la lista
+    # (la antigua Opción 2 'Valor' o la numeración previa), volver al default.
     if st.session_state.get("selection_criterion_label") not in _crit_options:
         st.session_state.pop("selection_criterion_label", None)
     _sel_crit_label = st.selectbox(
@@ -1069,15 +1070,15 @@ with st.sidebar.container(border=True):
         key="selection_criterion_label",
         label_visibility="collapsed",
         help=("Opción 1 'Menor spread': compuerta de spread + el de menor bid-ask en el "
-              "Rango óptimo. Opción 3 'Salto 1 DTE': compra un contrato que VENCE el "
+              "Rango óptimo. Opción 2 'Salto 1 DTE': compra un contrato que VENCE el "
               "día hábil siguiente (a la Horario de entrada) y lo vende ese día a la "
               "Horario de salida (overnight); selecciona por valor; sin umbral/stop."),
     )
-    if _sel_crit_label.startswith("Opción 3"):
+    if _sel_crit_label.startswith("Opción 2"):
         selection_criterion = "salto_1dte"
     else:
         selection_criterion = "spread"
-    # Valor objetivo de la prima para la Opción 3 (Salto 1 DTE selecciona por valor):
+    # Valor objetivo de la prima para la Opción 2 (Salto 1 DTE selecciona por valor):
     # fijo en $2 (se quitó el campo editable de la UI).
     value_target = 2.0
     if selection_criterion == "salto_1dte":
@@ -1698,7 +1699,7 @@ if btn_iniciar:
                     _valid_wd = None   # sin info → chequear todos (comportamiento previo)
 
             _skipped_no0dte = 0
-            _skipped_1dte = 0   # Opción 3: días sin "día hábil siguiente" con datos
+            _skipped_1dte = 0   # Opción 2: días sin "día hábil siguiente" con datos
             for i, d in enumerate(day_list):
                 date_str = d.isoformat()
                 # Fin de la ventana = Horario de salida - 1 min (liquida lo pendiente
@@ -1722,7 +1723,7 @@ if btn_iniciar:
 
                 _was_skip = False
                 try:
-                    # Opción 3 (Salto 1DTE): el día de COMPRA no necesita 0DTE; el
+                    # Opción 2 (Salto 1DTE): el día de COMPRA no necesita 0DTE; el
                     # vencimiento es el día hábil siguiente (lo resuelve el motor).
                     if selection_criterion == "salto_1dte":
                         expiry = None
@@ -1775,7 +1776,7 @@ if btn_iniciar:
                     # ValueError (sin data, etc.) sí se reportan como error real.
                     _msg = str(e)
                     if _msg.startswith("Salto 1DTE:"):
-                        # Opción 3: no hay día hábil siguiente con datos (último día del
+                        # Opción 2: no hay día hábil siguiente con datos (último día del
                         # rango / siguiente futuro) o el siguiente no tiene cadena → SALTO
                         # LIMPIO con aviso, sin cortar la corrida ni listarlo como error.
                         _skipped_1dte += 1
