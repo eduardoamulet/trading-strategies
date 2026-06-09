@@ -962,6 +962,11 @@ if _zerodte_map.get(ticker) == "mwf":
         f"🟡 **{ticker}** vence **Lun / Mié / Vie** — no hay 0DTE los **Mar / Jue**. "
         f"Para esos días no existe contrato del mismo día."
     )
+elif _zerodte_map.get(ticker) is None:
+    st.sidebar.caption(
+        f"⚪ **{ticker}** vence **solo los viernes** (weekly) — no hay 0DTE de **Lun a Jue**. "
+        f"Para backtestearlo elegí una fecha que sea **viernes**."
+    )
 
 # Aviso si el ticker elegido NO tiene cache local — vamos a tener que pegarle
 # a Polygon en vivo (lento) y puede fallar para fechas históricas o feriados.
