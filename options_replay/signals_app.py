@@ -95,14 +95,14 @@ m4.metric("Aprovechadas", int((fdf["estado"] == "Aprovechada").sum()))
 st.divider()
 
 
-@st.dialog("📊 Detalle de la señal")
+@st.dialog("📊 Detalle de la señal", width="large")
 def _render_detalle(r):
     st.markdown(
         f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
         f"{r.get('fecha', '')} {r.get('hora', '')}** — {r.get('estrategia', '')}"
     )
-    # Criterios a la IZQUIERDA · Gráfica a la DERECHA.
-    _dc1, _dc2 = st.columns([1, 1.2])
+    # Criterios a la IZQUIERDA · Gráfica (grande) a la DERECHA.
+    _dc1, _dc2 = st.columns([1, 1.9])
     with _dc1:
         st.markdown("**Criterios de la estrategia:**")
         try:
@@ -143,13 +143,12 @@ def _render_detalle(r):
         st.rerun()   # cierra el modal
 
 
-# Lista con un botón "📈 Ver" POR FILA → abre el modal de detalle. (st.dataframe no
-# permite click en una celda — solo en la casilla de selección — por eso van filas custom.)
+# Tabla (grilla) ordenable con una casilla "Ver" por fila → al marcarla abre el modal.
 fdf = fdf.reset_index(drop=True)
 _so1, _so2 = st.columns([2, 5])
 _sort_opt = _so1.selectbox(
     "Ordenar por", ["Fecha (recientes)", "Fecha (antiguas)", "Acción", "% Cumpl.",
-                    "Ganancia", "Estado"], label_visibility="collapsed")
+                    "Ganancia", "Estado"], key="sig_sort", label_visibility="collapsed")
 if _sort_opt == "Fecha (recientes)":
     fdf = fdf.sort_values(["fecha", "hora"], ascending=False)
 elif _sort_opt == "Fecha (antiguas)":
@@ -164,26 +163,43 @@ elif _sort_opt == "Estado":
     fdf = fdf.sort_values("estado")
 fdf = fdf.reset_index(drop=True)
 
-_COLW = [1.0, 0.65, 0.95, 1.7, 0.6, 0.7, 1.0, 0.9, 0.8]
-_hc = st.columns(_COLW)
-for _c, _h in zip(_hc, ["Acción", "Hora", "Fecha", "Estrategia", "Tipo", "% Cumpl.",
-                        "Estado", "Ganancia", "Descripción"]):
-    _c.markdown(f"**{_h}**")
-st.divider()
-for _, _r in fdf.iterrows():
-    _rc = st.columns(_COLW, vertical_alignment="center")
-    _rc[0].write(str(_r["symbol"]))
-    _rc[1].write(str(_r["hora"]))
-    _rc[2].write(str(_r["fecha"]))
-    _rc[3].write(str(_r["estrategia"] or "—"))
-    _rc[4].write(str(_r["tipo"]))
-    _pp = _r["probabilidad"]
-    _rc[5].write(f"{float(_pp):.0f}%" if pd.notna(_pp) else "—")
-    _rc[6].write(str(_r["estado"]))
-    _gg = _r["ganancia"]
-    _rc[7].write(f"${float(_gg):,.0f}" if pd.notna(_gg) else "$0")
-    if _rc[8].button("📈 Ver", key=f"ver_{_r['id']}", use_container_width=True):
-        _render_detalle(_r)
+# Al cambiar el orden, reseteamos la grilla (bump de key) → las casillas "Ver" quedan
+# alineadas con las filas nuevas y destildadas.
+if st.session_state.get("_sig_sort_prev") != _sort_opt:
+    st.session_state["_sig_sort_prev"] = _sort_opt
+    st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+
+_show = pd.DataFrame({
+    "Acción": fdf["symbol"].values,
+    "Hora": fdf["hora"].values,
+    "Fecha": fdf["fecha"].values,
+    "Estrategia": fdf["estrategia"].values,
+    "% Cumpl.": pd.to_numeric(fdf["probabilidad"], errors="coerce").values,
+    "Tipo": fdf["tipo"].values,
+    "Criterios": fdf["criterios"].values,
+    "Estado": fdf["estado"].values,
+    "Ganancia": pd.to_numeric(fdf["ganancia"], errors="coerce").fillna(0.0).values,
+    "Ver": [False] * len(fdf),
+})
+_ekey = f"sig_ed_{st.session_state.get('_sig_ed_v', 0)}"
+_edited = st.data_editor(
+    _show, use_container_width=True, hide_index=True, key=_ekey,
+    disabled=["Acción", "Hora", "Fecha", "Estrategia", "% Cumpl.", "Tipo",
+              "Criterios", "Estado", "Ganancia"],
+    column_config={
+        "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%"),
+        "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
+        "Ver": st.column_config.CheckboxColumn("Ver", help="Marcá para ver el detalle"),
+    },
+)
+st.caption("Marcá la casilla **Ver** de una fila para abrir su **detalle** en un modal · "
+           "cambiá el orden con **'Ordenar por'**.")
+# La casilla "Ver" es un disparador momentáneo: al marcar una, se abre el modal y se
+# resetea la grilla (bump de key) → la casilla se destilda al cerrar (no re-abre sola).
+_checked = [i for i, v in enumerate(_edited["Ver"].tolist()) if v]
+if _checked:
+    st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+    _render_detalle(fdf.iloc[_checked[0]])
 
 # ── Backtest de señales (canasta) → redirige a la página Backtesting ─────────
 st.divider()
