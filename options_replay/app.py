@@ -28,6 +28,7 @@ from predictor import (  # noqa: E402
     adjust_trading_parameters,
     load_config as load_predictor_config,
 )
+import signals_backtest as sbt  # noqa: E402
 
 DATA_DIR = HERE / "data"
 TICKER_INFO_PATH = HERE / "ticker_info.json"
@@ -645,6 +646,146 @@ if not api_key:
         "Agregá la línea:  `POLYGON_API_KEY = \"tu_key\"` y refrescá la página."
     )
     st.stop()
+
+# ============================================================================
+# 🔬 Backtest de SEÑALES / iteraciones — cada fila = 1 iteración (una señal).
+# Se llega acá desde "Alertas → Backtestear señales" (redirige a esta página) o
+# cargando iteraciones a mano. Independiente del backtest single/rango de abajo.
+# ============================================================================
+def _render_sig_results(results, elapsed, partial=False):
+    rows, tot, nok, nwin = [], 0.0, 0, 0
+    for r in sorted(results, key=lambda x: (x.get("fecha") or "", x.get("hora") or "",
+                                            x.get("ticker") or "")):
+        it = r.get("iteration")
+        if it is not None:
+            roi = (it.gain_total / it.invest_total) if it.invest_total else 0.0
+            tot += it.gain_total
+            nok += 1
+            nwin += 1 if it.gain_total > 0 else 0
+            _c = r.get("tipo") == "CALL"
+            rows.append({
+                "Ticker": r["ticker"], "Fecha": r["fecha"], "Hora": r["hora"], "Tipo": r["tipo"],
+                "Strike": (it.call_strike if _c else it.put_strike),
+                "Prima ent.": (it.call_entry_premium if _c else it.put_entry_premium),
+                "Prima sal.": (it.call_exit_premium if _c else it.put_exit_premium),
+                "Ganancia": it.gain_total, "ROI %": roi * 100.0,
+                "Razón": sbt.REASON.get(it.exit_reason, it.exit_reason),
+            })
+        else:
+            rows.append({
+                "Ticker": r.get("ticker", "?"), "Fecha": r.get("fecha", ""),
+                "Hora": r.get("hora", ""), "Tipo": r.get("tipo", ""),
+                "Strike": None, "Prima ent.": None, "Prima sal.": None,
+                "Ganancia": None, "ROI %": None, "Razón": f"⚠ {r.get('error', 'error')}",
+            })
+    if not partial:
+        _m1, _m2, _m3, _m4 = st.columns(4)
+        _m1.metric("Iteraciones", len(results))
+        _m2.metric("Con resultado", nok)
+        _m3.metric("💲 Ganancia total", f"${tot:,.0f}")
+        _m4.metric("Ganadoras", f"{nwin}/{nok}" if nok else "0/0")
+        st.caption(f"⏱️ Completado en {elapsed:0.1f}s")
+    st.dataframe(
+        pd.DataFrame(rows), use_container_width=True, hide_index=True,
+        column_config={
+            "Strike": st.column_config.NumberColumn("Strike", format="%.0f"),
+            "Prima ent.": st.column_config.NumberColumn("Prima ent.", format="$%.2f"),
+            "Prima sal.": st.column_config.NumberColumn("Prima sal.", format="$%.2f"),
+            "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
+            "ROI %": st.column_config.NumberColumn("ROI %", format="%.0f%%"),
+        },
+    )
+
+
+# Señales handed-off desde Alertas (una sola vez): siembran el editor y lo abren.
+_handoff = st.session_state.pop("bt_signals_handoff", None)
+if _handoff:
+    st.session_state["bt_iters"] = [
+        {"Ticker": str(s.get("symbol") or s.get("ticker") or "").upper(),
+         "Fecha": str(s.get("fecha") or ""), "Hora": str(s.get("hora") or ""),
+         "Tipo": str(s.get("tipo") or "").upper()} for s in _handoff]
+    st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del data_editor
+    st.session_state["bt_iters_open"] = True
+
+_iters_seed = st.session_state.get("bt_iters") or [{"Ticker": "", "Fecha": "", "Hora": "", "Tipo": "CALL"}]
+_iters_open = bool(st.session_state.pop("bt_iters_open", False)) or bool(st.session_state.get("sig_bt"))
+with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open):
+    st.caption(
+        "Cada fila = 1 iteración. **Sólo CALL/PUT** según Tipo · 100% de la inversión a "
+        "esa pierna · **Opción 1 (menor spread)** · mismo día (sale 16:00). Editá, agregá "
+        "o borrá filas. Las señales seleccionadas en **Alertas** llegan acá."
+    )
+    _seed_df = pd.DataFrame(_iters_seed)
+    for _c in ("Ticker", "Fecha", "Hora", "Tipo"):
+        if _c not in _seed_df.columns:
+            _seed_df[_c] = ""
+    _ed = st.data_editor(
+        _seed_df[["Ticker", "Fecha", "Hora", "Tipo"]], num_rows="dynamic",
+        use_container_width=True, hide_index=True, key="bt_iters_editor",
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker"),
+            "Fecha": st.column_config.TextColumn("Fecha (YYYY-MM-DD)"),
+            "Hora": st.column_config.TextColumn("Hora (HH:MM)"),
+            "Tipo": st.column_config.SelectboxColumn("Tipo", options=["CALL", "PUT"]),
+        },
+    )
+    _sp1, _sp2, _sp3, _sp4 = st.columns(4)
+    _sig_inv = float(_sp1.number_input("Inversión ($)", min_value=1.0, value=1000.0,
+                                       step=100.0, key="sig_inv"))
+    _sig_umb = float(_sp2.number_input("Umbral ROI (%)", value=1000.0, step=50.0, key="sig_umb"))
+    _sig_stop = float(_sp3.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
+    _sig_spmax = float(_sp4.number_input("Spread máx ($) — 0=auto", min_value=0.0, value=0.0,
+                                         step=0.01, format="%.2f", key="sig_spmax"))
+
+    _specs = []
+    for _, _r in _ed.iterrows():
+        _tk = str(_r.get("Ticker") or "").strip()
+        if not _tk:
+            continue
+        _specs.append({"ticker": _tk, "fecha": str(_r.get("Fecha") or "").strip(),
+                       "hora": str(_r.get("Hora") or "").strip(),
+                       "tipo": str(_r.get("Tipo") or "").upper().strip()})
+
+    if st.button(f"▶ Correr backtest de {len(_specs)} iteración(es)", type="primary",
+                 disabled=not _specs, key="sig_run"):
+        _scfg = ({"enable_spread_filter": True, "_max_spread_override": _sig_spmax}
+                 if _sig_spmax > 0 else None)
+        _dl = get_downloader(api_key)
+        _n = len(_specs)
+        _wk = max(1, min(8, _n))
+        _pr = st.progress(0.0, text="Corriendo iteraciones…")
+        _lv = st.empty()
+        _t0 = time.perf_counter()
+        _res = []
+        with ThreadPoolExecutor(max_workers=_wk) as _ex:
+            _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, _scfg)
+                     for s in _specs]
+            _dn = 0
+            for _f in as_completed(_futs):
+                try:
+                    _res.append(_f.result())
+                except Exception as _e:
+                    _res.append({"ticker": "?", "status": "error", "iteration": None,
+                                 "error": str(_e)})
+                _dn += 1
+                _el = time.perf_counter() - _t0
+                _pr.progress(_dn / _n, text=(f"⏱️ {_el:0.1f}s · {_dn}/{_n} iteraciones "
+                                             f"({_wk} en paralelo)"))
+                with _lv.container():
+                    _render_sig_results(_res, _el, partial=True)
+        _pr.empty()
+        _lv.empty()
+        st.session_state["sig_bt"] = {"results": _res, "elapsed": time.perf_counter() - _t0}
+        st.rerun()
+
+    _sbres = st.session_state.get("sig_bt")
+    if _sbres:
+        st.markdown("##### Resultados")
+        if st.button("🧹 Limpiar resultados", key="sig_clear"):
+            st.session_state.pop("sig_bt", None)
+            st.rerun()
+        _render_sig_results(_sbres["results"], _sbres.get("elapsed", 0.0), partial=False)
+
 
 # ----- Sidebar form -----
 st.sidebar.header("Parámetros")
