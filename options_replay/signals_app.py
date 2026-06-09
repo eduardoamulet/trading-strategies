@@ -95,40 +95,55 @@ m4.metric("Aprovechadas", int((fdf["estado"] == "Aprovechada").sum()))
 st.divider()
 
 
-@st.dialog("📊 Detalle de la señal")
+@st.dialog("📊 Detalle de la señal", width="large")
 def _render_detalle(r):
     st.markdown(
         f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
         f"{r.get('fecha', '')} {r.get('hora', '')}** — {r.get('estrategia', '')}"
     )
-    st.markdown("**Criterios de la estrategia:**")
-    try:
-        crits = json.loads(r["criterios_json"]) if r.get("criterios_json") else []
-    except Exception:
-        crits = []
-    if crits:
-        for c in crits:
-            st.markdown(("✅ " if c.get("ok") else "❌ ") + str(c.get("nombre", "")))
-    else:
-        st.caption(f"Sin detalle de criterios ({r.get('criterios') or '—'}).")
+    # Criterios a la IZQUIERDA · Gráfica a la DERECHA.
+    _dc1, _dc2 = st.columns([1, 1.2])
+    with _dc1:
+        st.markdown("**Criterios de la estrategia:**")
+        try:
+            crits = json.loads(r["criterios_json"]) if r.get("criterios_json") else []
+        except Exception:
+            crits = []
+        if crits:
+            for c in crits:
+                st.markdown(("✅ " if c.get("ok") else "❌ ") + str(c.get("nombre", "")))
+        else:
+            st.caption(f"Sin detalle de criterios ({r.get('criterios') or '—'}).")
+    with _dc2:
+        st.markdown("**Gráfica de la señal:**")
+        if r.get("chart_url"):
+            st.image(r["chart_url"], use_container_width=True)
+        else:
+            st.caption("Sin gráfica.")
 
-    st.markdown("**Gráfica de la señal:**")
-    if r.get("chart_url"):
-        st.image(r["chart_url"], use_container_width=True)
-    else:
-        st.caption("Sin gráfica.")
-
+    st.divider()
     _i = xs.ESTADOS.index(r["estado"]) if r["estado"] in xs.ESTADOS else 0
-    ne = st.selectbox("Estado", xs.ESTADOS, index=_i, key=f"est_{r['id']}")
-    ng = st.number_input("Ganancia ($)", value=float(r["ganancia"] or 0), step=10.0,
-                         key=f"gan_{r['id']}")
-    if st.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
+    _e1, _e2 = st.columns(2)
+    ne = _e1.selectbox("Estado", xs.ESTADOS, index=_i, key=f"est_{r['id']}")
+    ng = _e2.number_input("Ganancia ($)", value=float(r["ganancia"] or 0), step=10.0,
+                          key=f"gan_{r['id']}")
+    _b1, _b2 = st.columns(2)
+    if _b1.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
         db.update_user_fields(r["id"], estado=ne, ganancia=float(ng))
         st.toast("Guardado")
         st.rerun()   # cierra el modal y refresca
+    if _b2.button("➕ Agregar a backtest", key=f"bt_{r['id']}", use_container_width=True):
+        _basket = st.session_state.setdefault("bt_basket", [])
+        if not any(b.get("id") == r["id"] for b in _basket):
+            _basket.append({"id": r["id"], "symbol": str(r["symbol"]), "fecha": str(r["fecha"]),
+                            "hora": str(r["hora"]), "tipo": str(r["tipo"])})
+            st.toast(f"Agregada al backtest ({len(_basket)})")
+        else:
+            st.toast("Ya estaba en el backtest")
+        st.rerun()   # cierra el modal
 
 
-# Tabla ORDENABLE con selección MULTI-fila (casillas a la izquierda).
+# Tabla ORDENABLE con selección de UNA fila (clic en cualquier celda → abre el detalle).
 fdf = fdf.reset_index(drop=True)
 _show = pd.DataFrame({
     "Acción": fdf["symbol"].values,
@@ -141,24 +156,24 @@ _show = pd.DataFrame({
     "Estado": fdf["estado"].values,
     "Ganancia": pd.to_numeric(fdf["ganancia"], errors="coerce").fillna(0.0).values,
     # Texto (NO link): clic en "Ver" selecciona la fila → abre el modal de detalle.
-    "Gráfica": ["📈 Ver"] * len(fdf),
+    "Descripción": ["📈 Ver"] * len(fdf),
 })
 _sel = st.dataframe(
     _show, use_container_width=True, hide_index=True,
-    on_select="rerun", selection_mode="multi-row",
+    on_select="rerun", selection_mode="single-row",
     column_config={
         "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%"),
         "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
-        "Gráfica": st.column_config.TextColumn("Gráfica"),
+        "Descripción": st.column_config.TextColumn("Descripción"),
     },
 )
 st.caption("Clic en los **encabezados** para ordenar · clic en una **fila** (p. ej. en "
-           "**Gráfica → 📈 Ver**) abre el **detalle** en un modal · marcá varias para backtest.")
+           "**Descripción → 📈 Ver**) abre el **detalle** en un modal.")
 _rows = _sel.selection.rows if (_sel and getattr(_sel, "selection", None)) else []
 
-# Detalle en MODAL: al SELECCIONAR 1 fila (clic en cualquier celda — p. ej. en "Gráfica →
-# 📈 Ver") se abre el modal (Criterios + Gráfica + Estado/Ganancia). Se dispara SOLO en la
-# transición a una nueva fila, así el modal se puede cerrar y no se re-abre solo.
+# Detalle en MODAL: al SELECCIONAR la fila (clic en cualquier celda — p. ej. en
+# "Descripción → 📈 Ver") se abre el modal. Se dispara SOLO en la transición a una nueva
+# fila, así el modal se puede cerrar y no se re-abre solo.
 _cur_id = str(fdf.iloc[_rows[0]]["id"]) if len(_rows) == 1 else None
 if _cur_id is None:
     st.session_state.pop("_detalle_last", None)
@@ -166,21 +181,29 @@ elif st.session_state.get("_detalle_last") != _cur_id:
     st.session_state["_detalle_last"] = _cur_id
     _render_detalle(fdf.iloc[_rows[0]])
 
-# ── Backtest de señales seleccionadas → redirige a la página Backtesting ─────
+# ── Backtest de señales (canasta) → redirige a la página Backtesting ─────────
 st.divider()
-st.subheader("🔬 Backtest de señales seleccionadas")
+st.subheader("🔬 Backtest de señales")
 st.caption(
-    "Cada señal seleccionada = 1 iteración (ticker=Acción · fecha/hora de la señal · "
-    "Sólo CALL/PUT según Tipo · Opción 1 menor spread · mismo día). El botón te lleva "
-    "a **Backtesting**, con las señales ya cargadas como iteraciones para correrlas."
+    "Abrí una señal (clic en su fila → **📈 Ver**) y usá **➕ Agregar a backtest** para armar "
+    "la lista. Cada señal = 1 iteración (Sólo CALL/PUT según Tipo · Opción 1 menor spread · "
+    "mismo día). El botón te lleva a **Backtesting** con las señales cargadas."
 )
-if not _rows:
-    st.info("Marcá una o más filas (casilla a la izquierda de la tabla) para backtestearlas.")
+_basket = st.session_state.get("bt_basket", [])
+if not _basket:
+    st.info("Todavía no agregaste señales. Abrí el detalle de una (📈 Ver) y pulsá "
+            "'➕ Agregar a backtest'.")
 else:
-    if st.button(f"▶ Backtestear {len(_rows)} señal(es)  →  Backtesting", type="primary"):
+    st.markdown("🧺 **En el backtest:**  " + "  ·  ".join(
+        f"{b['symbol']} {b['tipo']} ({b['fecha']} {b['hora']})" for b in _basket))
+    _bk1, _bk2 = st.columns([2, 1])
+    if _bk1.button(f"▶ Backtestear {len(_basket)} señal(es)  →  Backtesting", type="primary",
+                   use_container_width=True):
         st.session_state["bt_signals_handoff"] = [
-            {"symbol": str(fdf.iloc[i]["symbol"]), "fecha": str(fdf.iloc[i]["fecha"]),
-             "hora": str(fdf.iloc[i]["hora"]), "tipo": str(fdf.iloc[i]["tipo"])}
-            for i in _rows
-        ]
+            {"symbol": b["symbol"], "fecha": b["fecha"], "hora": b["hora"], "tipo": b["tipo"]}
+            for b in _basket]
+        st.session_state.pop("bt_basket", None)
         st.switch_page("options_replay/app.py")
+    if _bk2.button("🗑 Vaciar", use_container_width=True):
+        st.session_state.pop("bt_basket", None)
+        st.rerun()
