@@ -933,11 +933,9 @@ with st.sidebar.container(border=True):
     )
 
     # Callback compartido por los date_inputs: al cambiar de fecha,
-    # resetear la hora/minuto del orden a 09:30. El step se respeta porque 30
-    # es divisible por 1, 5, 10, 15 (siempre cae en la grilla).
+    # resetear el "Horario de entrada" a 09:30.
     def _reset_hora_on_date_change():
-        st.session_state["hora_orden_hour"] = 9
-        st.session_state["hora_orden_minute"] = 30
+        st.session_state["horario_entrada"] = time_cls(9, 30)
 
     # Date inputs condicionales según el radio "Modo de fecha".
     if _date_mode == "Fecha fija":
@@ -987,117 +985,45 @@ with st.sidebar.container(border=True):
     # Backward-compat: el resto del código usa `sel_date` para single-day.
     sel_date = sel_start
 
-    # "Horario de entrada" configurable en AMBOS modos (single y rango).
+    # "Horario de entrada" configurable en AMBOS modos (single y rango). Un solo
+    # componente de hora:minuto (igual que "Horario de salida").
     if True:
-        # Horario de entrada — Step + verificación de ROI arriba; Hora + Minuto abajo.
-        # El Step define la granularidad del dropdown de minutos.
         st.markdown(
             "<p style='font-weight:bold; margin: 0.4rem 0 0.2rem 0;'>Horario de entrada</p>",
             unsafe_allow_html=True,
         )
 
-        _step_options = [1, 5, 10, 15]
-        if "hora_orden_step" not in st.session_state:
-            st.session_state["hora_orden_step"] = 5  # default 5 minutos
-        if "sell_check_min" not in st.session_state:
-            st.session_state["sell_check_min"] = 1  # default verificación venta (min)
-
-        # Aplicar sync pendiente desde la iteración anterior — DEBE ocurrir ANTES
-        # de instanciar CUALQUIER widget cuyo key se vaya a modificar (selectboxes
-        # step, hora y minuto). Streamlit prohíbe escribir session_state[key] de un
-        # widget ya creado.
-        # La sugerencia de "próxima iteración" (end+1min del último single) solo se
-        # aplica en modo single — en rango la entrada no debe heredarla.
+        # Aplicar sync pendiente desde la iteración anterior (la "Próxima iteración"
+        # sugiere el minuto siguiente). DEBE ocurrir ANTES de instanciar el widget,
+        # y solo en modo single (en rango la entrada no la hereda).
         _pending_sync = st.session_state.pop("_pending_hora_sync", None)
         if _pending_sync is not None and not is_range:
-            if len(_pending_sync) == 3:
-                _ph, _pm, _pstep = _pending_sync
-                st.session_state["hora_orden_step"] = int(_pstep)
-            else:
-                _ph, _pm = _pending_sync
-            st.session_state["hora_orden_hour"] = int(_ph)
-            st.session_state["hora_orden_minute"] = int(_pm)
+            if isinstance(_pending_sync, time_cls):
+                st.session_state["horario_entrada"] = _pending_sync
+            else:  # compat: tuplas (h, m) o (h, m, step) de versiones previas
+                st.session_state["horario_entrada"] = time_cls(
+                    int(_pending_sync[0]), int(_pending_sync[1]))
 
-        # ----- Fila 1: Step (min) | Sell verification (min) -----
-        c_step, c_roi = st.columns(2)
-        _step = int(c_step.selectbox(
-            "Step (min)",
-            options=_step_options,
-            key="hora_orden_step",
-            format_func=lambda s: f"{s} min",
-            help="Granularidad del dropdown de minutos (1, 5, 10 ó 15).",
-        ))
-        sell_check_min = int(c_roi.selectbox(
-            "Sell verification (min)",
-            options=[1, 2, 3, 4, 5],
-            key="sell_check_min",
-            format_func=lambda s: f"{s} min",
-            help=(
-                "Cada cuántos MINUTOS se verifica el Umbral de ROI (%). Simula el "
-                "período de llamada al API: la tabla minuto a minuto avanza de a "
-                "esta cantidad de minutos y la venta automática se evalúa en cada "
-                "uno de esos pasos (1 = cada minuto)."
-            ),
-        ))
+        if "horario_entrada" not in st.session_state:
+            _def = time_cls(9, 30)
+            st.session_state["horario_entrada"] = _def if t_start <= _def <= t_end else t_start
 
-        # Computar opciones válidas de hora dentro del rango [t_start, t_end].
-        _start_hour, _end_hour = t_start.hour, t_end.hour
-        _valid_hours = list(range(_start_hour, _end_hour + 1))
-
-        # Clamp hora actual al rango válido (si el usuario cambió t_start/t_end).
-        if "hora_orden_hour" not in st.session_state:
-            st.session_state["hora_orden_hour"] = 9 if 9 in _valid_hours else _valid_hours[0]
-        if st.session_state["hora_orden_hour"] not in _valid_hours:
-            st.session_state["hora_orden_hour"] = _valid_hours[0]
-
-        # ----- Fila 2: Hora | Minuto -----
-        c_h, c_m = st.columns(2)
-        selected_hour = c_h.selectbox(
-            "Hora",
-            options=_valid_hours,
-            key="hora_orden_hour",
-            format_func=lambda h: f"{h:02d}",
+        hora_orden = st.time_input(
+            "Horario de entrada", key="horario_entrada", step=60,
+            label_visibility="collapsed",
+            help=("Hora de COMPRA (apertura de la posición). La venta ocurre dentro "
+                  "de [Horario de entrada, Horario de salida]."),
         )
+        # Clamp suave a la ventana operativa (autocorrige, no bloquea).
+        if hora_orden < t_start:
+            st.warning(f"La entrada se ajustó al inicio de la ventana **{t_start:%H:%M}**.")
+            hora_orden = t_start
+        elif hora_orden > t_end:
+            st.warning(f"La entrada se ajustó al fin de la ventana **{t_end:%H:%M}**.")
+            hora_orden = t_end
 
-        # Generar opciones de minuto según step + restricciones por hora límite.
-        def _minute_options_for(hour: int, step: int) -> list[int]:
-            if hour == t_start.hour and hour == t_end.hour:
-                min_m, max_m = t_start.minute, t_end.minute
-            elif hour == t_start.hour:
-                min_m, max_m = t_start.minute, 59
-            elif hour == t_end.hour:
-                min_m, max_m = 0, t_end.minute
-            else:
-                min_m, max_m = 0, 59
-            opts = [m for m in range(0, 60, step) if min_m <= m <= max_m]
-            # Garantizar al menos un valor — sumar el borde si quedó vacío
-            if not opts:
-                opts = [min_m]
-            return opts
-
-        _minute_opts = _minute_options_for(selected_hour, _step)
-
-        # Clamp minuto al set válido del step actual.
-        if "hora_orden_minute" not in st.session_state:
-            st.session_state["hora_orden_minute"] = 30 if 30 in _minute_opts else _minute_opts[0]
-        if st.session_state["hora_orden_minute"] not in _minute_opts:
-            # Buscar el más cercano hacia abajo (preserva intención del usuario).
-            cur = st.session_state["hora_orden_minute"]
-            closest = min(_minute_opts, key=lambda m: abs(m - cur))
-            st.session_state["hora_orden_minute"] = closest
-
-        selected_minute = c_m.selectbox(
-            "Minuto",
-            options=_minute_opts,
-            key="hora_orden_minute",
-            format_func=lambda m: f"{m:02d}",
-            help=(
-                f"Opciones generadas con step={_step} min, restringidas al rango "
-                f"{t_start:%H:%M}–{t_end:%H:%M}."
-            ),
-        )
-
-        hora_orden = time_cls(int(selected_hour), int(selected_minute))
+        # Verificación de venta: siempre cada minuto (se quitó el selector dedicado).
+        sell_check_min = 1
 
 
     # Horario de salida (GENERAL, para las 5 estrategias) — fin de la ventana
@@ -2948,9 +2874,8 @@ if exhausted:
             f"que está fuera de la ventana."
         )
 else:
-    # Snap el next_ts a la grilla del sidebar para que el cartel y los
-    # selectboxes Hora/Minuto muestren exactamente el mismo valor.
-    _msg_step = int(st.session_state.get("hora_orden_step", 5))
+    # Cada minuto es seleccionable (componente hora:minuto) → snap exacto (step=1).
+    _msg_step = 1
     _msg_h, _msg_m = _snap_to_orden_grid(
         next_ts, replay_state["time_start"], replay_state["time_end"], _msg_step
     )
