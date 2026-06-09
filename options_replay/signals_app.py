@@ -140,7 +140,8 @@ _show = pd.DataFrame({
     "Criterios": fdf["criterios"].values,
     "Estado": fdf["estado"].values,
     "Ganancia": pd.to_numeric(fdf["ganancia"], errors="coerce").fillna(0.0).values,
-    "Gráfica": fdf["chart_url"].values,
+    # Texto (NO link): clic en "Ver" selecciona la fila → abre el modal de detalle.
+    "Gráfica": ["📈 Ver"] * len(fdf),
 })
 _sel = st.dataframe(
     _show, use_container_width=True, hide_index=True,
@@ -148,18 +149,22 @@ _sel = st.dataframe(
     column_config={
         "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%"),
         "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
-        "Gráfica": st.column_config.LinkColumn("Gráfica", display_text="📈 Ver"),
+        "Gráfica": st.column_config.TextColumn("Gráfica"),
     },
 )
-st.caption("Clic en los **encabezados** para ordenar · marcá las **casillas** de la "
-           "izquierda para seleccionar señales (1 fila → ver detalle · varias → backtest).")
+st.caption("Clic en los **encabezados** para ordenar · clic en una **fila** (p. ej. en "
+           "**Gráfica → 📈 Ver**) abre el **detalle** en un modal · marcá varias para backtest.")
 _rows = _sel.selection.rows if (_sel and getattr(_sel, "selection", None)) else []
 
-# Detalle en MODAL: al seleccionar 1 fila aparece "Ver detalle" → abre el modal
-# (Criterios + Gráfica + Estado/Ganancia). La selección sola NO vuelca nada inline.
-if len(_rows) == 1:
-    if st.button("📈 Ver detalle de la señal seleccionada", use_container_width=True):
-        _render_detalle(fdf.iloc[_rows[0]])
+# Detalle en MODAL: al SELECCIONAR 1 fila (clic en cualquier celda — p. ej. en "Gráfica →
+# 📈 Ver") se abre el modal (Criterios + Gráfica + Estado/Ganancia). Se dispara SOLO en la
+# transición a una nueva fila, así el modal se puede cerrar y no se re-abre solo.
+_cur_id = str(fdf.iloc[_rows[0]]["id"]) if len(_rows) == 1 else None
+if _cur_id is None:
+    st.session_state.pop("_detalle_last", None)
+elif st.session_state.get("_detalle_last") != _cur_id:
+    st.session_state["_detalle_last"] = _cur_id
+    _render_detalle(fdf.iloc[_rows[0]])
 
 # ── Backtest de señales seleccionadas → redirige a la página Backtesting ─────
 st.divider()
