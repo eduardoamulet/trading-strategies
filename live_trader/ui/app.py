@@ -65,33 +65,41 @@ if _alerts_ho:
         "(Sólo CALL/PUT según Tipo) con la MISMA selección de contrato que el backtest. "
         "El daemon luego monitorea y vende al Umbral de ROI. **Requiere mercado abierto.**"
     )
-    _aa1, _aa2, _aa3 = st.columns(3)
-    _la_inv = _aa1.number_input("Inversión por alerta ($)", min_value=1.0, value=1000.0,
-                                step=100.0, key="la_inv")
-    _la_roi = _aa2.number_input("Umbral de ROI (%)", min_value=1.0, value=20.0, step=5.0, key="la_roi")
-    _la_strat = _aa3.radio("Strike", ["atm", "itm"], horizontal=True, key="la_strat",
-                           format_func=lambda s: "ATM" if s == "atm" else "1-ITM")
+    st.caption("Editá los parámetros **por alerta** en la tabla (Inversión / Umbral ROI / Strike). "
+               "Acción y Tipo vienen de la señal y no se editan.")
+    _seed = _pd.DataFrame([{"Acción": a.get("symbol"), "Tipo": a.get("tipo"),
+                            "Inversión $": 1000.0, "Umbral ROI %": 20.0, "Strike": "atm"}
+                           for a in _alerts_ho])
+    _edited = st.data_editor(
+        _seed, key="la_params_editor", hide_index=True, use_container_width=True,
+        disabled=["Acción", "Tipo"],
+        column_config={
+            "Inversión $": st.column_config.NumberColumn(min_value=1.0, step=100.0, format="$%.0f"),
+            "Umbral ROI %": st.column_config.NumberColumn(min_value=1.0, step=5.0, format="%.0f%%"),
+            "Strike": st.column_config.SelectboxColumn(options=["atm", "itm"], required=True),
+        })
     _la_arm = st.checkbox("🎯 Auto-armar la venta automática (TP) al comprar", value=True, key="la_arm",
-                          help="Arma el take-profit en el momento de la compra → el daemon vende SOLO "
-                               "al llegar al Umbral de ROI. Si lo desmarcás, la posición queda abierta "
-                               "y tenés que armar el TP a mano en el panel de abajo.")
+                          help="Arma el take-profit al comprar → el daemon vende SOLO al llegar al "
+                               "Umbral de ROI de esa alerta. Si lo desmarcás, tenés que armar el TP "
+                               "a mano en el panel de abajo.")
     st.caption("⚙ El monitoreo y la venta automática los hace el **daemon** (no esta UI): dejá "
                "corriendo `cd live_trader && py -m daemon.runner` en otra terminal.")
-    st.dataframe(_pd.DataFrame([{"Acción": a.get("symbol"), "Tipo": a.get("tipo")} for a in _alerts_ho]),
-                 hide_index=True, use_container_width=True)
-    def _mk_ae(a):
+
+    def _mk_ae(i, a):
         from core.alert_entry import AlertEntry
+        _row = _edited.iloc[i]
         return AlertEntry(alert_id=str(a.get("id")), underlying=str(a.get("symbol", "")).upper(),
-                          side=str(a.get("tipo", "")).upper(), inversion=float(_la_inv),
-                          roi_target_pct=float(_la_roi), strategy=_la_strat, arm_tp=bool(_la_arm))
+                          side=str(a.get("tipo", "")).upper(), inversion=float(_row["Inversión $"]),
+                          roi_target_pct=float(_row["Umbral ROI %"]), strategy=str(_row["Strike"]),
+                          arm_tp=bool(_la_arm))
 
     _pc1, _pc2 = st.columns([2, 1])
     if _pc1.button(f"🔍 Previsualizar {len(_alerts_ho)} (sin comprar)", type="primary",
                    use_container_width=True):
         from core.alert_entry import preview_from_alert
         _pv = []
-        for a in _alerts_ho:
-            p = preview_from_alert(broker, store, selector, risk, _mk_ae(a))
+        for i, a in enumerate(_alerts_ho):
+            p = preview_from_alert(broker, store, selector, risk, _mk_ae(i, a))
             _estado = ("✅ lista" if p.status == "ok"
                        else ("⚠ " + "; ".join(p.reasons)) if p.status == "blocked"
                        else ("✗ " + "; ".join(p.reasons)))
@@ -101,7 +109,8 @@ if _alerts_ho:
                         "Ask": (f"${p.ask:.2f}" if p.ask else "—"),
                         "Spread": (f"${p.spread:.2f}" if p.occ else "—"),
                         "OI": int(p.open_interest or 0), "Cant.": int(p.qty or 0),
-                        "Costo": (f"${p.cost:,.0f}" if p.cost else "—"), "Estado": _estado})
+                        "Costo": (f"${p.cost:,.0f}" if p.cost else "—"),
+                        "Umbral": f"{float(_edited.iloc[i]['Umbral ROI %']):.0f}%", "Estado": _estado})
         st.session_state["live_alerts_preview"] = _pv
         st.session_state["live_alerts_n_ok"] = sum(1 for x in _pv if x["Estado"] == "✅ lista")
         st.rerun()
@@ -121,9 +130,9 @@ if _alerts_ho:
                      disabled=_n_ok == 0, use_container_width=True):
             from core.alert_entry import EntryError, enter_from_alert
             _res = []
-            for a in _alerts_ho:
+            for i, a in enumerate(_alerts_ho):
                 try:
-                    pos = enter_from_alert(broker, store, selector, risk, om, _mk_ae(a))
+                    pos = enter_from_alert(broker, store, selector, risk, om, _mk_ae(i, a))
                     _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"),
                                  "Estado": f"✅ comprada · {pos.qty} @ ${pos.entry_price:.2f}"})
                 except EntryError as ex:
