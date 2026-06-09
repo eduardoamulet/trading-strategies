@@ -71,6 +71,12 @@ if _alerts_ho:
     _la_roi = _aa2.number_input("Umbral de ROI (%)", min_value=1.0, value=20.0, step=5.0, key="la_roi")
     _la_strat = _aa3.radio("Strike", ["atm", "itm"], horizontal=True, key="la_strat",
                            format_func=lambda s: "ATM" if s == "atm" else "1-ITM")
+    _la_arm = st.checkbox("🎯 Auto-armar la venta automática (TP) al comprar", value=True, key="la_arm",
+                          help="Arma el take-profit en el momento de la compra → el daemon vende SOLO "
+                               "al llegar al Umbral de ROI. Si lo desmarcás, la posición queda abierta "
+                               "y tenés que armar el TP a mano en el panel de abajo.")
+    st.caption("⚙ El monitoreo y la venta automática los hace el **daemon** (no esta UI): dejá "
+               "corriendo `cd live_trader && py -m daemon.runner` en otra terminal.")
     st.dataframe(_pd.DataFrame([{"Acción": a.get("symbol"), "Tipo": a.get("tipo")} for a in _alerts_ho]),
                  hide_index=True, use_container_width=True)
     _oa1, _oa2 = st.columns([2, 1])
@@ -81,7 +87,7 @@ if _alerts_ho:
         for a in _alerts_ho:
             ae = AlertEntry(alert_id=str(a.get("id")), underlying=str(a.get("symbol", "")).upper(),
                             side=str(a.get("tipo", "")).upper(), inversion=float(_la_inv),
-                            roi_target_pct=float(_la_roi), strategy=_la_strat)
+                            roi_target_pct=float(_la_roi), strategy=_la_strat, arm_tp=bool(_la_arm))
             try:
                 pos = enter_from_alert(broker, store, selector, risk, om, ae)
                 _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"),

@@ -34,6 +34,7 @@ class AlertEntry:
     inversion: float       # USD a invertir en esa pierna
     roi_target_pct: float  # Umbral de ROI (%) → take-profit automático
     strategy: str = "atm"  # "atm" (más cercano al spot) | "itm" (1-ITM)
+    arm_tp: bool = True    # armar el take-profit al comprar → el daemon vende solo al Umbral
 
 
 def enter_from_alert(broker: BrokerAdapter, store: Store, selector: ContractSelector,
@@ -84,4 +85,10 @@ def enter_from_alert(broker: BrokerAdapter, store: Store, selector: ContractSele
     store.audit("alert_entry", {"alert_id": e.alert_id, "underlying": e.underlying,
                                 "side": side, "occ": contract.occ, "qty": qty,
                                 "roi_target_pct": e.roi_target_pct, "expiry": expiry})
-    return om.buy(contract, qty, e.roi_target_pct, idempotency_key=f"alert_{e.alert_id}")
+    pos = om.buy(contract, qty, e.roi_target_pct, idempotency_key=f"alert_{e.alert_id}")
+
+    # 7) auto-armar el take-profit → el daemon vende solo al llegar al Umbral de ROI.
+    # Sin esto la posición queda abierta sin auto-venta (había que armarla a mano).
+    if e.arm_tp:
+        store.set_tp_armed(pos.occ, True)
+    return pos
