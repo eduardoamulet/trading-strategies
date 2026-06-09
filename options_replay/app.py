@@ -1002,7 +1002,7 @@ with st.sidebar.container(border=True):
         _def = time_cls(9, 30)
         st.session_state["horario_entrada"] = _def if t_start <= _def <= t_end else t_start
     if "horario_salida" not in st.session_state:
-        st.session_state["horario_salida"] = time_cls(15, 59)
+        st.session_state["horario_salida"] = time_cls(16, 0)
 
     # --- Widgets en dos columnas ---
     _col_ent, _col_sal = st.columns(2)
@@ -1025,7 +1025,7 @@ with st.sidebar.container(border=True):
         horario_salida = st.time_input(
             "Horario de salida", key="horario_salida", step=60,
             label_visibility="collapsed",
-            help=("Fin de la ventana operativa (default 15:59). Toda evaluación, compra y "
+            help=("Fin de la ventana operativa (default 16:00). Toda evaluación, compra y "
                   "venta ocurre dentro de [Horario de entrada, Horario de salida]; lo que "
                   "quede sin vender se liquida en el minuto ANTES de esta hora."),
         )
