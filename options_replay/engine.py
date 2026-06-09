@@ -686,9 +686,10 @@ def run_next_iteration(
 
     ticker = ticker.upper().strip()
 
-    # Opción 3 "Salto 1 DTE": despacha al flujo OVERNIGHT (compra en buy_date a la
-    # hora de entrada, vende el día hábil siguiente a la MISMA hora). Selección por
-    # value (prima ≈ value_target); ignora Umbral/Stop/Horario de salida.
+    # Opción 2 "Salto 1 DTE": despacha al flujo OVERNIGHT (compra en buy_date a la
+    # Horario de entrada, vende el día hábil siguiente a la Horario de salida). Como
+    # son días distintos, la hora de salida puede ser anterior a la de entrada.
+    # Selección por value (prima ≈ value_target); ignora Umbral/Stop.
     if selection_criterion == "salto_1dte":
         return run_overnight_1dte(
             downloader, ticker, date, premium_min, premium_max,

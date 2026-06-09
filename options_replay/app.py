@@ -1004,6 +1004,11 @@ with st.sidebar.container(border=True):
     if "horario_salida" not in st.session_state:
         st.session_state["horario_salida"] = time_cls(16, 0)
 
+    # ¿Está activa la Opción 2 (Salto 1 DTE)? Se lee del estado guardado del selectbox
+    # (se instancia más abajo) para tratar las horas como de DÍAS DISTINTOS:
+    # entrada = día de compra (D), salida = día hábil siguiente (D+1).
+    _is_salto = str(st.session_state.get("selection_criterion_label", "")).startswith("Opción 2")
+
     # --- Widgets en dos columnas ---
     _col_ent, _col_sal = st.columns(2)
     with _col_ent:
@@ -1014,9 +1019,11 @@ with st.sidebar.container(border=True):
         hora_orden = st.time_input(
             "Horario de entrada", key="horario_entrada", step=60,
             label_visibility="collapsed",
-            help=("Hora de COMPRA (apertura de la posición). La venta ocurre dentro "
-                  "de [Horario de entrada, Horario de salida]."),
+            help=("Hora de COMPRA (apertura de la posición). En Opción 2 (Salto 1 DTE) "
+                  "es la hora de compra del día D."),
         )
+        if _is_salto:
+            st.caption("🛒 Día de compra (D)")
     with _col_sal:
         st.markdown(
             "<p style='font-weight:normal; margin: 0.4rem 0 0.2rem 0;'>Horario de salida</p>",
@@ -1025,10 +1032,12 @@ with st.sidebar.container(border=True):
         horario_salida = st.time_input(
             "Horario de salida", key="horario_salida", step=60,
             label_visibility="collapsed",
-            help=("Fin de la ventana operativa (default 16:00). Toda evaluación, compra y "
-                  "venta ocurre dentro de [Horario de entrada, Horario de salida]; lo que "
-                  "quede sin vender se liquida en el minuto ANTES de esta hora."),
+            help=("Fin de la ventana operativa (default 16:00). En Opción 2 (Salto 1 DTE) "
+                  "es la hora de venta del día hábil SIGUIENTE (D+1), por lo que puede "
+                  "ser una hora anterior a la de entrada."),
         )
+        if _is_salto:
+            st.caption("🌙 Día hábil siguiente (D+1)")
 
     # --- Clamps / validaciones (debajo, ancho completo para que se lean bien) ---
     # Entrada dentro de la ventana operativa (autocorrige, no bloquea).
@@ -1038,8 +1047,10 @@ with st.sidebar.container(border=True):
     elif hora_orden > t_end:
         st.warning(f"La entrada se ajustó al fin de la ventana **{t_end:%H:%M}**.")
         hora_orden = t_end
-    # La salida debe ser posterior a la entrada (autocorrige, no bloquea).
-    if horario_salida <= hora_orden and t_end > hora_orden:
+    # La salida debe ser posterior a la entrada SOLO en estrategias del MISMO día. En
+    # Opción 2 (Salto 1 DTE) la salida es del día hábil siguiente (D+1) → cualquier
+    # hora de reloj es válida (puede ser anterior a la de entrada) → NO se valida.
+    if not _is_salto and horario_salida <= hora_orden and t_end > hora_orden:
         st.warning(
             f"El **Horario de salida** debe ser posterior a la entrada "
             f"({hora_orden:%H:%M}); se ajustó a **{t_end:%H:%M}**."
@@ -1083,10 +1094,11 @@ with st.sidebar.container(border=True):
     value_target = 2.0
     if selection_criterion == "salto_1dte":
         st.info(
-            "🌙 **Salto 1 DTE** — compra un contrato que **vence el día hábil siguiente** "
-            "a la **Horario de entrada**, y lo vende **ese día a la Horario de salida** "
-            "(overnight). Selección por valor (prima ≈ **$2**); **sin** Umbral de ROI "
-            "ni Stop loss. Ej.: compra viernes 09:30 → vende lunes a la Horario de salida."
+            "🌙 **Salto 1 DTE** — compra el día **D** a la **Horario de entrada** un "
+            "contrato que **vence el día hábil siguiente (D+1)**, y lo vende ese **D+1** "
+            "a la **Horario de salida** (overnight). Como son días distintos, la salida "
+            "puede ser una hora anterior a la entrada. Selección por valor (prima ≈ **$2**); "
+            "**sin** Umbral de ROI ni Stop loss. Ej.: compra viernes 15:30 → vende lunes 10:00."
         )
 
     # Cargar config del predictor — necesario en ambos modos.
