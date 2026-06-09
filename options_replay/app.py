@@ -1004,12 +1004,24 @@ with st.sidebar.container(border=True):
     if "horario_salida" not in st.session_state:
         st.session_state["horario_salida"] = time_cls(16, 0)
 
-    # ¿Está activa la Opción 2 (Salto 1 DTE)? Se lee del estado guardado del selectbox
-    # (se instancia más abajo) para tratar las horas como de DÍAS DISTINTOS:
-    # entrada = día de compra (D), salida = día hábil siguiente (D+1).
-    _is_salto = str(st.session_state.get("selection_criterion_label", "")).startswith("Opción 2")
+    # --- DTE: 0 = mismo día (intradía) · 1 = overnight (compra D, vende D+1) ---
+    st.markdown(
+        "<p style='font-weight:normal; margin: 0.4rem 0 0.2rem 0;'>DTE</p>",
+        unsafe_allow_html=True,
+    )
+    dte = int(st.selectbox(
+        "DTE", options=[0, 1], index=0, key="dte_param",
+        label_visibility="collapsed",
+        format_func=lambda d: ("0 — mismo día"
+                               if d == 0 else "1 — overnight (vende día hábil siguiente)"),
+        help=("Días al vencimiento del contrato. **0**: compra y venta el MISMO día "
+              "(Horario de entrada y salida = fecha de la iteración). **1**: compra el "
+              "día D un contrato que vence el día hábil siguiente y lo vende ese D+1 → "
+              "Horario de entrada es de D y Horario de salida de D+1."),
+    ))
+    _is_dte1 = dte == 1
 
-    # --- Widgets en dos columnas ---
+    # --- Widgets de horario en dos columnas ---
     _col_ent, _col_sal = st.columns(2)
     with _col_ent:
         st.markdown(
@@ -1019,11 +1031,11 @@ with st.sidebar.container(border=True):
         hora_orden = st.time_input(
             "Horario de entrada", key="horario_entrada", step=60,
             label_visibility="collapsed",
-            help=("Hora de COMPRA (apertura de la posición). En Opción 2 (Salto 1 DTE) "
-                  "es la hora de compra del día D."),
+            help=("Hora de COMPRA (apertura de la posición). Con DTE=1 es la compra "
+                  "del día D."),
         )
-        if _is_salto:
-            st.caption("🛒 Día de compra (D)")
+        if _is_dte1:
+            st.caption("🛒 Compra · día D")
     with _col_sal:
         st.markdown(
             "<p style='font-weight:normal; margin: 0.4rem 0 0.2rem 0;'>Horario de salida</p>",
@@ -1032,12 +1044,12 @@ with st.sidebar.container(border=True):
         horario_salida = st.time_input(
             "Horario de salida", key="horario_salida", step=60,
             label_visibility="collapsed",
-            help=("Fin de la ventana operativa (default 16:00). En Opción 2 (Salto 1 DTE) "
-                  "es la hora de venta del día hábil SIGUIENTE (D+1), por lo que puede "
-                  "ser una hora anterior a la de entrada."),
+            help=("Fin de la ventana operativa (default 16:00). Con DTE=1 es la hora de "
+                  "venta del día hábil SIGUIENTE (D+1), por lo que puede ser una hora "
+                  "anterior a la de entrada."),
         )
-        if _is_salto:
-            st.caption("🌙 Día hábil siguiente (D+1)")
+        if _is_dte1:
+            st.caption("🌙 Venta · día hábil siguiente (D+1)")
 
     # --- Clamps / validaciones (debajo, ancho completo para que se lean bien) ---
     # Entrada dentro de la ventana operativa (autocorrige, no bloquea).
@@ -1047,10 +1059,10 @@ with st.sidebar.container(border=True):
     elif hora_orden > t_end:
         st.warning(f"La entrada se ajustó al fin de la ventana **{t_end:%H:%M}**.")
         hora_orden = t_end
-    # La salida debe ser posterior a la entrada SOLO en estrategias del MISMO día. En
-    # Opción 2 (Salto 1 DTE) la salida es del día hábil siguiente (D+1) → cualquier
-    # hora de reloj es válida (puede ser anterior a la de entrada) → NO se valida.
-    if not _is_salto and horario_salida <= hora_orden and t_end > hora_orden:
+    # La salida debe ser posterior a la entrada SOLO con DTE=0 (mismo día). Con DTE=1
+    # la salida es del día hábil siguiente (D+1) → cualquier hora de reloj es válida
+    # (puede ser anterior a la de entrada) → NO se valida.
+    if not _is_dte1 and horario_salida <= hora_orden and t_end > hora_orden:
         st.warning(
             f"El **Horario de salida** debe ser posterior a la entrada "
             f"({hora_orden:%H:%M}); se ajustó a **{t_end:%H:%M}**."
@@ -1060,45 +1072,31 @@ with st.sidebar.container(border=True):
     # Verificación de venta: siempre cada minuto (se quitó el selector dedicado).
     sell_check_min = 1
 
-    # Criterio de selección de contrato — entre los que PASAN la compuerta de spread,
-    # cuál se elige. Default: Opción 1 (menor spread).
+    # Criterio de selección de contrato — sólo Opción 1 (menor spread en Rango óptimo).
     st.markdown(
         "<p style='font-weight:normal; margin: 0.5rem 0 0.2rem 0;'>Criterio de selección de contrato</p>",
         unsafe_allow_html=True,
     )
-    _crit_options = [
-        "Opción 1 — Menor spread (en Rango óptimo)",
-        "Opción 2 — Salto 1 DTE (overnight, vende día hábil siguiente)",
-    ]
-    # Migración: si quedó guardada una etiqueta vieja que ya no está en la lista
-    # (la antigua Opción 2 'Valor' o la numeración previa), volver al default.
+    _crit_options = ["Opción 1 — Menor spread (en Rango óptimo)"]
+    # Migración: si quedó guardada una etiqueta vieja (Opción 2/3 removidas), resetear.
     if st.session_state.get("selection_criterion_label") not in _crit_options:
         st.session_state.pop("selection_criterion_label", None)
-    _sel_crit_label = st.selectbox(
+    st.selectbox(
         "Criterio de selección de contrato",
-        options=_crit_options,
-        index=0,   # default = Opción 1
-        key="selection_criterion_label",
-        label_visibility="collapsed",
-        help=("Opción 1 'Menor spread': compuerta de spread + el de menor bid-ask en el "
-              "Rango óptimo. Opción 2 'Salto 1 DTE': compra un contrato que VENCE el "
-              "día hábil siguiente (a la Horario de entrada) y lo vende ese día a la "
-              "Horario de salida (overnight); selecciona por valor; sin umbral/stop."),
+        options=_crit_options, index=0,
+        key="selection_criterion_label", label_visibility="collapsed",
+        help=("Compuerta de spread + el contrato de menor bid-ask en el Rango óptimo "
+              "(con cascada a extendido si hace falta)."),
     )
-    if _sel_crit_label.startswith("Opción 2"):
-        selection_criterion = "salto_1dte"
-    else:
-        selection_criterion = "spread"
-    # Valor objetivo de la prima para la Opción 2 (Salto 1 DTE selecciona por valor):
-    # fijo en $2 (se quitó el campo editable de la UI).
-    value_target = 2.0
-    if selection_criterion == "salto_1dte":
+    selection_criterion = "spread"
+    # Info del modo overnight (DTE=1).
+    if _is_dte1:
         st.info(
-            "🌙 **Salto 1 DTE** — compra el día **D** a la **Horario de entrada** un "
-            "contrato que **vence el día hábil siguiente (D+1)**, y lo vende ese **D+1** "
-            "a la **Horario de salida** (overnight). Como son días distintos, la salida "
-            "puede ser una hora anterior a la entrada. Selección por valor (prima ≈ **$2**); "
-            "**sin** Umbral de ROI ni Stop loss. Ej.: compra viernes 15:30 → vende lunes 10:00."
+            "🌙 **DTE = 1 (overnight)** — compra el día **D** a la **Horario de entrada** "
+            "un contrato que **vence el día hábil siguiente (D+1)**, y lo vende ese **D+1** "
+            "a la **Horario de salida**. Como son días distintos, la salida puede ser una "
+            "hora anterior a la entrada. **Sin** Umbral de ROI ni Stop loss (la venta del "
+            "día siguiente es el único evento). Ej.: compra viernes 15:30 → vende lunes 10:00."
         )
 
     # Cargar config del predictor — necesario en ambos modos.
@@ -1607,7 +1605,8 @@ if btn_iniciar:
             # ---------- Single-day mode (comportamiento original) ----------
             with st.spinner(f"Bajando datos de Polygon para {ticker} {sel_date} y corriendo iteración 1..."):
                 try:
-                    expiry = validate_0dte_session(dl, ticker, sel_date.isoformat())
+                    # DTE=1: el día de COMPRA no necesita 0DTE (el vencimiento es D+1).
+                    expiry = None if dte == 1 else validate_0dte_session(dl, ticker, sel_date.isoformat())
                     # Fin de la ventana = Horario de salida - 1 min: la lógica liquida
                     # lo pendiente en el minuto ANTES de la salida (todas las estrategias).
                     day_end_ts = _to_ts(sel_date.isoformat(), horario_salida) - pd.Timedelta(minutes=1)
@@ -1631,8 +1630,8 @@ if btn_iniciar:
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                         exit_plus_time=exit_plus_time,
                         selection_criterion=selection_criterion,
-                        value_target=float(value_target),
-                        salto_exit_time=horario_salida,
+                        dte=int(dte),
+                        overnight_exit_time=horario_salida,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1711,7 +1710,7 @@ if btn_iniciar:
                     _valid_wd = None   # sin info → chequear todos (comportamiento previo)
 
             _skipped_no0dte = 0
-            _skipped_1dte = 0   # Opción 2: días sin "día hábil siguiente" con datos
+            _skipped_1dte = 0   # DTE=1: días sin "día hábil siguiente" con datos
             for i, d in enumerate(day_list):
                 date_str = d.isoformat()
                 # Fin de la ventana = Horario de salida - 1 min (liquida lo pendiente
@@ -1722,7 +1721,7 @@ if btn_iniciar:
                 # Pre-skip RÁPIDO (sin API): si el día de semana no tiene 0DTE para este
                 # ticker y NO hay chain cacheado, se salta directo. Evita un nearest_expiry
                 # por cada Lun-Jue de un weekly → el backtest es muchísimo más rápido.
-                if (selection_criterion != "salto_1dte"
+                if (dte != 1
                         and _valid_wd is not None and d.weekday() not in _valid_wd
                         and not (DATA_DIR / "chain" / f"{ticker}_{date_str}.parquet").exists()):
                     _skipped_no0dte += 1
@@ -1735,9 +1734,9 @@ if btn_iniciar:
 
                 _was_skip = False
                 try:
-                    # Opción 2 (Salto 1DTE): el día de COMPRA no necesita 0DTE; el
-                    # vencimiento es el día hábil siguiente (lo resuelve el motor).
-                    if selection_criterion == "salto_1dte":
+                    # DTE=1: el día de COMPRA no necesita 0DTE; el vencimiento es el
+                    # día hábil siguiente (lo resuelve el motor).
+                    if dte == 1:
                         expiry = None
                     else:
                         expiry = validate_0dte_session(dl, ticker, date_str)
@@ -1760,10 +1759,10 @@ if btn_iniciar:
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                         exit_plus_time=exit_plus_time,
                         selection_criterion=selection_criterion,
-                        value_target=float(value_target),
-                        salto_exit_time=horario_salida,
+                        dte=int(dte),
+                        overnight_exit_time=horario_salida,
                     )
-                    if selection_criterion == "salto_1dte":
+                    if dte == 1:
                         expiry = it.end_dt.strftime("%Y-%m-%d")  # venta = vencimiento 1DTE
                     day_runs.append({
                         "date": date_str,
@@ -1787,8 +1786,8 @@ if btn_iniciar:
                     # 0DTE) → SALTAR silenciosamente, NO listarlo como error. Otros
                     # ValueError (sin data, etc.) sí se reportan como error real.
                     _msg = str(e)
-                    if _msg.startswith("Salto 1DTE:"):
-                        # Opción 2: no hay día hábil siguiente con datos (último día del
+                    if _msg.startswith("1DTE:"):
+                        # DTE=1: no hay día hábil siguiente con datos (último día del
                         # rango / siguiente futuro) o el siguiente no tiene cadena → SALTO
                         # LIMPIO con aviso, sin cortar la corrida ni listarlo como error.
                         _skipped_1dte += 1
@@ -1892,8 +1891,8 @@ elif btn_proxima:
                         exit_plus_threshold_pct=float(exit_plus_threshold_pct),
                         exit_plus_time=exit_plus_time,
                         selection_criterion=selection_criterion,
-                        value_target=float(value_target),
-                        salto_exit_time=horario_salida,
+                        dte=int(dte),
+                        overnight_exit_time=horario_salida,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -2491,7 +2490,7 @@ if _mode == "range":
     _n_skip_1dte = int(replay_state.get("skipped_1dte", 0))
     if _n_skip_1dte:
         st.caption(
-            f"🌙 Salto 1 DTE: se saltaron **{_n_skip_1dte}** días sin **día hábil "
+            f"🌙 DTE=1 (overnight): se saltaron **{_n_skip_1dte}** días sin **día hábil "
             f"siguiente** con datos (último(s) día(s) del rango o vencimiento futuro). "
             f"No cuentan como error ni en los totales."
         )

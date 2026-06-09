@@ -674,7 +674,8 @@ def run_next_iteration(
     exit_plus_time: Optional[time] = None,
     selection_criterion: str = "itm",
     value_target: float = 2.0,
-    salto_exit_time: Optional[time] = None,
+    dte: int = 0,
+    overnight_exit_time: Optional[time] = None,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -686,17 +687,19 @@ def run_next_iteration(
 
     ticker = ticker.upper().strip()
 
-    # Opción 2 "Salto 1 DTE": despacha al flujo OVERNIGHT (compra en buy_date a la
-    # Horario de entrada, vende el día hábil siguiente a la Horario de salida). Como
-    # son días distintos, la hora de salida puede ser anterior a la de entrada.
-    # Selección por value (prima ≈ value_target); ignora Umbral/Stop.
-    if selection_criterion == "salto_1dte":
+    # DTE=1 (overnight): despacha al flujo que compra un contrato venciendo el día
+    # hábil siguiente (1 DTE) en buy_date a la Horario de entrada y lo vende ese día
+    # siguiente a la Horario de salida. Como son días distintos, la salida puede ser
+    # una hora anterior a la entrada. Misma selección de contrato (selection_criterion);
+    # sin Umbral/Stop (la venta del día siguiente es el único evento de salida).
+    if int(dte) == 1:
         return run_overnight_1dte(
             downloader, ticker, date, premium_min, premium_max,
             invest_call, invest_put, start_ts,
             iteration_idx=iteration_idx, max_strikes_to_probe=max_strikes_to_probe,
-            mode=mode, ext_min=ext_min, ext_max=ext_max, value_target=value_target,
-            exit_time=salto_exit_time,
+            mode=mode, ext_min=ext_min, ext_max=ext_max,
+            selection_criterion=selection_criterion, value_target=value_target,
+            exit_time=overnight_exit_time,
         )
 
     under_full = downloader.underlying(ticker, date)
@@ -777,15 +780,16 @@ def run_overnight_1dte(
     ext_min: Optional[float] = None,
     ext_max: Optional[float] = None,
     value_target: float = 2.0,
+    selection_criterion: str = "spread",
     sell_date: Optional[str] = None,
     exit_time: Optional[time] = None,
 ) -> IterationResult:
-    """Opción 3 'Salto 1 DTE': compra un contrato que VENCE el día hábil siguiente,
-    en `date` a la hora de entrada, y lo vende el día hábil siguiente al `exit_time`
+    """DTE=1 (overnight): compra un contrato que VENCE el día hábil siguiente, en
+    `date` a la hora de entrada, y lo vende el día hábil siguiente al `exit_time`
     (Horario de salida). Si exit_time es None, vende a la misma hora de entrada.
-    Selección por value (prima de compra ≈ value_target). Sin umbral ni stop: el
-    único evento de salida es la venta del día siguiente. exit_reason='overnight_1dte'.
-    Lanza ValueError si no hay día hábil siguiente con datos."""
+    Selección de contrato según `selection_criterion` (default 'spread' = Opción 1).
+    Sin umbral ni stop: el único evento de salida es la venta del día siguiente.
+    exit_reason='overnight_1dte'. Lanza ValueError si no hay día hábil siguiente."""
     ticker = ticker.upper().strip()
     buy_ts = pd.Timestamp(start_ts)
     entry_time = buy_ts.time()
@@ -795,7 +799,7 @@ def run_overnight_1dte(
         sell_date = next_trading_day(downloader, ticker, date)
     if sell_date is None:
         raise ValueError(
-            f"Salto 1DTE: no hay día hábil siguiente con datos para {ticker} tras "
+            f"1DTE: no hay día hábil siguiente con datos para {ticker} tras "
             f"{date} (¿fecha demasiado reciente/futura?)."
         )
     sell_ts = pd.Timestamp.combine(pd.Timestamp(sell_date).date(), sell_time)
@@ -805,18 +809,18 @@ def run_overnight_1dte(
     # Spot en el día de compra a la hora de entrada.
     under_b = downloader.underlying(ticker, date)
     if under_b.empty:
-        # Día de compra sin sesión (feriado, etc.) → error "Salto 1DTE:" para que el
+        # Día de compra sin sesión (feriado, etc.) → error "1DTE:" para que el
         # backtest de rango lo SALTE limpio en vez de listarlo como error.
-        raise ValueError(f"Salto 1DTE: sin datos del subyacente {ticker} en {date} (¿feriado/sin sesión?).")
+        raise ValueError(f"1DTE: sin datos del subyacente {ticker} en {date} (¿feriado/sin sesión?).")
     ub = under_b[under_b["timestamp"] >= buy_ts]
     if ub.empty:
-        raise ValueError(f"Salto 1DTE: sin barras de {ticker} tras {buy_ts:%H:%M} en {date}.")
+        raise ValueError(f"1DTE: sin barras de {ticker} tras {buy_ts:%H:%M} en {date}.")
     spot_at_start = float(ub.iloc[0]["open"])
 
     # Cadena que VENCE el día hábil siguiente (= 1DTE el día de compra).
     chain = downloader.chain(ticker, sell_date)
     if chain.empty:
-        raise ValueError(f"Salto 1DTE: sin cadena venciendo {sell_date} para {ticker}")
+        raise ValueError(f"1DTE: sin cadena venciendo {sell_date} para {ticker}")
     calls_chain = chain[chain["contract_type"].str.lower() == "call"].copy()
     puts_chain = chain[chain["contract_type"].str.lower() == "put"].copy()
 
@@ -837,12 +841,12 @@ def run_overnight_1dte(
 
     def _pick(sorted_chain, right):
         # Probing en buy_date: lee la prima de COMPRA al minuto de entrada y elige
-        # por value (más cercano a value_target). El criterio "value" ignora spread.
+        # según selection_criterion (default 'spread' = Opción 1).
         return _probe_premium_range(
             downloader, ticker, date, sorted_chain, right, buy_ts, probe_end,
             premium_min, premium_max, max_strikes_to_probe,
             ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
-            selection_criterion="value", value_target=value_target,
+            selection_criterion=selection_criterion, value_target=value_target,
         )
 
     _empty = StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False)
@@ -877,7 +881,7 @@ def run_overnight_1dte(
     put_exit = _sell_premium(put_pick.occ) if mode != "call_only" else 0.0
     if call_exit is None or put_exit is None:
         raise ValueError(
-            f"Salto 1DTE: sin barras de venta el {sell_date} a las {sell_time:%H:%M} "
+            f"1DTE: sin barras de venta el {sell_date} a las {sell_time:%H:%M} "
             f"(CALL={call_exit}, PUT={put_exit})."
         )
 
