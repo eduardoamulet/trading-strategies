@@ -95,7 +95,7 @@ m4.metric("Aprovechadas", int((fdf["estado"] == "Aprovechada").sum()))
 st.divider()
 
 
-@st.dialog("📊 Detalle de la señal", width="large")
+@st.dialog("📊 Detalle de la señal")
 def _render_detalle(r):
     st.markdown(
         f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
@@ -143,43 +143,47 @@ def _render_detalle(r):
         st.rerun()   # cierra el modal
 
 
-# Tabla ORDENABLE con selección de UNA fila (clic en cualquier celda → abre el detalle).
+# Lista con un botón "📈 Ver" POR FILA → abre el modal de detalle. (st.dataframe no
+# permite click en una celda — solo en la casilla de selección — por eso van filas custom.)
 fdf = fdf.reset_index(drop=True)
-_show = pd.DataFrame({
-    "Acción": fdf["symbol"].values,
-    "Hora": fdf["hora"].values,
-    "Fecha": fdf["fecha"].values,
-    "Estrategia": fdf["estrategia"].values,
-    "% Cumpl.": pd.to_numeric(fdf["probabilidad"], errors="coerce").values,
-    "Tipo": fdf["tipo"].values,
-    "Criterios": fdf["criterios"].values,
-    "Estado": fdf["estado"].values,
-    "Ganancia": pd.to_numeric(fdf["ganancia"], errors="coerce").fillna(0.0).values,
-    # Texto (NO link): clic en "Ver" selecciona la fila → abre el modal de detalle.
-    "Descripción": ["📈 Ver"] * len(fdf),
-})
-_sel = st.dataframe(
-    _show, use_container_width=True, hide_index=True,
-    on_select="rerun", selection_mode="single-row",
-    column_config={
-        "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%"),
-        "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
-        "Descripción": st.column_config.TextColumn("Descripción"),
-    },
-)
-st.caption("Clic en los **encabezados** para ordenar · clic en una **fila** (p. ej. en "
-           "**Descripción → 📈 Ver**) abre el **detalle** en un modal.")
-_rows = _sel.selection.rows if (_sel and getattr(_sel, "selection", None)) else []
+_so1, _so2 = st.columns([2, 5])
+_sort_opt = _so1.selectbox(
+    "Ordenar por", ["Fecha (recientes)", "Fecha (antiguas)", "Acción", "% Cumpl.",
+                    "Ganancia", "Estado"], label_visibility="collapsed")
+if _sort_opt == "Fecha (recientes)":
+    fdf = fdf.sort_values(["fecha", "hora"], ascending=False)
+elif _sort_opt == "Fecha (antiguas)":
+    fdf = fdf.sort_values(["fecha", "hora"], ascending=True)
+elif _sort_opt == "Acción":
+    fdf = fdf.sort_values("symbol")
+elif _sort_opt == "% Cumpl.":
+    fdf = fdf.sort_values("probabilidad", ascending=False, na_position="last")
+elif _sort_opt == "Ganancia":
+    fdf = fdf.sort_values("ganancia", ascending=False, na_position="last")
+elif _sort_opt == "Estado":
+    fdf = fdf.sort_values("estado")
+fdf = fdf.reset_index(drop=True)
 
-# Detalle en MODAL: al SELECCIONAR la fila (clic en cualquier celda — p. ej. en
-# "Descripción → 📈 Ver") se abre el modal. Se dispara SOLO en la transición a una nueva
-# fila, así el modal se puede cerrar y no se re-abre solo.
-_cur_id = str(fdf.iloc[_rows[0]]["id"]) if len(_rows) == 1 else None
-if _cur_id is None:
-    st.session_state.pop("_detalle_last", None)
-elif st.session_state.get("_detalle_last") != _cur_id:
-    st.session_state["_detalle_last"] = _cur_id
-    _render_detalle(fdf.iloc[_rows[0]])
+_COLW = [1.0, 0.65, 0.95, 1.7, 0.6, 0.7, 1.0, 0.9, 0.8]
+_hc = st.columns(_COLW)
+for _c, _h in zip(_hc, ["Acción", "Hora", "Fecha", "Estrategia", "Tipo", "% Cumpl.",
+                        "Estado", "Ganancia", "Descripción"]):
+    _c.markdown(f"**{_h}**")
+st.divider()
+for _, _r in fdf.iterrows():
+    _rc = st.columns(_COLW, vertical_alignment="center")
+    _rc[0].write(str(_r["symbol"]))
+    _rc[1].write(str(_r["hora"]))
+    _rc[2].write(str(_r["fecha"]))
+    _rc[3].write(str(_r["estrategia"] or "—"))
+    _rc[4].write(str(_r["tipo"]))
+    _pp = _r["probabilidad"]
+    _rc[5].write(f"{float(_pp):.0f}%" if pd.notna(_pp) else "—")
+    _rc[6].write(str(_r["estado"]))
+    _gg = _r["ganancia"]
+    _rc[7].write(f"${float(_gg):,.0f}" if pd.notna(_gg) else "$0")
+    if _rc[8].button("📈 Ver", key=f"ver_{_r['id']}", use_container_width=True):
+        _render_detalle(_r)
 
 # ── Backtest de señales (canasta) → redirige a la página Backtesting ─────────
 st.divider()
