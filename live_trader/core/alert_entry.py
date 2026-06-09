@@ -12,10 +12,10 @@ Esta capa NO conoce Polygon ni el backtest — separa simulación de ejecución.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from brokers.base import BrokerAdapter
-from core.models import Position
+from core.models import Contract, Position
 from core.order_manager import OrderManager
 from core.risk import RiskGuard
 from core.selector import ContractSelector, NoLiquidContract
@@ -37,9 +37,26 @@ class AlertEntry:
     arm_tp: bool = True    # armar el take-profit al comprar → el daemon vende solo al Umbral
 
 
-def enter_from_alert(broker: BrokerAdapter, store: Store, selector: ContractSelector,
-                     risk: RiskGuard, om: OrderManager, e: AlertEntry) -> Position:
-    """Abre 1 posición para la alerta. Lanza EntryError con el motivo si no se puede.
+@dataclass
+class AlertPreview:
+    """Resultado de un dry-run (NO se compró nada). status: 'ok'|'blocked'|'error'."""
+    status: str
+    underlying: str
+    side: str
+    occ: str = ""
+    strike: float = 0.0
+    expiry: str = ""
+    ask: float = 0.0
+    spread: float = 0.0
+    open_interest: int = 0
+    qty: int = 0
+    cost: float = 0.0
+    reasons: list = field(default_factory=list)   # motivos de bloqueo/error
+
+
+def _resolve_contract(broker: BrokerAdapter, selector: ContractSelector, e: AlertEntry):
+    """Resuelve spot/expiry/chain/contrato/qty para la alerta. Lanza EntryError si no
+    se puede. NO compra, NO valida cuenta → compartido por preview y entrada (sin drift).
     Usa el vencimiento más cercano (0DTE si existe ese día)."""
     side = (e.side or "").upper().strip()
     if side not in ("CALL", "PUT"):
@@ -47,7 +64,6 @@ def enter_from_alert(broker: BrokerAdapter, store: Store, selector: ContractSele
     if not e.underlying:
         raise EntryError("Falta el símbolo del subyacente.")
 
-    # 1) precio del subyacente + chain del vencimiento más cercano (0DTE si lo hay).
     spot = broker.get_underlying_price(e.underlying)
     expiry = broker.nearest_expiry(e.underlying)
     if not expiry:
@@ -56,39 +72,73 @@ def enter_from_alert(broker: BrokerAdapter, store: Store, selector: ContractSele
     if not chain:
         raise EntryError(f"{e.underlying}: chain vacío para {expiry}.")
 
-    # 2) selección de contrato (misma filosofía que el backtest).
     try:
         contract = selector.select(chain, side, spot, strategy=e.strategy)
     except NoLiquidContract as ex:
         raise EntryError(str(ex)) from ex
 
-    # 3) cantidad según la inversión (cada contrato cuesta ask × 100).
     unit = contract.ask * 100.0
     qty = int(e.inversion // unit) if unit > 0 else 0
     if qty < 1:
         raise EntryError(
             f"Inversión ${e.inversion:,.0f} no alcanza para 1 contrato de "
             f"{e.underlying} {side} (ask ${contract.ask:.2f} → ${unit:,.0f} c/u).")
+    return side, spot, expiry, contract, qty
 
-    # 4) idempotencia: no re-comprar el MISMO contrato si ya hay posición abierta.
+
+def preview_from_alert(broker: BrokerAdapter, store: Store, selector: ContractSelector,
+                       risk: RiskGuard, e: AlertEntry) -> AlertPreview:
+    """DRY-RUN: resuelve el contrato + costo + validación de riesgo SIN colocar orden.
+    Devuelve un AlertPreview (no lanza). 'ok' = lista; 'blocked' = pasa selección pero
+    falla riesgo/idempotencia; 'error' = no se pudo resolver el contrato."""
+    try:
+        side, spot, expiry, contract, qty = _resolve_contract(broker, selector, e)
+    except EntryError as ex:
+        return AlertPreview(status="error", underlying=e.underlying,
+                            side=(e.side or "").upper(), reasons=[str(ex)])
+
+    reasons: list[str] = []
+    existing = store.get_position(contract.occ)
+    if existing and existing.get("status") == "open":
+        reasons.append(f"Ya hay una posición abierta en {contract.occ}.")
+    try:
+        account = broker.get_account()
+        reasons.extend(risk.validate_entry(contract, qty, account))
+    except Exception as ex:
+        reasons.append(f"No se pudo validar la cuenta: {ex}")
+
+    return AlertPreview(
+        status="blocked" if reasons else "ok",
+        underlying=e.underlying, side=side, occ=contract.occ, strike=contract.strike,
+        expiry=expiry, ask=contract.ask, spread=contract.spread,
+        open_interest=contract.open_interest, qty=qty,
+        cost=contract.ask * qty * 100.0, reasons=reasons)
+
+
+def enter_from_alert(broker: BrokerAdapter, store: Store, selector: ContractSelector,
+                     risk: RiskGuard, om: OrderManager, e: AlertEntry) -> Position:
+    """Abre 1 posición para la alerta. Lanza EntryError con el motivo si no se puede.
+    Re-resuelve + re-valida en el momento de ejecutar (autoritativo, aunque haya preview)."""
+    side, spot, expiry, contract, qty = _resolve_contract(broker, selector, e)
+
+    # idempotencia: no re-comprar el MISMO contrato si ya hay posición abierta.
     existing = store.get_position(contract.occ)
     if existing and existing.get("status") == "open":
         raise EntryError(f"Ya hay una posición abierta en {contract.occ}.")
 
-    # 5) validación de riesgo PRE-orden (mercado abierto, spread, OI, costo, breakers).
+    # validación de riesgo PRE-orden (mercado abierto, spread, OI, costo, breakers).
     account = broker.get_account()
     errs = risk.validate_entry(contract, qty, account)
     if errs:
         raise EntryError("Bloqueado por riesgo: " + " · ".join(errs))
 
-    # 6) compra. tag = alert_<id> para idempotencia/auditoría en el broker.
+    # compra. tag = alert_<id> para idempotencia/auditoría en el broker.
     store.audit("alert_entry", {"alert_id": e.alert_id, "underlying": e.underlying,
                                 "side": side, "occ": contract.occ, "qty": qty,
                                 "roi_target_pct": e.roi_target_pct, "expiry": expiry})
     pos = om.buy(contract, qty, e.roi_target_pct, idempotency_key=f"alert_{e.alert_id}")
 
-    # 7) auto-armar el take-profit → el daemon vende solo al llegar al Umbral de ROI.
-    # Sin esto la posición queda abierta sin auto-venta (había que armarla a mano).
+    # auto-armar el take-profit → el daemon vende solo al llegar al Umbral de ROI.
     if e.arm_tp:
         store.set_tp_armed(pos.occ, True)
     return pos

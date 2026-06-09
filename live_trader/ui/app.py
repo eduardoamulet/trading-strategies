@@ -79,29 +79,61 @@ if _alerts_ho:
                "corriendo `cd live_trader && py -m daemon.runner` en otra terminal.")
     st.dataframe(_pd.DataFrame([{"Acción": a.get("symbol"), "Tipo": a.get("tipo")} for a in _alerts_ho]),
                  hide_index=True, use_container_width=True)
-    _oa1, _oa2 = st.columns([2, 1])
-    if _oa1.button(f"▶ Operar {len(_alerts_ho)} alerta(s) (paper)", type="primary",
+    def _mk_ae(a):
+        from core.alert_entry import AlertEntry
+        return AlertEntry(alert_id=str(a.get("id")), underlying=str(a.get("symbol", "")).upper(),
+                          side=str(a.get("tipo", "")).upper(), inversion=float(_la_inv),
+                          roi_target_pct=float(_la_roi), strategy=_la_strat, arm_tp=bool(_la_arm))
+
+    _pc1, _pc2 = st.columns([2, 1])
+    if _pc1.button(f"🔍 Previsualizar {len(_alerts_ho)} (sin comprar)", type="primary",
                    use_container_width=True):
-        from core.alert_entry import AlertEntry, EntryError, enter_from_alert
-        _res = []
+        from core.alert_entry import preview_from_alert
+        _pv = []
         for a in _alerts_ho:
-            ae = AlertEntry(alert_id=str(a.get("id")), underlying=str(a.get("symbol", "")).upper(),
-                            side=str(a.get("tipo", "")).upper(), inversion=float(_la_inv),
-                            roi_target_pct=float(_la_roi), strategy=_la_strat, arm_tp=bool(_la_arm))
-            try:
-                pos = enter_from_alert(broker, store, selector, risk, om, ae)
-                _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"),
-                             "Estado": f"✅ comprada · {pos.qty} @ ${pos.entry_price:.2f}"})
-            except EntryError as ex:
-                _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"), "Estado": f"⚠ {ex}"})
-            except Exception as ex:
-                _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"), "Estado": f"⚠ error: {ex}"})
-        st.session_state["live_alerts_results"] = _res
-        st.session_state.pop("live_alerts_handoff", None)
+            p = preview_from_alert(broker, store, selector, risk, _mk_ae(a))
+            _estado = ("✅ lista" if p.status == "ok"
+                       else ("⚠ " + "; ".join(p.reasons)) if p.status == "blocked"
+                       else ("✗ " + "; ".join(p.reasons)))
+            _pv.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"),
+                        "Contrato": p.occ or "—",
+                        "Strike": (f"{p.strike:g}" if p.strike else "—"),
+                        "Ask": (f"${p.ask:.2f}" if p.ask else "—"),
+                        "Spread": (f"${p.spread:.2f}" if p.occ else "—"),
+                        "OI": int(p.open_interest or 0), "Cant.": int(p.qty or 0),
+                        "Costo": (f"${p.cost:,.0f}" if p.cost else "—"), "Estado": _estado})
+        st.session_state["live_alerts_preview"] = _pv
+        st.session_state["live_alerts_n_ok"] = sum(1 for x in _pv if x["Estado"] == "✅ lista")
         st.rerun()
-    if _oa2.button("Descartar", use_container_width=True):
-        st.session_state.pop("live_alerts_handoff", None)
+    if _pc2.button("Descartar", use_container_width=True):
+        for _k in ("live_alerts_handoff", "live_alerts_preview", "live_alerts_n_ok"):
+            st.session_state.pop(_k, None)
         st.rerun()
+
+    _pv = st.session_state.get("live_alerts_preview")
+    if _pv:
+        st.markdown("##### Vista previa (no se compró nada todavía)")
+        st.dataframe(_pd.DataFrame(_pv), hide_index=True, use_container_width=True)
+        _n_ok = int(st.session_state.get("live_alerts_n_ok", 0))
+        st.caption(f"{_n_ok} de {len(_pv)} lista(s). Si cambiás un parámetro, volvé a previsualizar. "
+                   "Las ⚠/✗ se intentan igual al confirmar pero probablemente fallen.")
+        if st.button("✅ Confirmar y comprar (paper)", type="primary",
+                     disabled=_n_ok == 0, use_container_width=True):
+            from core.alert_entry import EntryError, enter_from_alert
+            _res = []
+            for a in _alerts_ho:
+                try:
+                    pos = enter_from_alert(broker, store, selector, risk, om, _mk_ae(a))
+                    _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"),
+                                 "Estado": f"✅ comprada · {pos.qty} @ ${pos.entry_price:.2f}"})
+                except EntryError as ex:
+                    _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"), "Estado": f"⚠ {ex}"})
+                except Exception as ex:
+                    _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"), "Estado": f"⚠ error: {ex}"})
+            st.session_state["live_alerts_results"] = _res
+            for _k in ("live_alerts_handoff", "live_alerts_preview", "live_alerts_n_ok"):
+                st.session_state.pop(_k, None)
+            st.rerun()
     st.markdown("---")
 
 _la_res = st.session_state.get("live_alerts_results")
