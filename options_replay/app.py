@@ -985,63 +985,59 @@ with st.sidebar.container(border=True):
     # Backward-compat: el resto del código usa `sel_date` para single-day.
     sel_date = sel_start
 
-    # "Horario de entrada" configurable en AMBOS modos (single y rango). Un solo
-    # componente de hora:minuto (igual que "Horario de salida").
-    if True:
+    # "Horario de entrada" y "Horario de salida" LADO A LADO (misma fila), cada uno
+    # un componente hora:minuto. Reemplaza el cierre fijo 16:00 en la lógica.
+
+    # --- Preparar session_state ANTES de instanciar los widgets ---
+    # Entrada: aplicar sync pendiente de la iteración anterior (la "Próxima iteración"
+    # sugiere el minuto siguiente). Solo en modo single (en rango no se hereda).
+    _pending_sync = st.session_state.pop("_pending_hora_sync", None)
+    if _pending_sync is not None and not is_range:
+        if isinstance(_pending_sync, time_cls):
+            st.session_state["horario_entrada"] = _pending_sync
+        else:  # compat: tuplas (h, m) o (h, m, step) de versiones previas
+            st.session_state["horario_entrada"] = time_cls(
+                int(_pending_sync[0]), int(_pending_sync[1]))
+    if "horario_entrada" not in st.session_state:
+        _def = time_cls(9, 30)
+        st.session_state["horario_entrada"] = _def if t_start <= _def <= t_end else t_start
+    if "horario_salida" not in st.session_state:
+        st.session_state["horario_salida"] = time_cls(15, 59)
+
+    # --- Widgets en dos columnas ---
+    _col_ent, _col_sal = st.columns(2)
+    with _col_ent:
         st.markdown(
             "<p style='font-weight:bold; margin: 0.4rem 0 0.2rem 0;'>Horario de entrada</p>",
             unsafe_allow_html=True,
         )
-
-        # Aplicar sync pendiente desde la iteración anterior (la "Próxima iteración"
-        # sugiere el minuto siguiente). DEBE ocurrir ANTES de instanciar el widget,
-        # y solo en modo single (en rango la entrada no la hereda).
-        _pending_sync = st.session_state.pop("_pending_hora_sync", None)
-        if _pending_sync is not None and not is_range:
-            if isinstance(_pending_sync, time_cls):
-                st.session_state["horario_entrada"] = _pending_sync
-            else:  # compat: tuplas (h, m) o (h, m, step) de versiones previas
-                st.session_state["horario_entrada"] = time_cls(
-                    int(_pending_sync[0]), int(_pending_sync[1]))
-
-        if "horario_entrada" not in st.session_state:
-            _def = time_cls(9, 30)
-            st.session_state["horario_entrada"] = _def if t_start <= _def <= t_end else t_start
-
         hora_orden = st.time_input(
             "Horario de entrada", key="horario_entrada", step=60,
             label_visibility="collapsed",
             help=("Hora de COMPRA (apertura de la posición). La venta ocurre dentro "
                   "de [Horario de entrada, Horario de salida]."),
         )
-        # Clamp suave a la ventana operativa (autocorrige, no bloquea).
-        if hora_orden < t_start:
-            st.warning(f"La entrada se ajustó al inicio de la ventana **{t_start:%H:%M}**.")
-            hora_orden = t_start
-        elif hora_orden > t_end:
-            st.warning(f"La entrada se ajustó al fin de la ventana **{t_end:%H:%M}**.")
-            hora_orden = t_end
+    with _col_sal:
+        st.markdown(
+            "<p style='font-weight:bold; margin: 0.4rem 0 0.2rem 0;'>Horario de salida</p>",
+            unsafe_allow_html=True,
+        )
+        horario_salida = st.time_input(
+            "Horario de salida", key="horario_salida", step=60,
+            label_visibility="collapsed",
+            help=("Fin de la ventana operativa (default 15:59). Toda evaluación, compra y "
+                  "venta ocurre dentro de [Horario de entrada, Horario de salida]; lo que "
+                  "quede sin vender se liquida en el minuto ANTES de esta hora."),
+        )
 
-        # Verificación de venta: siempre cada minuto (se quitó el selector dedicado).
-        sell_check_min = 1
-
-
-    # Horario de salida (GENERAL, para las 5 estrategias) — fin de la ventana
-    # operativa. Reemplaza el cierre fijo 16:00 en la lógica. Lo que quede sin
-    # vender se liquida en el minuto ANTES de esta hora (end_ts = salida - 1min).
-    st.markdown(
-        "<p style='font-weight:bold; margin: 0.5rem 0 0.2rem 0;'>Horario de salida</p>",
-        unsafe_allow_html=True,
-    )
-    if "horario_salida" not in st.session_state:
-        st.session_state["horario_salida"] = time_cls(15, 59)
-    horario_salida = st.time_input(
-        "Horario de salida", key="horario_salida", step=60,
-        label_visibility="collapsed",
-        help=("Fin de la ventana operativa (default 15:59). Toda evaluación, compra y "
-              "venta ocurre dentro de [Horario de entrada, Horario de salida]; lo que "
-              "quede sin vender se liquida en el minuto ANTES de esta hora."),
-    )
+    # --- Clamps / validaciones (debajo, ancho completo para que se lean bien) ---
+    # Entrada dentro de la ventana operativa (autocorrige, no bloquea).
+    if hora_orden < t_start:
+        st.warning(f"La entrada se ajustó al inicio de la ventana **{t_start:%H:%M}**.")
+        hora_orden = t_start
+    elif hora_orden > t_end:
+        st.warning(f"La entrada se ajustó al fin de la ventana **{t_end:%H:%M}**.")
+        hora_orden = t_end
     # La salida debe ser posterior a la entrada (autocorrige, no bloquea).
     if horario_salida <= hora_orden and t_end > hora_orden:
         st.warning(
@@ -1049,6 +1045,9 @@ with st.sidebar.container(border=True):
             f"({hora_orden:%H:%M}); se ajustó a **{t_end:%H:%M}**."
         )
         horario_salida = t_end
+
+    # Verificación de venta: siempre cada minuto (se quitó el selector dedicado).
+    sell_check_min = 1
 
     # Criterio de selección de contrato — entre los que PASAN la compuerta de spread,
     # cuál se elige. Default: opción 2 (más cercano a ITM), el comportamiento actual.
