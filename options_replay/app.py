@@ -1077,26 +1077,14 @@ with st.sidebar.container(border=True):
         selection_criterion = "salto_1dte"
     else:
         selection_criterion = "spread"
-    # Valor objetivo de la prima — lo usa la Opción 3 (Salto 1 DTE, selección por valor).
-    if "value_target" not in st.session_state:
-        st.session_state["value_target"] = 2.0
+    # Valor objetivo de la prima para la Opción 3 (Salto 1 DTE selecciona por valor):
+    # fijo en $2 (se quitó el campo editable de la UI).
     value_target = 2.0
-    if selection_criterion == "salto_1dte":
-        value_target = st.number_input(
-            "Valor objetivo del contrato ($)", key="value_target",
-            min_value=0.05, step=0.25, format="%.2f",
-            help=("Elige el contrato cuya prima de ENTRADA sea más cercana a este valor "
-                  "(CALL y PUT por igual), ignorando el spread Y el rango óptimo/extendido."),
-        )
-        st.caption(
-            "ℹ️ Con este criterio el **Rango óptimo/extendido NO aplica**: entre TODOS los "
-            "strikes se elige el de prima más cercana a este valor (desempate: cercanía a ITM)."
-        )
     if selection_criterion == "salto_1dte":
         st.info(
             "🌙 **Salto 1 DTE** — compra un contrato que **vence el día hábil siguiente** "
             "a la **Horario de entrada**, y lo vende **ese día a la Horario de salida** "
-            "(overnight). Selección por valor (prima ≈ objetivo); **sin** Umbral de ROI "
+            "(overnight). Selección por valor (prima ≈ **$2**); **sin** Umbral de ROI "
             "ni Stop loss. Ej.: compra viernes 09:30 → vende lunes a la Horario de salida."
         )
 
