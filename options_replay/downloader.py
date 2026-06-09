@@ -1,6 +1,20 @@
-"""Parquet cache layer on top of PolygonAdapter."""
+"""Parquet cache layer on top of PolygonAdapter.
+
+Thread-safe: el backtest de rango corre varias iteraciones EN PARALELO (hilos) y
+todas comparten un mismo Downloader. Estrategia de locking:
+
+  - Un lock POR ARCHIVO (path), creado on-demand bajo un guard global. Dos hilos que
+    tocan archivos DISTINTOS corren en paralelo; el acceso al MISMO archivo (lectura
+    cacheada o escritura en cache-miss) se serializa. Eso evita el "cache-miss write
+    race" (dos hilos pegando a la API y escribiendo el mismo parquet a la vez) y que
+    un hilo lea un parquet que otro está escribiendo a medias.
+  - Escritura ATÓMICA (a un .tmp + os.replace) para que un lector nunca vea un
+    archivo a medio escribir, ni siquiera desde otro proceso.
+"""
 from __future__ import annotations
 
+import os
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -17,34 +31,58 @@ class Downloader:
         (self.data_dir / "chain").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "options").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "quotes").mkdir(parents=True, exist_ok=True)
+        # Lock por path (creados on-demand bajo el guard). Serializa SOLO el acceso al
+        # mismo archivo; archivos distintos no se bloquean entre sí.
+        self._path_locks: dict[str, threading.Lock] = {}
+        self._path_locks_guard = threading.Lock()
+
+    def _lock_for(self, path) -> threading.Lock:
+        key = str(path)
+        with self._path_locks_guard:
+            lk = self._path_locks.get(key)
+            if lk is None:
+                lk = threading.Lock()
+                self._path_locks[key] = lk
+            return lk
+
+    @staticmethod
+    def _write_parquet(df: pd.DataFrame, path: Path) -> None:
+        """Escritura atómica: escribe a un .tmp y renombra (os.replace es atómico en
+        el mismo filesystem) → un lector nunca ve un parquet a medio escribir."""
+        tmp = Path(str(path) + ".tmp")
+        df.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
 
     def underlying(self, ticker: str, date: str, force: bool = False) -> pd.DataFrame:
         path = self.data_dir / "underlying" / f"{ticker}_{date}.parquet"
-        if path.exists() and not force:
-            return pd.read_parquet(path)
-        df = self.adapter.underlying_minute_bars(ticker, date)
-        if not df.empty:
-            df.to_parquet(path, index=False)
-        return df
+        with self._lock_for(path):
+            if path.exists() and not force:
+                return pd.read_parquet(path)
+            df = self.adapter.underlying_minute_bars(ticker, date)
+            if not df.empty:
+                self._write_parquet(df, path)
+            return df
 
     def chain(self, ticker: str, expiry: str, force: bool = False) -> pd.DataFrame:
         path = self.data_dir / "chain" / f"{ticker}_{expiry}.parquet"
-        if path.exists() and not force:
-            return pd.read_parquet(path)
-        df = self.adapter.options_chain(ticker, expiry)
-        if not df.empty:
-            df.to_parquet(path, index=False)
-        return df
+        with self._lock_for(path):
+            if path.exists() and not force:
+                return pd.read_parquet(path)
+            df = self.adapter.options_chain(ticker, expiry)
+            if not df.empty:
+                self._write_parquet(df, path)
+            return df
 
     def option(self, occ_symbol: str, date: str, force: bool = False) -> pd.DataFrame:
         safe = occ_symbol.replace(":", "_")
         path = self.data_dir / "options" / f"{safe}_{date}.parquet"
-        if path.exists() and not force:
-            return pd.read_parquet(path)
-        df = self.adapter.option_minute_bars(occ_symbol, date)
-        if not df.empty:
-            df.to_parquet(path, index=False)
-        return df
+        with self._lock_for(path):
+            if path.exists() and not force:
+                return pd.read_parquet(path)
+            df = self.adapter.option_minute_bars(occ_symbol, date)
+            if not df.empty:
+                self._write_parquet(df, path)
+            return df
 
     def option_quote(self, occ_symbol: str, date: str, entry_ts, force: bool = False) -> dict:
         """NBBO (bid/ask/spread) vigente al `entry_ts`, cacheado por
@@ -54,21 +92,22 @@ class Downloader:
         hhmm = ts.strftime("%H%M")
         safe = occ_symbol.replace(":", "_")
         path = self.data_dir / "quotes" / f"{safe}_{date}_{hhmm}.parquet"
-        if path.exists() and not force:
-            df = pd.read_parquet(path)
-            if not df.empty:
-                r = df.iloc[0]
-                return {
-                    "bid": None if pd.isna(r["bid"]) else float(r["bid"]),
-                    "ask": None if pd.isna(r["ask"]) else float(r["ask"]),
-                    "bid_size": None if pd.isna(r["bid_size"]) else float(r["bid_size"]),
-                    "ask_size": None if pd.isna(r["ask_size"]) else float(r["ask_size"]),
-                    "spread": None if pd.isna(r["spread"]) else float(r["spread"]),
-                }
-        q = self.adapter.option_quote_at(occ_symbol, ts)
-        # Persistir aunque sea vacío (None) para no re-intentar contratos sin quote.
-        pd.DataFrame([q]).to_parquet(path, index=False)
-        return q
+        with self._lock_for(path):
+            if path.exists() and not force:
+                df = pd.read_parquet(path)
+                if not df.empty:
+                    r = df.iloc[0]
+                    return {
+                        "bid": None if pd.isna(r["bid"]) else float(r["bid"]),
+                        "ask": None if pd.isna(r["ask"]) else float(r["ask"]),
+                        "bid_size": None if pd.isna(r["bid_size"]) else float(r["bid_size"]),
+                        "ask_size": None if pd.isna(r["ask_size"]) else float(r["ask_size"]),
+                        "spread": None if pd.isna(r["spread"]) else float(r["spread"]),
+                    }
+            q = self.adapter.option_quote_at(occ_symbol, ts)
+            # Persistir aunque sea vacío (None) para no re-intentar contratos sin quote.
+            self._write_parquet(pd.DataFrame([q]), path)
+            return q
 
     def nearest_expiry(self, ticker: str, on_or_after: str) -> Optional[str]:
         """Return the smallest expiration >= on_or_after, or None.

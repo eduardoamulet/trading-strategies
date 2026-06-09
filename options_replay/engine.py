@@ -74,7 +74,12 @@ def load_spread_config() -> dict:
 
 
 def _max_spread_for_price(spot: float, cfg: dict) -> float:
-    """Máximo spread aceptable según el bucket donde cae el precio del subyacente."""
+    """Máximo spread aceptable. Si la config trae '_max_spread_override' (lo setea la
+    UI con 'Spread máximo ($)'), ese valor PLANO manda sobre los buckets. Si no, el
+    bucket de precio donde cae el subyacente."""
+    ov = cfg.get("_max_spread_override")
+    if ov is not None:
+        return float(ov)
     for b in cfg.get("buckets", []):
         if b["price_min"] <= spot < b["price_max"]:
             return float(b["max_spread"])
@@ -676,6 +681,7 @@ def run_next_iteration(
     value_target: float = 2.0,
     dte: int = 0,
     overnight_exit_time: Optional[time] = None,
+    spread_cfg: Optional[dict] = None,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -699,7 +705,7 @@ def run_next_iteration(
             iteration_idx=iteration_idx, max_strikes_to_probe=max_strikes_to_probe,
             mode=mode, ext_min=ext_min, ext_max=ext_max,
             selection_criterion=selection_criterion, value_target=value_target,
-            exit_time=overnight_exit_time,
+            spread_cfg=spread_cfg, exit_time=overnight_exit_time,
         )
 
     under_full = downloader.underlying(ticker, date)
@@ -745,6 +751,7 @@ def run_next_iteration(
         exit_plus_time=exit_plus_time,
         selection_criterion=selection_criterion,
         value_target=value_target,
+        spread_cfg=spread_cfg,
     )
 
 
@@ -781,6 +788,7 @@ def run_overnight_1dte(
     ext_max: Optional[float] = None,
     value_target: float = 2.0,
     selection_criterion: str = "spread",
+    spread_cfg: Optional[dict] = None,
     sell_date: Optional[str] = None,
     exit_time: Optional[time] = None,
 ) -> IterationResult:
@@ -836,7 +844,7 @@ def run_overnight_1dte(
         _d=(puts_chain["strike_price"] - spot_at_start).abs()
     ).sort_values(["_d", "strike_price"])
 
-    spread_cfg = load_spread_config()
+    spread_cfg = spread_cfg or load_spread_config()
     probe_end = buy_ts + pd.Timedelta(minutes=1)
 
     def _pick(sorted_chain, right):
@@ -959,6 +967,7 @@ def _run_one_iteration(
     exit_plus_time: Optional[time] = None,
     selection_criterion: str = "itm",
     value_target: float = 2.0,
+    spread_cfg: Optional[dict] = None,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -982,7 +991,7 @@ def _run_one_iteration(
         _d=(puts_chain["strike_price"] - spot_at_start).abs()
     ).sort_values(["_d", "strike_price"])
 
-    spread_cfg = load_spread_config()
+    spread_cfg = spread_cfg or load_spread_config()
 
     # Probing CALL (skip si mode == "put_only")
     if mode != "put_only":

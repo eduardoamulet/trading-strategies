@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import io
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date as date_cls, time as time_cls, timedelta
 from pathlib import Path
 
@@ -33,6 +35,21 @@ MARKET_HOURS_PATH = HERE / "market_hours.json"
 
 # Comisión por contrato (USD). Usada en el reporte de "Operaciones" por iteración.
 COMMISSION_PER_CONTRACT = 1.0
+
+# Etiquetas/íconos de la razón de salida (definidos acá arriba para que también los
+# use la tabla "en vivo" del backtest paralelo, que corre antes del render final).
+_REASON_LABELS = {
+    "100%_threshold": "Exit por umbral de profit",
+    "stop_loss": "Exit por STOP LOSS",
+    "session_end": "Sin trigger — corre hasta cierre",
+    "overnight_1dte": "Venta overnight (1 DTE, día hábil siguiente)",
+}
+_REASON_ICONS = {
+    "100%_threshold": "🎯",
+    "stop_loss": "🛑",
+    "session_end": "🕓",
+    "overnight_1dte": "🌙",
+}
 
 
 @st.cache_data
@@ -1089,6 +1106,39 @@ with st.sidebar.container(border=True):
               "(con cascada a extendido si hace falta)."),
     )
     selection_criterion = "spread"
+
+    # Filtro de spread (compuerta): el usuario lo puede DESACTIVAR o fijar un máximo
+    # plano. Resuelve el caso "el único contrato en rango tiene spread 1¢ por encima
+    # del límite del bucket y no se compra nada".
+    st.markdown(
+        "<p style='font-weight:normal; margin: 0.5rem 0 0.2rem 0;'>Filtro de spread</p>",
+        unsafe_allow_html=True,
+    )
+    aplicar_spread = st.checkbox(
+        "Aplicar filtro de spread", value=True, key="aplicar_spread",
+        help=("Si está activo, descarta contratos cuyo spread (ask−bid) supere el "
+              "máximo. Por defecto el máximo depende del precio del subyacente "
+              "(spread_config.json: $100–300 → 0.05, $300–600 → 0.10, etc.)."),
+    )
+    spread_max_override = 0.0
+    if aplicar_spread:
+        spread_max_override = float(st.number_input(
+            "Spread máximo ($) — 0 = usar config por precio",
+            min_value=0.0, value=0.0, step=0.01, format="%.2f", key="spread_max_override",
+            help=("Override PLANO del spread máximo en dólares. 0 = usar los buckets por "
+                  "precio. Ej.: 0.08 permite spreads de hasta 8¢ (útil en 0DTE de "
+                  "IWM/QQQ, donde el límite de 5¢ suele ser muy estricto)."),
+        ))
+    # spread_cfg que se pasa al motor: None = buckets por precio (default);
+    # {filtro off} o {override plano} según la UI.
+    if not aplicar_spread:
+        _spread_cfg = {"enable_spread_filter": False}
+    elif spread_max_override > 0:
+        _spread_cfg = {"enable_spread_filter": True,
+                       "_max_spread_override": spread_max_override}
+    else:
+        _spread_cfg = None
+
     # Info del modo overnight (DTE=1).
     if _is_dte1:
         st.info(
@@ -1632,6 +1682,7 @@ if btn_iniciar:
                         selection_criterion=selection_criterion,
                         dte=int(dte),
                         overnight_exit_time=horario_salida,
+                        spread_cfg=_spread_cfg,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1711,35 +1762,28 @@ if btn_iniciar:
 
             _skipped_no0dte = 0
             _skipped_1dte = 0   # DTE=1: días sin "día hábil siguiente" con datos
-            for i, d in enumerate(day_list):
-                date_str = d.isoformat()
-                # Fin de la ventana = Horario de salida - 1 min (liquida lo pendiente
-                # en el minuto ANTES de la salida).
-                day_end_ts = _to_ts(date_str, horario_salida) - pd.Timedelta(minutes=1)
-                order_ts = _to_ts(date_str, hora_orden)
 
-                # Pre-skip RÁPIDO (sin API): si el día de semana no tiene 0DTE para este
-                # ticker y NO hay chain cacheado, se salta directo. Evita un nearest_expiry
-                # por cada Lun-Jue de un weekly → el backtest es muchísimo más rápido.
+            # Pre-skip RÁPIDO (sin API) en el hilo principal: días cuyo día de semana
+            # no tiene 0DTE para este ticker y sin chain cacheado. No se encolan.
+            _payloads = []  # (date_str, order_ts, day_end_ts)
+            for d in day_list:
+                date_str = d.isoformat()
                 if (dte != 1
                         and _valid_wd is not None and d.weekday() not in _valid_wd
                         and not (DATA_DIR / "chain" / f"{ticker}_{date_str}.parquet").exists()):
                     _skipped_no0dte += 1
-                    progress.progress(
-                        (i + 1) / len(day_list),
-                        text=f"Backtest {ticker}: {i + 1}/{len(day_list)} días"
-                             f"  ·  {_skipped_no0dte} sin 0DTE saltados",
-                    )
                     continue
+                _day_end_ts = _to_ts(date_str, horario_salida) - pd.Timedelta(minutes=1)
+                _order_ts = _to_ts(date_str, hora_orden)
+                _payloads.append((date_str, _order_ts, _day_end_ts))
 
-                _was_skip = False
+            def _run_one_day(date_str, order_ts, day_end_ts):
+                """Worker (corre en un hilo). NO llama a st.* — solo computa y devuelve
+                un dict con 'status' y, si aplica, el 'run' (día) para `day_runs`. El
+                Downloader es thread-safe (lock por archivo)."""
                 try:
-                    # DTE=1: el día de COMPRA no necesita 0DTE; el vencimiento es el
-                    # día hábil siguiente (lo resuelve el motor).
-                    if dte == 1:
-                        expiry = None
-                    else:
-                        expiry = validate_0dte_session(dl, ticker, date_str)
+                    # DTE=1: el día de COMPRA no necesita 0DTE; el vencimiento es D+1.
+                    expiry = None if dte == 1 else validate_0dte_session(dl, ticker, date_str)
                     it = run_next_iteration(
                         dl, ticker, date_str,
                         float(premium_min), float(premium_max),
@@ -1761,78 +1805,130 @@ if btn_iniciar:
                         selection_criterion=selection_criterion,
                         dte=int(dte),
                         overnight_exit_time=horario_salida,
+                        spread_cfg=_spread_cfg,
                     )
-                    if dte == 1:
-                        expiry = it.end_dt.strftime("%Y-%m-%d")  # venta = vencimiento 1DTE
-                    day_runs.append({
-                        "date": date_str,
-                        "expiry": expiry,
-                        "day_start_ts": order_ts,
-                        "day_end_ts": day_end_ts,
-                        "iteration": it,
-                        "error": None,
-                        "prediction": _pred_info,
-                        "day_params": _params_info,
-                    })
+                    _exp = it.end_dt.strftime("%Y-%m-%d") if dte == 1 else expiry
+                    return {"status": "ok", "run": {
+                        "date": date_str, "expiry": _exp,
+                        "day_start_ts": order_ts, "day_end_ts": day_end_ts,
+                        "iteration": it, "error": None,
+                        "prediction": _pred_info, "day_params": _params_info,
+                    }}
                 except NoMatchError as e:
-                    day_runs.append({
+                    return {"status": "error", "run": {
                         "date": date_str, "expiry": None,
                         "day_start_ts": order_ts, "day_end_ts": day_end_ts,
                         "iteration": None, "error": f"NoMatch: {e}",
-                        "prediction": _pred_info, "day_params": _params_info,
-                    })
+                        "prediction": _pred_info, "day_params": _params_info}}
                 except ValueError as e:
-                    # Día sin 0DTE (tickers weekly como SOXL/MSTR: solo viernes tienen
-                    # 0DTE) → SALTAR silenciosamente, NO listarlo como error. Otros
-                    # ValueError (sin data, etc.) sí se reportan como error real.
                     _msg = str(e)
                     if _msg.startswith("1DTE:"):
-                        # DTE=1: no hay día hábil siguiente con datos (último día del
-                        # rango / siguiente futuro) o el siguiente no tiene cadena → SALTO
-                        # LIMPIO con aviso, sin cortar la corrida ni listarlo como error.
-                        _skipped_1dte += 1
-                        _was_skip = True
-                    elif "No 0 DTE option" in _msg:
-                        _skipped_no0dte += 1
-                        _was_skip = True
-                    else:
-                        day_runs.append({
-                            "date": date_str, "expiry": None,
-                            "day_start_ts": order_ts, "day_end_ts": day_end_ts,
-                            "iteration": None, "error": str(e),
-                            "prediction": _pred_info, "day_params": _params_info,
-                        })
-                except Exception as e:
-                    day_runs.append({
+                        return {"status": "skip_1dte"}       # DTE=1 sin día siguiente
+                    if "No 0 DTE option" in _msg:
+                        return {"status": "skip_no0dte"}     # weekly sin 0DTE ese día
+                    return {"status": "error", "run": {
                         "date": date_str, "expiry": None,
                         "day_start_ts": order_ts, "day_end_ts": day_end_ts,
                         "iteration": None, "error": str(e),
-                        "prediction": _pred_info, "day_params": _params_info,
-                    })
-                # Refresca el panel de totales (solo si el día NO fue saltado: en un
-                # skip los day_runs no cambian, así que no hace falta re-renderizar).
-                if not _was_skip:
-                    with totals_placeholder.container():
-                        render_batch_totals(
-                            # total_days = días INTENTADOS (con 0DTE), NO los 218 hábiles:
-                            # los pre-saltados sin 0DTE no van en day_runs. Antes era
-                            # len(day_list) → mostraba un "X / 218" que parecía procesar todos.
-                            day_runs,
-                            total_days=len(day_runs),
-                            title="💼 Totales del backtest (preliminar)",
+                        "prediction": _pred_info, "day_params": _params_info}}
+                except Exception as e:
+                    return {"status": "error", "run": {
+                        "date": date_str, "expiry": None,
+                        "day_start_ts": order_ts, "day_end_ts": day_end_ts,
+                        "iteration": None, "error": str(e),
+                        "prediction": _pred_info, "day_params": _params_info}}
+
+            def _sort_key(r):
+                _ts = r.get("day_start_ts")
+                return (r.get("date") or "", _ts.strftime("%H:%M") if _ts is not None else "")
+
+            # Ejecución EN PARALELO: los hilos computan; el hilo principal consume los
+            # resultados a medida que terminan, refresca la tabla "en vivo" (ordenada
+            # por fecha/hora) y lleva el cronómetro. No se bloquea con un único spinner.
+            live_ph = st.empty()
+            _t0 = time.perf_counter()
+            _n_total = len(_payloads)
+            _workers = max(1, min(8, _n_total))
+            _done, _last_render = 0, 0.0
+
+            if _n_total == 0:
+                progress.progress(1.0, text="Sin días para procesar.")
+            else:
+                with ThreadPoolExecutor(max_workers=_workers) as _ex:
+                    _futs = [_ex.submit(_run_one_day, *p) for p in _payloads]
+                    for _fut in as_completed(_futs):
+                        try:
+                            _res = _fut.result()
+                        except Exception as _e:  # defensivo: el worker ya captura todo
+                            _res = {"status": "error",
+                                    "run": {"date": "?", "iteration": None, "error": str(_e)}}
+                        _done += 1
+                        _stt = _res.get("status")
+                        if _stt == "skip_no0dte":
+                            _skipped_no0dte += 1
+                        elif _stt == "skip_1dte":
+                            _skipped_1dte += 1
+                        elif _res.get("run") is not None:
+                            day_runs.append(_res["run"])
+
+                        _elapsed = time.perf_counter() - _t0
+                        _skip_txt = ""
+                        if _skipped_no0dte:
+                            _skip_txt += f" · {_skipped_no0dte} sin 0DTE"
+                        if _skipped_1dte:
+                            _skip_txt += f" · {_skipped_1dte} sin día sig."
+                        progress.progress(
+                            _done / _n_total,
+                            text=(f"⏱️ {_elapsed:0.1f}s · {_done}/{_n_total} iteraciones "
+                                  f"({_workers} en paralelo){_skip_txt}"),
                         )
-                _skip_txt = ""
-                if _skipped_no0dte:
-                    _skip_txt += f"  ·  {_skipped_no0dte} sin 0DTE saltados"
-                if _skipped_1dte:
-                    _skip_txt += f"  ·  {_skipped_1dte} sin día siguiente saltados"
-                progress.progress(
-                    (i + 1) / len(day_list),
-                    text=(f"Backtest {ticker}: {i + 1}/{len(day_list)} días"
-                          + (_skip_txt or f" procesados ({date_str})")),
-                )
+                        # Refrescos pesados (totales + tabla en vivo) acotados a ~0.4s
+                        # para no saturar el frontend; siempre en la última iteración.
+                        _now = time.perf_counter()
+                        if _now - _last_render > 0.4 or _done == _n_total:
+                            _last_render = _now
+                            _ordered = sorted(day_runs, key=_sort_key)
+                            with totals_placeholder.container():
+                                render_batch_totals(
+                                    _ordered, total_days=len(_ordered),
+                                    title="💼 Totales del backtest (preliminar)",
+                                )
+                            _live_rows = []
+                            for _r in _ordered:
+                                _it = _r.get("iteration")
+                                _hs = _r.get("day_start_ts")
+                                if _it is not None:
+                                    _roi = (_it.gain_total / _it.invest_total) if _it.invest_total else 0.0
+                                    _live_rows.append({
+                                        "Fecha": _r.get("date"),
+                                        "Hora": _hs.strftime("%H:%M") if _hs is not None else "",
+                                        "Ganancia": _it.gain_total,
+                                        "ROI %": _roi * 100.0,
+                                        "Razón": _REASON_LABELS.get(_it.exit_reason, _it.exit_reason),
+                                    })
+                                else:
+                                    _live_rows.append({
+                                        "Fecha": _r.get("date", "?"), "Hora": "",
+                                        "Ganancia": None, "ROI %": None,
+                                        "Razón": _r.get("error") or "error",
+                                    })
+                            with live_ph.container():
+                                st.markdown("##### 📋 Resumen por día (en vivo)")
+                                st.dataframe(
+                                    pd.DataFrame(_live_rows), use_container_width=True,
+                                    hide_index=True,
+                                    height=min(420, 38 + 35 * max(1, len(_live_rows))),
+                                    column_config={
+                                        "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
+                                        "ROI %": st.column_config.NumberColumn("ROI %", format="%.1f%%"),
+                                    },
+                                )
+
+            _elapsed_total = time.perf_counter() - _t0
+            day_runs.sort(key=_sort_key)   # orden final por fecha/hora ascendente
             progress.empty()
             totals_placeholder.empty()
+            live_ph.empty()
             st.session_state["replay"] = {
                 "ticker": ticker,
                 "mode": "range",
@@ -1844,6 +1940,8 @@ if btn_iniciar:
                 "day_runs": day_runs,
                 "skipped_no0dte": _skipped_no0dte,
                 "skipped_1dte": _skipped_1dte,
+                "elapsed_sec": _elapsed_total,
+                "workers": _workers,
             }
             st.rerun()
 
@@ -1893,6 +1991,7 @@ elif btn_proxima:
                         selection_criterion=selection_criterion,
                         dte=int(dte),
                         overnight_exit_time=horario_salida,
+                        spread_cfg=_spread_cfg,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -2447,19 +2546,6 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
 ticker_str = replay_state["ticker"]
 _mode = replay_state.get("mode", "single")
 
-_REASON_LABELS = {
-    "100%_threshold": "Exit por umbral de profit",
-    "stop_loss": "Exit por STOP LOSS",
-    "session_end": "Sin trigger — corre hasta cierre",
-    "overnight_1dte": "Venta overnight (1 DTE, día hábil siguiente)",
-}
-_REASON_ICONS = {
-    "100%_threshold": "🎯",
-    "stop_loss": "🛑",
-    "session_end": "🕓",
-    "overnight_1dte": "🌙",
-}
-
 if _mode == "range":
     # ========================================================================
     # Range / batch mode — 1 iteración por día hábil
@@ -2473,6 +2559,15 @@ if _mode == "range":
         f"Ventana {replay_state['time_start']:%H:%M}–{replay_state['time_end']:%H:%M}  ·  "
         f"Orden @ {replay_state['order_time']:%H:%M}"
     )
+
+    _elapsed = replay_state.get("elapsed_sec")
+    if _elapsed is not None:
+        _wk = int(replay_state.get("workers", 1))
+        st.caption(
+            f"⏱️ Backtest completado en **{_elapsed:0.1f}s** "
+            f"({_wk} iteraci{'ón' if _wk == 1 else 'ones'} en paralelo · "
+            f"{len(day_runs)} días con resultado)."
+        )
 
     # Panel de totales — usa el mismo helper que se llama en vivo durante el
     # batch, así garantizamos que la vista preliminar y la final sean idénticas.
