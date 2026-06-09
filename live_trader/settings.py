@@ -61,6 +61,21 @@ def account_id() -> str:
 
 
 # ===========================================================================
+# Schwab Trader API (Fase 2 — thinkorswim real). OAuth2 (authorization code).
+# ⚠ Para individuos NO hay sandbox: las órdenes son SIEMPRE dinero real → por eso
+# SchwabBrokerAdapter.place_order queda HARD-GATED por LIVE_TRADING_ENABLED.
+# Andamiaje SIN VERIFICAR hasta tener App Key/Secret aprobados.
+# ===========================================================================
+SCHWAB_API_BASE = "https://api.schwabapi.com"
+SCHWAB_APP_KEY = _from_secrets("SCHWAB_APP_KEY", "")
+SCHWAB_APP_SECRET = _from_secrets("SCHWAB_APP_SECRET", "")
+# Debe coincidir EXACTO con el Callback URL registrado en el portal de Schwab.
+SCHWAB_CALLBACK_URL = _from_secrets("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
+# Cache del token OAuth (access ~30min + refresh ~7 días). Gitignored. NO versionar.
+SCHWAB_TOKEN_PATH = str(_PKG_DIR / "secrets_schwab_token.json")
+
+
+# ===========================================================================
 # Límites de riesgo (validados PRE-orden en core/risk.py)
 # ===========================================================================
 RISK = {

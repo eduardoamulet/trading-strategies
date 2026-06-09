@@ -19,6 +19,15 @@ import pandas as pd
 from adapter_polygon import PolygonAdapter
 from downloader import Downloader
 
+# Núcleo de estrategia COMPARTIDO con live_trader (raíz del repo). Lo agrego al path
+# con append (prioridad baja) para no tapar módulos locales de options_replay.
+import sys as _sys  # noqa: E402
+from pathlib import Path as _PathRoot  # noqa: E402
+_ROOT = str(_PathRoot(__file__).resolve().parent.parent)
+if _ROOT not in _sys.path:
+    _sys.path.append(_ROOT)
+import strategy_core  # noqa: E402
+
 DEFAULT_TIME_START = time(9, 30)
 DEFAULT_TIME_END = time(16, 0)
 MAX_STRIKES_TO_PROBE = 25  # per side; safety cap
@@ -76,14 +85,12 @@ def load_spread_config() -> dict:
 def _max_spread_for_price(spot: float, cfg: dict) -> float:
     """Máximo spread aceptable. Si la config trae '_max_spread_override' (lo setea la
     UI con 'Spread máximo ($)'), ese valor PLANO manda sobre los buckets. Si no, el
-    bucket de precio donde cae el subyacente."""
-    ov = cfg.get("_max_spread_override")
-    if ov is not None:
-        return float(ov)
-    for b in cfg.get("buckets", []):
-        if b["price_min"] <= spot < b["price_max"]:
-            return float(b["max_spread"])
-    return float("inf")  # fuera de todos los buckets → sin filtro
+    bucket de precio donde cae el subyacente.
+
+    Delega en strategy_core (núcleo compartido con live) → MISMA compuerta en backtest
+    y en vivo. Comportamiento idéntico al previo (verificado en test_strategy_core.py)."""
+    return strategy_core.max_spread_for_price(
+        spot, buckets=cfg.get("buckets", []), override=cfg.get("_max_spread_override"))
 
 
 @dataclass

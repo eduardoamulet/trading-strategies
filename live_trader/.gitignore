@@ -1,4 +1,6 @@
 secrets.py
+secrets_schwab_token.json
+*_token.json
 data/
 *.db
 *.db-wal
