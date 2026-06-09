@@ -53,6 +53,61 @@ except Exception as e:
     st.stop()
 
 # ===========================================================================
+# Operar ALERTAS seleccionadas (llegan de la página "Alertas" → "Operar en vivo")
+# ===========================================================================
+import pandas as _pd  # noqa: E402
+
+_alerts_ho = st.session_state.get("live_alerts_handoff")
+if _alerts_ho:
+    st.header("🔔 Operar alertas seleccionadas (paper)")
+    st.caption(
+        f"{len(_alerts_ho)} alerta(s) traídas de **Alertas**. Cada una abre 1 posición "
+        "(Sólo CALL/PUT según Tipo) con la MISMA selección de contrato que el backtest. "
+        "El daemon luego monitorea y vende al Umbral de ROI. **Requiere mercado abierto.**"
+    )
+    _aa1, _aa2, _aa3 = st.columns(3)
+    _la_inv = _aa1.number_input("Inversión por alerta ($)", min_value=1.0, value=1000.0,
+                                step=100.0, key="la_inv")
+    _la_roi = _aa2.number_input("Umbral de ROI (%)", min_value=1.0, value=20.0, step=5.0, key="la_roi")
+    _la_strat = _aa3.radio("Strike", ["atm", "itm"], horizontal=True, key="la_strat",
+                           format_func=lambda s: "ATM" if s == "atm" else "1-ITM")
+    st.dataframe(_pd.DataFrame([{"Acción": a.get("symbol"), "Tipo": a.get("tipo")} for a in _alerts_ho]),
+                 hide_index=True, use_container_width=True)
+    _oa1, _oa2 = st.columns([2, 1])
+    if _oa1.button(f"▶ Operar {len(_alerts_ho)} alerta(s) (paper)", type="primary",
+                   use_container_width=True):
+        from core.alert_entry import AlertEntry, EntryError, enter_from_alert
+        _res = []
+        for a in _alerts_ho:
+            ae = AlertEntry(alert_id=str(a.get("id")), underlying=str(a.get("symbol", "")).upper(),
+                            side=str(a.get("tipo", "")).upper(), inversion=float(_la_inv),
+                            roi_target_pct=float(_la_roi), strategy=_la_strat)
+            try:
+                pos = enter_from_alert(broker, store, selector, risk, om, ae)
+                _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"),
+                             "Estado": f"✅ comprada · {pos.qty} @ ${pos.entry_price:.2f}"})
+            except EntryError as ex:
+                _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"), "Estado": f"⚠ {ex}"})
+            except Exception as ex:
+                _res.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"), "Estado": f"⚠ error: {ex}"})
+        st.session_state["live_alerts_results"] = _res
+        st.session_state.pop("live_alerts_handoff", None)
+        st.rerun()
+    if _oa2.button("Descartar", use_container_width=True):
+        st.session_state.pop("live_alerts_handoff", None)
+        st.rerun()
+    st.markdown("---")
+
+_la_res = st.session_state.get("live_alerts_results")
+if _la_res:
+    st.markdown("##### Resultado de operar alertas")
+    st.dataframe(_pd.DataFrame(_la_res), hide_index=True, use_container_width=True)
+    if st.button("Limpiar resultado", key="la_clear"):
+        st.session_state.pop("live_alerts_results", None)
+        st.rerun()
+    st.markdown("---")
+
+# ===========================================================================
 # Panel de ENTRADA
 # ===========================================================================
 st.header("1 · Analizar y comprar")

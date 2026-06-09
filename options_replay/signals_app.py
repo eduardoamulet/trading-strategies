@@ -227,3 +227,10 @@ else:
         st.session_state.pop("bt_selected_ids", None)
         st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
         st.rerun()
+    if st.button(f"🟢 Operar {len(_sel_df)} en vivo (paper)  →  Live", use_container_width=True,
+                 help="Abre 1 posición por alerta en el sandbox (paper, NO dinero real). El "
+                      "daemon monitorea y vende al Umbral de ROI. Requiere mercado abierto."):
+        st.session_state["live_alerts_handoff"] = [
+            {"id": str(r["id"]), "symbol": str(r["symbol"]), "tipo": str(r["tipo"])}
+            for _, r in _sel_df.iterrows()]
+        st.switch_page("live_trader/ui/app.py")
