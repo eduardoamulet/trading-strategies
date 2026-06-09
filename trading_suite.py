@@ -21,9 +21,15 @@ st.set_page_config(page_title="Trading Suite", layout="wide", initial_sidebar_st
 
 # Ocultar SOLO el botón Deploy y el menú ⋮ de Streamlit (no toda la barra: si se
 # oculta stToolbar entero se pierde el control para re-expandir la barra lateral).
+# Además: el indicador de "Running…" (spinner) se mueve de la esquina superior
+# DERECHA al CENTRO horizontal de arriba.
 st.markdown(
-    "<style>[data-testid='stAppDeployButton'],[data-testid='stMainMenu']"
-    "{display:none !important;}</style>", unsafe_allow_html=True)
+    "<style>"
+    "[data-testid='stAppDeployButton'],[data-testid='stMainMenu']{display:none !important;}"
+    "[data-testid='stStatusWidget']{position:fixed !important; left:50% !important;"
+    " right:auto !important; transform:translateX(-50%) !important; top:8px !important;"
+    " z-index:9999998 !important;}"
+    "</style>", unsafe_allow_html=True)
 
 sys.path.insert(0, str(Path(__file__).parent / "options_replay"))
 import auth  # noqa: E402

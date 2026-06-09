@@ -1021,6 +1021,15 @@ with st.sidebar.container(border=True):
     if "horario_salida" not in st.session_state:
         st.session_state["horario_salida"] = time_cls(16, 0)
 
+    # Restringir SIEMPRE entrada y salida a [09:30, 16:00]. Si quedó un valor fuera de
+    # ese rango (tipeado en el time_input), se ajusta al borde más cercano ANTES de
+    # instanciar el widget → el componente "no permite" quedar fuera del horario.
+    _MKT_OPEN, _MKT_CLOSE = time_cls(9, 30), time_cls(16, 0)
+    for _hk in ("horario_entrada", "horario_salida"):
+        _hv = st.session_state.get(_hk)
+        if _hv is not None and not (_MKT_OPEN <= _hv <= _MKT_CLOSE):
+            st.session_state[_hk] = min(max(_hv, _MKT_OPEN), _MKT_CLOSE)
+
     # --- DTE: 0 = mismo día (intradía) · 1 = overnight (compra D, vende D+1) ---
     st.markdown(
         "<p style='font-weight:normal; margin: 0.4rem 0 0.2rem 0;'>DTE</p>",
@@ -1048,7 +1057,7 @@ with st.sidebar.container(border=True):
         hora_orden = st.time_input(
             "Horario de entrada", key="horario_entrada", step=60,
             label_visibility="collapsed",
-            help=("Hora de COMPRA (apertura de la posición). Con DTE=1 es la compra "
+            help=("Hora de COMPRA (apertura). Solo 09:30–16:00. Con DTE=1 es la compra "
                   "del día D."),
         )
         if _is_dte1:
@@ -1061,9 +1070,9 @@ with st.sidebar.container(border=True):
         horario_salida = st.time_input(
             "Horario de salida", key="horario_salida", step=60,
             label_visibility="collapsed",
-            help=("Fin de la ventana operativa (default 16:00). Con DTE=1 es la hora de "
-                  "venta del día hábil SIGUIENTE (D+1), por lo que puede ser una hora "
-                  "anterior a la de entrada."),
+            help=("Fin de la ventana operativa (default 16:00). Solo 09:30–16:00. Con "
+                  "DTE=1 es la hora de venta del día hábil SIGUIENTE (D+1), por lo que "
+                  "puede ser una hora anterior a la de entrada."),
         )
         if _is_dte1:
             st.caption("🌙 Venta · día hábil siguiente (D+1)")
