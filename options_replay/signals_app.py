@@ -127,20 +127,10 @@ def _render_detalle(r):
     ne = _e1.selectbox("Estado", xs.ESTADOS, index=_i, key=f"est_{r['id']}")
     ng = _e2.number_input("Ganancia ($)", value=float(r["ganancia"] or 0), step=10.0,
                           key=f"gan_{r['id']}")
-    _b1, _b2 = st.columns(2)
-    if _b1.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
+    if st.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
         db.update_user_fields(r["id"], estado=ne, ganancia=float(ng))
         st.toast("Guardado")
         st.rerun()   # cierra el modal y refresca
-    if _b2.button("➕ Agregar a backtest", key=f"bt_{r['id']}", use_container_width=True):
-        _basket = st.session_state.setdefault("bt_basket", [])
-        if not any(b.get("id") == r["id"] for b in _basket):
-            _basket.append({"id": r["id"], "symbol": str(r["symbol"]), "fecha": str(r["fecha"]),
-                            "hora": str(r["hora"]), "tipo": str(r["tipo"])})
-            st.toast(f"Agregada al backtest ({len(_basket)})")
-        else:
-            st.toast("Ya estaba en el backtest")
-        st.rerun()   # cierra el modal
 
 
 # Tabla (grilla) ordenable con una casilla "Ver" por fila → al marcarla abre el modal.
@@ -169,7 +159,10 @@ if st.session_state.get("_sig_sort_prev") != _sort_opt:
     st.session_state["_sig_sort_prev"] = _sort_opt
     st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
 
+_sel_ids = st.session_state.get("bt_selected_ids", set())
 _show = pd.DataFrame({
+    # "Selección" (1ª columna): elegir alertas para backtest (persiste entre reruns).
+    "Selección": [str(fdf.iloc[i]["id"]) in _sel_ids for i in range(len(fdf))],
     "Acción": fdf["symbol"].values,
     "Hora": fdf["hora"].values,
     "Fecha": fdf["fecha"].values,
@@ -187,43 +180,50 @@ _edited = st.data_editor(
     disabled=["Acción", "Hora", "Fecha", "Estrategia", "% Cumpl.", "Tipo",
               "Criterios", "Estado", "Ganancia"],
     column_config={
+        "Selección": st.column_config.CheckboxColumn(
+            "Selección", help="Marcá para backtestear esta alerta"),
         "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%"),
         "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
         "Ver": st.column_config.CheckboxColumn("Ver", help="Marcá para ver el detalle"),
     },
 )
-st.caption("Marcá la casilla **Ver** de una fila para abrir su **detalle** en un modal · "
-           "cambiá el orden con **'Ordenar por'**.")
-# La casilla "Ver" es un disparador momentáneo: al marcar una, se abre el modal y se
-# resetea la grilla (bump de key) → la casilla se destilda al cerrar (no re-abre sola).
+st.caption("Casilla **Selección** (1ª col.) = elegir alertas para el backtest · casilla "
+           "**Ver** = abrir el detalle en un modal · **'Ordenar por'** cambia el orden.")
+# Selección PERSISTENTE (alimenta el backtest de abajo). Se guarda por `id`.
+st.session_state["bt_selected_ids"] = {
+    str(fdf.iloc[i]["id"]) for i, v in enumerate(_edited["Selección"].tolist()) if v}
+# La casilla "Ver" es momentánea: al marcarla se abre el modal y se resetea la grilla
+# (bump de key) → se destilda al cerrar. La "Selección" se re-siembra desde
+# bt_selected_ids, así NO se pierde con ese reset.
 _checked = [i for i, v in enumerate(_edited["Ver"].tolist()) if v]
 if _checked:
     st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
     _render_detalle(fdf.iloc[_checked[0]])
 
-# ── Backtest de señales (canasta) → redirige a la página Backtesting ─────────
+# ── Backtest de las alertas SELECCIONADAS → redirige a la página Backtesting ──
 st.divider()
 st.subheader("🔬 Backtest de señales")
 st.caption(
-    "Abrí una señal (clic en su fila → **📈 Ver**) y usá **➕ Agregar a backtest** para armar "
-    "la lista. Cada señal = 1 iteración (Sólo CALL/PUT según Tipo · Opción 1 menor spread · "
-    "mismo día). El botón te lleva a **Backtesting** con las señales cargadas."
+    "Marcá la casilla **Selección** (1ª columna) de las alertas a backtestear. Cada señal = "
+    "1 iteración (Sólo CALL/PUT según Tipo · Opción 1 menor spread · mismo día). El botón te "
+    "lleva a **Backtesting** con las señales cargadas."
 )
-_basket = st.session_state.get("bt_basket", [])
-if not _basket:
-    st.info("Todavía no agregaste señales. Abrí el detalle de una (📈 Ver) y pulsá "
-            "'➕ Agregar a backtest'.")
+_sel_now = st.session_state.get("bt_selected_ids", set())
+_sel_df = df[df["id"].astype(str).isin(_sel_now)] if _sel_now else df.iloc[0:0]
+if _sel_df.empty:
+    st.info("Marcá la casilla **Selección** de una o más alertas en la tabla de arriba.")
 else:
-    st.markdown("🧺 **En el backtest:**  " + "  ·  ".join(
-        f"{b['symbol']} {b['tipo']} ({b['fecha']} {b['hora']})" for b in _basket))
+    st.markdown("🧺 **Seleccionadas:**  " + "  ·  ".join(
+        f"{r['symbol']} {r['tipo']} ({r['fecha']} {r['hora']})" for _, r in _sel_df.iterrows()))
     _bk1, _bk2 = st.columns([2, 1])
-    if _bk1.button(f"▶ Backtestear {len(_basket)} señal(es)  →  Backtesting", type="primary",
+    if _bk1.button(f"▶ Backtestear {len(_sel_df)} señal(es)  →  Backtesting", type="primary",
                    use_container_width=True):
         st.session_state["bt_signals_handoff"] = [
-            {"symbol": b["symbol"], "fecha": b["fecha"], "hora": b["hora"], "tipo": b["tipo"]}
-            for b in _basket]
-        st.session_state.pop("bt_basket", None)
+            {"symbol": str(r["symbol"]), "fecha": str(r["fecha"]), "hora": str(r["hora"]),
+             "tipo": str(r["tipo"])} for _, r in _sel_df.iterrows()]
+        st.session_state.pop("bt_selected_ids", None)
         st.switch_page("options_replay/app.py")
-    if _bk2.button("🗑 Vaciar", use_container_width=True):
-        st.session_state.pop("bt_basket", None)
+    if _bk2.button("🗑 Limpiar selección", use_container_width=True):
+        st.session_state.pop("bt_selected_ids", None)
+        st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
         st.rerun()
