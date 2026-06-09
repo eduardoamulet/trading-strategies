@@ -141,7 +141,11 @@ def _to_ts(date_str: str, t: time_cls) -> pd.Timestamp:
 
 
 def _is_session_exhausted(replay: dict) -> bool:
-    if not replay["iterations"]:
+    # Solo el modo single tiene loop de "Próxima iteración". En range/signals (o sin
+    # sesión) NO hay próxima iteración → se considera "agotada" (deshabilita ese botón).
+    if not replay or replay.get("mode") != "single":
+        return True
+    if not replay.get("iterations"):
         return False
     last = replay["iterations"][-1]
     if last.exit_reason == "session_end":
@@ -151,7 +155,7 @@ def _is_session_exhausted(replay: dict) -> bool:
 
 
 def _next_start_ts(replay: dict) -> pd.Timestamp:
-    if not replay["iterations"]:
+    if not replay or not replay.get("iterations"):
         return replay["day_start_ts"]
     return replay["iterations"][-1].end_dt + pd.Timedelta(minutes=1)
 
@@ -2096,8 +2100,8 @@ elif btn_proxima:
     if not has_session:
         st.error("Iniciá una sesión primero.")
         st.stop()
-    if replay_state.get("mode") == "range":
-        st.error("La 'Próxima iteración' no aplica en modo rango — iniciá una nueva simulación.")
+    if replay_state.get("mode") in ("range", "signals"):
+        st.error("La 'Próxima iteración' no aplica en este modo — iniciá una nueva simulación.")
         st.stop()
     if _validate_form():
         # Próxima iteración: usar la Hora/Minuto que el usuario tiene en el
