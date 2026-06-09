@@ -246,6 +246,21 @@ st.caption("El monitoreo de ROI y el auto take-profit corren en el **daemon** "
 
 @st.fragment(run_every=2.0)
 def _positions_panel():
+    # --- Estado del daemon (latido) ---
+    _hb = store.get_meta("daemon_heartbeat")
+    _age = None
+    if _hb and _hb.get("ts"):
+        try:
+            _age = (datetime.utcnow() - datetime.fromisoformat(_hb["ts"])).total_seconds()
+        except Exception:
+            _age = None
+    if _age is not None and _age < max(10.0, settings.POLL_INTERVAL_SEC * 4):
+        st.success(f"🟢 Daemon activo · último latido hace {_age:.0f}s · monitoreo y auto-sell ON")
+    else:
+        _txt = f"último latido hace {_age:.0f}s" if _age is not None else "nunca latió"
+        st.error(f"🔴 Daemon NO detectado ({_txt}) — el monitoreo y la venta automática NO corren. "
+                 "Arrancalo en otra terminal: `cd live_trader && py -m daemon.runner`")
+
     open_pos = store.open_positions()
     if not open_pos:
         st.info("Sin posiciones abiertas.")

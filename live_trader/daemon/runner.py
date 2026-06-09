@@ -12,6 +12,8 @@ Correr en una terminal separada:
 """
 from __future__ import annotations
 
+import json
+import os
 import signal
 import sys
 import time
@@ -54,10 +56,15 @@ def main() -> int:
     risk = RiskGuard(store)
 
     store.audit("daemon_start", {"mode": mode})
+    _hb = json.dumps({"mode": mode, "pid": os.getpid()})
+    store.set_meta("daemon_heartbeat", _hb)   # latido inicial (la UI lo ve enseguida)
     print("[daemon] OK. Ctrl+C para parar.", flush=True)
 
     while not _STOP:
         try:
+            # 0) latido: la UI detecta que el monitoreo/auto-sell está vivo.
+            store.set_meta("daemon_heartbeat", _hb)
+
             # 1) consumir comandos de la UI
             for cmd in store.pop_commands():
                 _apply_command(cmd, store, om)

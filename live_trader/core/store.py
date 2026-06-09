@@ -50,6 +50,10 @@ class Store:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ts TEXT, kind TEXT, occ TEXT, payload TEXT, consumed INTEGER DEFAULT 0
                 )""")
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY, value TEXT, ts TEXT
+                )""")
 
     # ---------- audit (append-only) ----------
     def audit(self, event: str, payload: dict):
@@ -124,3 +128,14 @@ class Store:
         with self._conn() as c:
             return [dict(r) for r in c.execute(
                 "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+
+    # ---------- meta (kv: latido del daemon, etc.) ----------
+    def set_meta(self, key: str, value: str = ""):
+        with self._conn() as c:
+            c.execute("INSERT OR REPLACE INTO meta (key, value, ts) VALUES (?,?,?)",
+                      (key, value, datetime.utcnow().isoformat()))
+
+    def get_meta(self, key: str) -> Optional[dict]:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM meta WHERE key=?", (key,)).fetchone()
+            return dict(r) if r else None
