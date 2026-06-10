@@ -715,22 +715,23 @@ _iters_seed = st.session_state.get("bt_iters") or [{"Ticker": "", "Fecha": "", "
 _iters_open = bool(st.session_state.pop("bt_iters_open", False)) or bool(st.session_state.get("sig_bt"))
 with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open):
     st.caption(
-        "Cada fila = 1 iteración. **Tipo** = modo (Sólo CALL/PUT · CALL y PUT · CALL o PUT "
-        "+ variantes 'plus'; los de dos piernas reparten 50/50) · **Opción 1 (menor spread)** "
-        "· mismo día (sale 16:00). Editá, agregá o borrá filas. Las señales de **Alertas** "
-        "llegan acá."
+        "Cada fila = 1 iteración. **Tipo** = modo (CALL/PUT una pierna · CALL y PUT · "
+        "CALL o PUT + variantes 'plus'; los de dos piernas reparten 50/50) · **Opción 1 "
+        "(menor spread)** · mismo día (sale 16:00). Editá, agregá o borrá filas. Las señales "
+        "de **Alertas** llegan acá."
     )
     _seed_df = pd.DataFrame(_iters_seed)
     for _c in ("Ticker", "Fecha", "Hora", "Tipo"):
         if _c not in _seed_df.columns:
             _seed_df[_c] = ""
-    # Tipo = modo del motor. El handoff de Alertas siembra "CALL"/"PUT" → los mapeo a las
-    # etiquetas del dropdown (Sólo CALL/PUT) para que la celda sea una opción válida.
-    _TIPO_OPTS = ["CALL y PUT", "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT",
+    # Tipo = modo del motor. Una pierna = "CALL"/"PUT" (= lo que viene en la alerta, así
+    # ese es el DEFAULT). Compat: si quedó "Sólo CALL/PUT" de antes, se mapea a CALL/PUT.
+    _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (plus)",
                   "CALL o PUT", "CALL o PUT (plus)"]
     _seed_df["Tipo"] = _seed_df["Tipo"].apply(
         lambda v: str(v).strip() if str(v).strip() in _TIPO_OPTS
-        else {"CALL": "Sólo CALL", "PUT": "Sólo PUT"}.get(str(v).strip().upper(), "Sólo CALL"))
+        else {"SÓLO CALL": "CALL", "SOLO CALL": "CALL",
+              "SÓLO PUT": "PUT", "SOLO PUT": "PUT"}.get(str(v).strip().upper(), "CALL"))
     _ed = st.data_editor(
         _seed_df[["Ticker", "Fecha", "Hora", "Tipo"]], num_rows="dynamic",
         use_container_width=True, hide_index=True, key="bt_iters_editor",
