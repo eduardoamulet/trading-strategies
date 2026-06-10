@@ -715,14 +715,22 @@ _iters_seed = st.session_state.get("bt_iters") or [{"Ticker": "", "Fecha": "", "
 _iters_open = bool(st.session_state.pop("bt_iters_open", False)) or bool(st.session_state.get("sig_bt"))
 with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open):
     st.caption(
-        "Cada fila = 1 iteración. **Sólo CALL/PUT** según Tipo · 100% de la inversión a "
-        "esa pierna · **Opción 1 (menor spread)** · mismo día (sale 16:00). Editá, agregá "
-        "o borrá filas. Las señales seleccionadas en **Alertas** llegan acá."
+        "Cada fila = 1 iteración. **Tipo** = modo (Sólo CALL/PUT · CALL y PUT · CALL o PUT "
+        "+ variantes 'plus'; los de dos piernas reparten 50/50) · **Opción 1 (menor spread)** "
+        "· mismo día (sale 16:00). Editá, agregá o borrá filas. Las señales de **Alertas** "
+        "llegan acá."
     )
     _seed_df = pd.DataFrame(_iters_seed)
     for _c in ("Ticker", "Fecha", "Hora", "Tipo"):
         if _c not in _seed_df.columns:
             _seed_df[_c] = ""
+    # Tipo = modo del motor. El handoff de Alertas siembra "CALL"/"PUT" → los mapeo a las
+    # etiquetas del dropdown (Sólo CALL/PUT) para que la celda sea una opción válida.
+    _TIPO_OPTS = ["CALL y PUT", "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT",
+                  "CALL o PUT", "CALL o PUT (plus)"]
+    _seed_df["Tipo"] = _seed_df["Tipo"].apply(
+        lambda v: str(v).strip() if str(v).strip() in _TIPO_OPTS
+        else {"CALL": "Sólo CALL", "PUT": "Sólo PUT"}.get(str(v).strip().upper(), "Sólo CALL"))
     _ed = st.data_editor(
         _seed_df[["Ticker", "Fecha", "Hora", "Tipo"]], num_rows="dynamic",
         use_container_width=True, hide_index=True, key="bt_iters_editor",
@@ -730,7 +738,7 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Fecha": st.column_config.TextColumn("Fecha (YYYY-MM-DD)"),
             "Hora": st.column_config.TextColumn("Hora (HH:MM)"),
-            "Tipo": st.column_config.SelectboxColumn("Tipo", options=["CALL", "PUT"]),
+            "Tipo": st.column_config.SelectboxColumn("Tipo", options=_TIPO_OPTS, required=True),
         },
     )
     _sp1, _sp2, _sp3, _sp4 = st.columns(4)
