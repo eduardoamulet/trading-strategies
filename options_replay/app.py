@@ -740,6 +740,10 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
     _sig_stop = float(_sp3.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
     _sig_spmax = float(_sp4.number_input("Spread máx ($) — 0=auto", min_value=0.0, value=0.0,
                                          step=0.01, format="%.2f", key="sig_spmax"))
+    _sig_entry_ask = st.checkbox(
+        "Entrar al ASK (fill realista)", value=False, key="sig_entry_ask",
+        help="Entra al ASK del NBBO (lo que pagás de verdad) en vez del 'open' del último "
+             "trade. Más realista en 0DTE barato; no cambia el strike, solo el costo de entrada.")
 
     _specs = []
     for _, _r in _ed.iterrows():
@@ -762,7 +766,8 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         _t0 = time.perf_counter()
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
-            _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, _scfg, _i)
+            _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, _scfg, _i,
+                                _sig_entry_ask)
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):
@@ -1294,6 +1299,14 @@ with st.sidebar.container(border=True):
                        "_max_spread_override": spread_max_override}
     else:
         _spread_cfg = None
+
+    # Fill realista: entrar al ASK (lo que pagás de verdad) en vez del 'open' del bar.
+    entry_at_ask = st.checkbox(
+        "Entrar al ASK (fill realista)", value=False, key="entry_at_ask_param",
+        help=("El backtest entra al ASK del NBBO al minuto de entrada (lo que pagás de "
+              "verdad) en vez del 'open' del último trade. Más conservador/realista, "
+              "sobre todo en 0DTE barato. NO cambia el strike elegido, solo el costo de "
+              "entrada → el ROI baja ~medio spread."))
 
     # Info del modo overnight (DTE=1).
     if _is_dte1:
@@ -1839,6 +1852,7 @@ if btn_iniciar:
                         dte=int(dte),
                         overnight_exit_time=horario_salida,
                         spread_cfg=_spread_cfg,
+                        entry_at_ask=entry_at_ask,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1962,6 +1976,7 @@ if btn_iniciar:
                         dte=int(dte),
                         overnight_exit_time=horario_salida,
                         spread_cfg=_spread_cfg,
+                        entry_at_ask=entry_at_ask,
                     )
                     _exp = it.end_dt.strftime("%Y-%m-%d") if dte == 1 else expiry
                     return {"status": "ok", "run": {
@@ -2148,6 +2163,7 @@ elif btn_proxima:
                         dte=int(dte),
                         overnight_exit_time=horario_salida,
                         spread_cfg=_spread_cfg,
+                        entry_at_ask=entry_at_ask,
                     )
                 except NoMatchError as e:
                     st.error(str(e))

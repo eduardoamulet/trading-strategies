@@ -689,6 +689,7 @@ def run_next_iteration(
     dte: int = 0,
     overnight_exit_time: Optional[time] = None,
     spread_cfg: Optional[dict] = None,
+    entry_at_ask: bool = False,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -712,7 +713,7 @@ def run_next_iteration(
             iteration_idx=iteration_idx, max_strikes_to_probe=max_strikes_to_probe,
             mode=mode, ext_min=ext_min, ext_max=ext_max,
             selection_criterion=selection_criterion, value_target=value_target,
-            spread_cfg=spread_cfg, exit_time=overnight_exit_time,
+            spread_cfg=spread_cfg, exit_time=overnight_exit_time, entry_at_ask=entry_at_ask,
         )
 
     under_full = downloader.underlying(ticker, date)
@@ -759,6 +760,7 @@ def run_next_iteration(
         selection_criterion=selection_criterion,
         value_target=value_target,
         spread_cfg=spread_cfg,
+        entry_at_ask=entry_at_ask,
     )
 
 
@@ -798,6 +800,7 @@ def run_overnight_1dte(
     spread_cfg: Optional[dict] = None,
     sell_date: Optional[str] = None,
     exit_time: Optional[time] = None,
+    entry_at_ask: bool = False,
 ) -> IterationResult:
     """DTE=1 (overnight): compra un contrato que VENCE el día hábil siguiente, en
     `date` a la hora de entrada, y lo vende el día hábil siguiente al `exit_time`
@@ -878,8 +881,20 @@ def run_overnight_1dte(
     else:
         put_pick, put_probes, put_tier = _empty, [], ""
 
-    call_entry = float(call_pick.opening_premium or 0.0)
-    put_entry = float(put_pick.opening_premium or 0.0)
+    def _ovn_entry(pick):
+        # entry_at_ask: pagar el ASK del NBBO al minuto de compra (fill realista).
+        if entry_at_ask and (pick.opening_premium or 0) > 0:
+            ask = pick.ask
+            if ask is None and pick.occ:
+                try:
+                    ask = downloader.option_quote(pick.occ, date, buy_ts).get("ask")
+                except Exception:
+                    ask = None
+            if ask and ask > 0:
+                return float(ask)
+        return float(pick.opening_premium or 0.0)
+    call_entry = _ovn_entry(call_pick)
+    put_entry = _ovn_entry(put_pick)
 
     def _sell_premium(occ: str) -> Optional[float]:
         if not occ:
@@ -975,6 +990,7 @@ def _run_one_iteration(
     selection_criterion: str = "itm",
     value_target: float = 2.0,
     spread_cfg: Optional[dict] = None,
+    entry_at_ask: bool = False,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -1072,15 +1088,32 @@ def _run_one_iteration(
         if not _capped.empty:
             merged = _capped.reset_index(drop=True)
 
+    # Base de costo de entrada: 'open' del bar (default) o el ASK del NBBO al minuto de
+    # entrada (entry_at_ask=True → fill realista: pagás la oferta, no el último trade).
+    # Si el ask no está cacheado, se pide al vuelo; si no hay NBBO, cae al 'open'.
+    def _entry_prem(pick):
+        if entry_at_ask and (pick.opening_premium or 0) > 0:
+            ask = pick.ask
+            if ask is None and pick.occ:
+                try:
+                    ask = downloader.option_quote(pick.occ, date, start_ts).get("ask")
+                except Exception:
+                    ask = None
+            if ask and ask > 0:
+                return float(ask)
+        return float(pick.opening_premium or 0.0)
+    call_entry = _entry_prem(call_pick)
+    put_entry = _entry_prem(put_pick)
+
     # Cálculo de % por leg. Si la pierna fue "skip" (opening_premium == 0),
     # forzamos pct = 0 para evitar división por cero y para que no contamine
-    # el total ni los triggers.
+    # el total ni los triggers. La BASE es call_entry/put_entry (ask si entry_at_ask).
     if call_pick.opening_premium > 0:
-        pct_call = (merged["call_px"] - call_pick.opening_premium) / call_pick.opening_premium
+        pct_call = (merged["call_px"] - call_entry) / call_entry
     else:
         pct_call = pd.Series(0.0, index=merged.index)
     if put_pick.opening_premium > 0:
-        pct_put = (merged["put_px"] - put_pick.opening_premium) / put_pick.opening_premium
+        pct_put = (merged["put_px"] - put_entry) / put_entry
     else:
         pct_put = pd.Series(0.0, index=merged.index)
     # pct_total = ROI real sobre el capital invertido (ponderado por inversión por leg).
@@ -1217,7 +1250,7 @@ def _run_one_iteration(
 
     merged["call_strike"] = call_pick.strike
     merged["put_strike"] = put_pick.strike
-    initial_total = float(call_pick.opening_premium + put_pick.opening_premium)
+    initial_total = float(call_entry + put_entry)
     merged["pnl_acum"] = merged["total"] - initial_total
 
     idx_max = int(merged["total"].idxmax())
@@ -1240,8 +1273,8 @@ def _run_one_iteration(
         put_strike=put_pick.strike,
         call_occ=call_pick.occ,
         put_occ=put_pick.occ,
-        call_entry_premium=float(call_pick.opening_premium),
-        put_entry_premium=float(put_pick.opening_premium),
+        call_entry_premium=float(call_entry),
+        put_entry_premium=float(put_entry),
         call_exit_premium=float(merged.iloc[-1]["call_px"]),
         put_exit_premium=float(merged.iloc[-1]["put_px"]),
         initial_total=initial_total,

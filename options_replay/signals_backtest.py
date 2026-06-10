@@ -45,7 +45,8 @@ def premium_range(ticker: str):
 
 
 def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.0,
-            stop_pct: float = -100.0, spread_cfg=None, iteration_idx: int = 1) -> dict:
+            stop_pct: float = -100.0, spread_cfg=None, iteration_idx: int = 1,
+            entry_at_ask: bool = False) -> dict:
     """Corre 1 iteración. `spec` admite 'ticker' o 'symbol', más 'fecha', 'hora', 'tipo'.
     NO usa st.* → seguro en hilos. Devuelve dict con status/iteration/error + datos base."""
     ticker = str(spec.get("ticker") or spec.get("symbol") or "").upper().strip()
@@ -74,6 +75,7 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             exit_threshold_pct=float(umbral_pct) / 100.0, exit_metric="total",
             stop_loss_pct=float(stop_pct) / 100.0, iteration_idx=int(iteration_idx), mode=mode,
             ext_min=lo, ext_max=hi, selection_criterion="spread", dte=0, spread_cfg=spread_cfg,
+            entry_at_ask=entry_at_ask,
         )
         return {**base, "status": "ok", "iteration": it, "error": None}
     except NoMatchError as e:
