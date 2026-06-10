@@ -744,6 +744,10 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         "Entrar al ASK (fill realista)", value=False, key="sig_entry_ask",
         help="Entra al ASK del NBBO (lo que pagás de verdad) en vez del 'open' del último "
              "trade. Más realista en 0DTE barato; no cambia el strike, solo el costo de entrada.")
+    _sig_exit_bid = st.checkbox(
+        "Salir al BID (fill realista)", value=False, key="sig_exit_bid",
+        help="Cierra al BID del NBBO (lo que REALMENTE cobrás). Con 'Entrar al ASK' = costo "
+             "round-trip completo del spread.")
 
     _specs = []
     for _, _r in _ed.iterrows():
@@ -767,7 +771,7 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
             _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, _scfg, _i,
-                                _sig_entry_ask)
+                                _sig_entry_ask, _sig_exit_bid)
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):
@@ -1307,6 +1311,11 @@ with st.sidebar.container(border=True):
               "verdad) en vez del 'open' del último trade. Más conservador/realista, "
               "sobre todo en 0DTE barato. NO cambia el strike elegido, solo el costo de "
               "entrada → el ROI baja ~medio spread."))
+    exit_at_bid = st.checkbox(
+        "Salir al BID (fill realista)", value=False, key="exit_at_bid_param",
+        help=("El backtest cierra al BID del NBBO al minuto de salida (lo que REALMENTE "
+              "cobrás) en vez del precio del bar. Junto con 'Entrar al ASK' da el costo "
+              "round-trip COMPLETO del spread."))
 
     # Info del modo overnight (DTE=1).
     if _is_dte1:
@@ -1853,6 +1862,7 @@ if btn_iniciar:
                         overnight_exit_time=horario_salida,
                         spread_cfg=_spread_cfg,
                         entry_at_ask=entry_at_ask,
+                        exit_at_bid=exit_at_bid,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -1977,6 +1987,7 @@ if btn_iniciar:
                         overnight_exit_time=horario_salida,
                         spread_cfg=_spread_cfg,
                         entry_at_ask=entry_at_ask,
+                        exit_at_bid=exit_at_bid,
                     )
                     _exp = it.end_dt.strftime("%Y-%m-%d") if dte == 1 else expiry
                     return {"status": "ok", "run": {
@@ -2164,6 +2175,7 @@ elif btn_proxima:
                         overnight_exit_time=horario_salida,
                         spread_cfg=_spread_cfg,
                         entry_at_ask=entry_at_ask,
+                        exit_at_bid=exit_at_bid,
                     )
                 except NoMatchError as e:
                     st.error(str(e))

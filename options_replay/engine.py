@@ -690,6 +690,7 @@ def run_next_iteration(
     overnight_exit_time: Optional[time] = None,
     spread_cfg: Optional[dict] = None,
     entry_at_ask: bool = False,
+    exit_at_bid: bool = False,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -714,6 +715,7 @@ def run_next_iteration(
             mode=mode, ext_min=ext_min, ext_max=ext_max,
             selection_criterion=selection_criterion, value_target=value_target,
             spread_cfg=spread_cfg, exit_time=overnight_exit_time, entry_at_ask=entry_at_ask,
+            exit_at_bid=exit_at_bid,
         )
 
     under_full = downloader.underlying(ticker, date)
@@ -761,6 +763,7 @@ def run_next_iteration(
         value_target=value_target,
         spread_cfg=spread_cfg,
         entry_at_ask=entry_at_ask,
+        exit_at_bid=exit_at_bid,
     )
 
 
@@ -801,6 +804,7 @@ def run_overnight_1dte(
     sell_date: Optional[str] = None,
     exit_time: Optional[time] = None,
     entry_at_ask: bool = False,
+    exit_at_bid: bool = False,
 ) -> IterationResult:
     """DTE=1 (overnight): compra un contrato que VENCE el día hábil siguiente, en
     `date` a la hora de entrada, y lo vende el día hábil siguiente al `exit_time`
@@ -899,6 +903,13 @@ def run_overnight_1dte(
     def _sell_premium(occ: str) -> Optional[float]:
         if not occ:
             return 0.0
+        if exit_at_bid:   # venta al BID del NBBO al minuto de salida (lo que cobrás)
+            try:
+                _b = downloader.option_quote(occ, sell_date, sell_ts).get("bid")
+            except Exception:
+                _b = None
+            if _b is not None and _b >= 0:
+                return float(_b)
         sb = downloader.option(occ, sell_date)
         if sb.empty:
             return None
@@ -991,6 +1002,7 @@ def _run_one_iteration(
     value_target: float = 2.0,
     spread_cfg: Optional[dict] = None,
     entry_at_ask: bool = False,
+    exit_at_bid: bool = False,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -1247,6 +1259,22 @@ def _run_one_iteration(
             merged = merged.iloc[: trigger_pos + 1].reset_index(drop=True)
         else:
             merged = merged.reset_index(drop=True)
+
+    # exit_at_bid: la venta se realiza al BID del NBBO al minuto de salida (lo que
+    # REALMENTE cobrás), no al precio del bar. Ajusta SOLO la última fila (la salida);
+    # el resto de la serie queda en precio de bar (el trigger ya se detectó arriba).
+    if exit_at_bid and not merged.empty:
+        _exit_ts = merged["timestamp"].iloc[-1]
+        _last = merged.index[-1]
+        for _col, _pick in (("call_px", call_pick), ("put_px", put_pick)):
+            if (_pick.opening_premium or 0) > 0 and _pick.occ:
+                try:
+                    _bid = downloader.option_quote(_pick.occ, date, _exit_ts).get("bid")
+                except Exception:
+                    _bid = None
+                if _bid is not None and _bid >= 0:
+                    merged.loc[_last, _col] = float(_bid)
+        merged.loc[_last, "total"] = float(merged.loc[_last, "call_px"] + merged.loc[_last, "put_px"])
 
     merged["call_strike"] = call_pick.strike
     merged["put_strike"] = put_pick.strike
