@@ -160,9 +160,19 @@ if st.session_state.get("_sig_sort_prev") != _sort_opt:
     st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
 
 _sel_ids = st.session_state.get("bt_selected_ids", set())
+# Base de "Selección" CONSTANTE por versión de grilla (_sig_ed_v). Si se re-sembrara
+# desde bt_selected_ids en CADA run, el st.data_editor se pelea con su propio output
+# (aplica/poda sus edits sobre un base movedizo) → la marca se "cae" sola al clickear.
+# Tomamos UN snapshot por key; el widget acumula los clicks encima. Al bumpear la key
+# (orden/Ver/limpiar) se re-snapshotea desde bt_selected_ids (que ya quedó guardado).
+_snap_key = f"_sig_sel_snap_{st.session_state.get('_sig_ed_v', 0)}"
+_snap = st.session_state.get(_snap_key)
+if _snap is None or len(_snap) != len(fdf):
+    _snap = [str(fdf.iloc[i]["id"]) in _sel_ids for i in range(len(fdf))]
+    st.session_state[_snap_key] = _snap
 _show = pd.DataFrame({
-    # "Selección" (1ª columna): elegir alertas para backtest (persiste entre reruns).
-    "Selección": [str(fdf.iloc[i]["id"]) in _sel_ids for i in range(len(fdf))],
+    # "Selección" (1ª columna): base constante (snapshot); el widget guarda los clicks.
+    "Selección": list(_snap),
     "Acción": fdf["symbol"].values,
     "Hora": fdf["hora"].values,
     "Fecha": fdf["fecha"].values,
@@ -222,6 +232,7 @@ else:
             {"symbol": str(r["symbol"]), "fecha": str(r["fecha"]), "hora": str(r["hora"]),
              "tipo": str(r["tipo"])} for _, r in _sel_df.iterrows()]
         st.session_state.pop("bt_selected_ids", None)
+        st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
         st.switch_page("options_replay/app.py")
     if _bk2.button("🗑 Limpiar selección", use_container_width=True):
         st.session_state.pop("bt_selected_ids", None)
