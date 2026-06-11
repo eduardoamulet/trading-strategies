@@ -7,9 +7,9 @@ servidor. Consistente con live_trader.
 DB en data/signals.db (gitignored). Dedup en DOS niveles para que reimportar (o
 mezclar fuentes) NO duplique ni pise tus ediciones locales (estado/ganancia/notas):
   1) PRIMARY KEY `id` (token del gráfico) — INSERT OR IGNORE.
-  2) CONTENIDO (symbol·tipo·estrategia_raw·fecha·hora) — si ya existe una señal con
-     el mismo contenido, se omite aunque traiga otro `id` (p.ej. la URL de la imagen
-     del email cambia entre envíos y generaría un id distinto).
+  2) IDENTIDAD (ticker·estrategia·fecha·hora = symbol·estrategia_raw·fecha·hora) — si
+     ya existe una señal con esa identidad, se omite aunque traiga otro `id` (p.ej. la
+     URL de la imagen del email cambia entre envíos y generaría un id distinto).
 """
 from __future__ import annotations
 
@@ -63,8 +63,9 @@ def init_db() -> None:
             """
         )
         con.execute("CREATE INDEX IF NOT EXISTS ix_alerts_fecha ON alerts(fecha)")
-        con.execute("CREATE INDEX IF NOT EXISTS ix_alerts_content "
-                    "ON alerts(symbol, tipo, estrategia_raw, fecha, hora)")
+        con.execute("DROP INDEX IF EXISTS ix_alerts_content")  # versión vieja (incluía tipo)
+        con.execute("CREATE INDEX IF NOT EXISTS ix_alerts_uniq "
+                    "ON alerts(symbol, estrategia_raw, fecha, hora)")
         try:  # migración para DBs viejas
             con.execute("ALTER TABLE alerts ADD COLUMN criterios_json TEXT")
         except sqlite3.OperationalError:
@@ -87,8 +88,8 @@ def upsert_signals(df: pd.DataFrame) -> int:
     """Inserta SOLO las señales nuevas. Devuelve cuántas son NUEVAS. Una señal se
     considera repetida (y se OMITE) si:
       - ya existe su `id` (PRIMARY KEY), o
-      - ya existe otra con el MISMO contenido (symbol·tipo·estrategia_raw·fecha·hora),
-        aunque tenga un `id` distinto.
+      - ya existe otra con la misma IDENTIDAD: ticker·estrategia·fecha·hora
+        (symbol·estrategia_raw·fecha·hora), aunque tenga un `id` distinto.
     Las existentes no se pisan (preserva tus ediciones de estado/ganancia)."""
     if df is None or df.empty:
         return 0
@@ -96,12 +97,13 @@ def upsert_signals(df: pd.DataFrame) -> int:
     inserted = 0
     with _conn() as con:
         for _, r in df.iterrows():
-            # Dedup por CONTENIDO: misma señal con otro id (p.ej. la imagen del email
-            # cambió de URL) → no la duplicamos. `IS` compara NULL de forma segura.
+            # Dedup por IDENTIDAD (ticker·estrategia·fecha·hora): misma señal con otro id
+            # (p.ej. la imagen del email cambió de URL) → no la duplicamos. `IS` compara
+            # NULL de forma segura.
             dup = con.execute(
-                "SELECT 1 FROM alerts WHERE symbol IS ? AND tipo IS ? AND "
-                "estrategia_raw IS ? AND fecha IS ? AND hora IS ? LIMIT 1",
-                (_na(r.get("symbol")), _na(r.get("tipo")), _na(r.get("estrategia_raw")),
+                "SELECT 1 FROM alerts WHERE symbol IS ? AND estrategia_raw IS ? "
+                "AND fecha IS ? AND hora IS ? LIMIT 1",
+                (_na(r.get("symbol")), _na(r.get("estrategia_raw")),
                  _na(r.get("fecha")), _na(r.get("hora"))),
             ).fetchone()
             if dup is not None:
@@ -119,10 +121,10 @@ def upsert_signals(df: pd.DataFrame) -> int:
 
 
 def dedupe_existing() -> int:
-    """Borra duplicados YA presentes en la base por contenido (symbol·tipo·
-    estrategia_raw·fecha·hora). Conserva 1 por grupo, priorizando la que tenga estado
-    editado (≠ 'Por definir') y/o ganancia ≠ 0; desempata por importación más vieja.
-    Devuelve cuántas filas borró. (Para limpiar lo que entró duplicado antes del fix.)"""
+    """Borra duplicados YA presentes en la base por IDENTIDAD (ticker·estrategia·fecha·
+    hora = symbol·estrategia_raw·fecha·hora). Conserva 1 por grupo, priorizando la que
+    tenga estado editado (≠ 'Por definir') y/o ganancia ≠ 0; desempata por importación
+    más vieja. Devuelve cuántas filas borró."""
     init_db()
     with _conn() as con:
         cur = con.execute(
@@ -130,7 +132,7 @@ def dedupe_existing() -> int:
             DELETE FROM alerts WHERE id IN (
                 SELECT id FROM (
                     SELECT id, ROW_NUMBER() OVER (
-                        PARTITION BY symbol, tipo, estrategia_raw, fecha, hora
+                        PARTITION BY symbol, estrategia_raw, fecha, hora
                         ORDER BY
                           (CASE WHEN estado IS NOT NULL AND estado <> 'Por definir' THEN 0 ELSE 1 END),
                           (CASE WHEN ganancia IS NOT NULL AND ganancia <> 0 THEN 0 ELSE 1 END),
