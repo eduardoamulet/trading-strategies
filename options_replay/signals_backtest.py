@@ -18,7 +18,8 @@ from pathlib import Path as _Path
 
 import pandas as pd
 
-from engine import NoMatchError, run_next_iteration, validate_0dte_session
+from engine import (NoMatchError, run_next_iteration, run_overnight_1dte,
+                    validate_0dte_session)
 
 _HERE = _Path(__file__).parent
 _TI_PATH = _HERE / "ticker_info.json"
@@ -56,7 +57,8 @@ _TIPO_MODE = {
 
 def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.0,
             stop_pct: float = -100.0, spread_cfg=None, iteration_idx: int = 1,
-            entry_at_ask: bool = False, exit_at_bid: bool = False) -> dict:
+            entry_at_ask: bool = False, exit_at_bid: bool = False,
+            auto_dte: bool = False) -> dict:
     """Corre 1 iteración. `spec` admite 'ticker' o 'symbol', más 'fecha', 'hora', 'tipo'.
     NO usa st.* → seguro en hilos. Devuelve dict con status/iteration/error + datos base."""
     ticker = str(spec.get("ticker") or spec.get("symbol") or "").upper().strip()
@@ -84,21 +86,42 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
     order_ts = to_ts(fecha, entry)
     day_end_ts = to_ts(fecha, _time(16, 0)) - pd.Timedelta(minutes=1)
     try:
-        validate_0dte_session(dl, ticker, fecha)
-        _umb = float(umbral_pct) / 100.0
-        _stp = float(stop_pct) / 100.0
-        # 'plus': ambas piernas se venden a más tardar a las 16:00 (Horario de salida).
-        _plus_time = _time(16, 0) if mode in ("both_plus", "call_or_put_plus") else None
-        it = run_next_iteration(
-            dl, ticker, fecha, lo, hi, inv_call, inv_put, order_ts, day_end_ts,
-            exit_threshold_pct=_umb, exit_metric="total", stop_loss_pct=_stp,
-            iteration_idx=int(iteration_idx), mode=mode,
-            ext_min=lo, ext_max=hi, selection_criterion="spread", dte=0, spread_cfg=spread_cfg,
-            entry_at_ask=entry_at_ask, exit_at_bid=exit_at_bid,
-            call_exit_threshold_pct=_umb, call_stop_loss_pct=_stp,
-            put_exit_threshold_pct=_umb, put_stop_loss_pct=_stp,
-            exit_plus_threshold_pct=_umb, exit_plus_time=_plus_time,
-        )
+        # Auto-DTE: si NO hay 0DTE para la fecha (ticker semanal en día no-viernes), usar
+        # el vencimiento más cercano → compra `fecha`, vende a ese vencimiento (estilo DTE=1).
+        _ovn_sell = None
+        if auto_dte:
+            try:
+                _ne = dl.nearest_expiry(ticker, fecha)
+            except Exception:
+                _ne = None
+            if _ne is None:
+                return {**base, "status": "error", "iteration": None,
+                        "error": f"sin vencimientos disponibles para {ticker} en/desde {fecha} "
+                                 "(data reciente todavía no cargada en Polygon)"}
+            if _ne != fecha:
+                _ovn_sell = _ne   # no hay 0DTE ese día → vencimiento más cercano
+        if _ovn_sell is not None:
+            it = run_overnight_1dte(
+                dl, ticker, fecha, lo, hi, inv_call, inv_put, order_ts,
+                iteration_idx=int(iteration_idx), mode=mode, ext_min=lo, ext_max=hi,
+                selection_criterion="spread", spread_cfg=spread_cfg, sell_date=_ovn_sell,
+                exit_time=_time(16, 0), entry_at_ask=entry_at_ask, exit_at_bid=exit_at_bid)
+        else:
+            validate_0dte_session(dl, ticker, fecha)
+            _umb = float(umbral_pct) / 100.0
+            _stp = float(stop_pct) / 100.0
+            # 'plus': ambas piernas se venden a más tardar a las 16:00 (Horario de salida).
+            _plus_time = _time(16, 0) if mode in ("both_plus", "call_or_put_plus") else None
+            it = run_next_iteration(
+                dl, ticker, fecha, lo, hi, inv_call, inv_put, order_ts, day_end_ts,
+                exit_threshold_pct=_umb, exit_metric="total", stop_loss_pct=_stp,
+                iteration_idx=int(iteration_idx), mode=mode,
+                ext_min=lo, ext_max=hi, selection_criterion="spread", dte=0, spread_cfg=spread_cfg,
+                entry_at_ask=entry_at_ask, exit_at_bid=exit_at_bid,
+                call_exit_threshold_pct=_umb, call_stop_loss_pct=_stp,
+                put_exit_threshold_pct=_umb, put_stop_loss_pct=_stp,
+                exit_plus_threshold_pct=_umb, exit_plus_time=_plus_time,
+            )
         return {**base, "status": "ok", "iteration": it, "error": None}
     except NoMatchError as e:
         return {**base, "status": "error", "iteration": None,

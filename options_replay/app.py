@@ -774,6 +774,11 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         "Salir al BID (fill realista)", value=False, key="sig_exit_bid",
         help="Cierra al BID del NBBO (lo que REALMENTE cobrás). Con 'Entrar al ASK' = costo "
              "round-trip completo del spread.")
+    _sig_auto_dte = st.checkbox(
+        "Auto-DTE (semanales → vencimiento más cercano)", value=False, key="sig_auto_dte",
+        help="Si la señal cae en un día SIN 0DTE (tickers de vencimiento semanal en día "
+             "no-viernes), usa el vencimiento más cercano: compra ese día y vende a ese "
+             "vencimiento (estilo DTE=1, exit=overnight_1dte). Evita el error 'No 0 DTE'.")
 
     _specs = []
     for _, _r in _ed.iterrows():
@@ -797,7 +802,7 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
             _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, _scfg, _i,
-                                _sig_entry_ask, _sig_exit_bid)
+                                _sig_entry_ask, _sig_exit_bid, _sig_auto_dte)
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):
