@@ -1420,77 +1420,17 @@ with st.sidebar.container(border=True):
 
     _mode_map = {"call_only": "Sólo CALL", "put_only": "Sólo PUT", "both": "CALL y PUT"}
 
-    # La "Tendencia del mercado" SOLO aplica en single-day (deriva los parámetros del
-    # día). En "Rango de fechas" no se usa → se fija en 50% y se OCULTA todo el bloque.
+    # "Tendencia del mercado": el WIDGET (slider) se renderiza MÁS ABAJO (después del Tipo
+    # de operación, antes de Inversión). Acá solo LEEMOS su valor guardado (key 'manual_prob')
+    # para derivar los parámetros del día y auto-aplicarlos antes de esos widgets. En
+    # "Rango de fechas" no aplica → tendencia neutral (50%) y sin widget.
     if not is_range:
-        st.markdown(
-            "<p style='font-weight:bold; margin: 0.5rem 0 0.2rem 0;'>Tendencia del mercado</p>",
-            unsafe_allow_html=True,
-        )
-        # Slider (izquierda) + box (derecha) en la misma fila.
-        _c_slider, _c_box = st.columns([3, 2], vertical_alignment="center")
-        manual_prob = int(_c_slider.slider(
-            "Tendencia del mercado", min_value=0, max_value=100, value=50, step=5,
-            key="manual_prob", label_visibility="collapsed",
-            help=("Movés la tendencia alcista a mano (de 5 en 5). De este valor se derivan "
-                  "Modo, CALL%, PUT% y Umbral ROI de los Parámetros por iteración."),
-        ))
-        _prob_label, _prob_color, _box_bg, _box_border = _classify_prob(manual_prob, _predictor_cfg)
-        _params = adjust_trading_parameters(manual_prob, _predictor_cfg)
-        _mode_lbl = _mode_map[_params["mode"]]
-
-        # Barra de ZONAS debajo del slider: un segmento por categoría, con el color
-        # VIVO (saturado) de cada categoría.
-        _zones = [
-            (r["min"], r["max"], r["color"])
-            for r in _predictor_cfg.get("classification_ranges", [])
-        ]
-        _segs = "".join(
-            f"<div style='flex:1; background:{c}; height:7px;' title='{lo}–{hi}'></div>"
-            for lo, hi, c in _zones
-        )
-        _c_slider.markdown(
-            f"<div style='display:flex; gap:1px; border-radius:3px; overflow:hidden; margin-top:-6px;'>{_segs}</div>"
-            "<div style='display:flex; justify-content:space-between; font-size:0.6rem; color:#000; font-weight:normal; margin-top:1px;'>"
-            "<span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span></div>",
-            unsafe_allow_html=True,
-        )
-
-        # Slider "Tendencia del mercado": relleno = color del rango (_prob_color, stop
-        # en manual_prob%); bola y número negro. Selector estructural verificado contra
-        # el DOM (en esta versión NO existe stSliderTrack; el relleno es un div con
-        # background-image: linear-gradient). Scope al sidebar.
-        _fill = (
-            f"linear-gradient(to right,{_prob_color} 0%,{_prob_color} {manual_prob}%,"
-            f"rgba(151,166,195,0.25) {manual_prob}%,rgba(151,166,195,0.25) 100%)"
-        )
-        st.markdown(
-            "<style>"
-            "section[data-testid='stSidebar'] [data-baseweb='slider'] "
-            "> div:nth-child(1) > div:nth-child(1) > div:nth-child(2)"
-            f"{{background-image:{_fill} !important;}}"
-            "section[data-testid='stSidebar'] [data-baseweb='slider'] [role='slider']"
-            "{background-color:#000 !important; border-color:#000 !important;}"
-            "section[data-testid='stSidebar'] [data-testid='stSliderThumbValue']"
-            "{color:#000 !important;}"
-            "</style>",
-            unsafe_allow_html=True,
-        )
-
-        # Box color-coded (fondo claro + borde fino y texto oscuro) a la derecha del slider.
-        _c_box.markdown(
-            f"<div style='text-align:center; padding:0.55rem 0.6rem; background:{_box_bg}; "
-            f"border:1px solid {_box_border}; border-radius:0.5rem;'>"
-            f"<div style='font-size:1.6rem; font-weight:700; color:{_box_border}; line-height:1;'>{manual_prob}%</div>"
-            f"<div style='font-size:0.7rem; font-weight:600; color:{_box_border}; margin-top:0.2rem;'>{_prob_label}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+        st.session_state.setdefault("manual_prob", 50)
+        manual_prob = int(st.session_state.get("manual_prob", 50))
     else:
-        # Rango de fechas: tendencia fija en 50% (NEUTRAL) y oculta.
         manual_prob = 50
-        _params = adjust_trading_parameters(manual_prob, _predictor_cfg)
-        _mode_lbl = _mode_map[_params["mode"]]
+    _params = adjust_trading_parameters(manual_prob, _predictor_cfg)
+    _mode_lbl = _mode_map[_params["mode"]]
 
     # El aviso de "Modo rango" se muestra como tooltip ⓘ en el header
     # "Parámetros por iteración" (más abajo), solo cuando is_range.
@@ -1607,6 +1547,61 @@ with st.sidebar.container(border=True):
                                  "total**. Termina ahí o al cierre del día.",
         }
         st.info(_MODE_DESC.get(_straddle_mode, ""))
+
+        # "Tendencia del mercado" (widget) — solo single-day. Su valor (key 'manual_prob')
+        # alimenta los Parámetros por iteración, que ya se auto-aplicaron arriba. Va acá,
+        # entre la descripción del Tipo de operación y la Inversión, por pedido.
+        if not is_range:
+            st.markdown(
+                "<p style='font-weight:bold; margin: 0.5rem 0 0.2rem 0;'>Tendencia del mercado</p>",
+                unsafe_allow_html=True,
+            )
+            _prob_label, _prob_color, _box_bg, _box_border = _classify_prob(manual_prob, _predictor_cfg)
+            _c_slider, _c_box = st.columns([3, 2], vertical_alignment="center")
+            _c_slider.slider(
+                "Tendencia del mercado", min_value=0, max_value=100, step=5,
+                key="manual_prob", label_visibility="collapsed",
+                help=("Movés la tendencia alcista a mano (de 5 en 5). De este valor se derivan "
+                      "Modo, CALL%, PUT% y Umbral ROI de los Parámetros por iteración."),
+            )
+            _zones = [
+                (r["min"], r["max"], r["color"])
+                for r in _predictor_cfg.get("classification_ranges", [])
+            ]
+            _segs = "".join(
+                f"<div style='flex:1; background:{c}; height:7px;' title='{lo}–{hi}'></div>"
+                for lo, hi, c in _zones
+            )
+            _c_slider.markdown(
+                f"<div style='display:flex; gap:1px; border-radius:3px; overflow:hidden; margin-top:-6px;'>{_segs}</div>"
+                "<div style='display:flex; justify-content:space-between; font-size:0.6rem; color:#000; font-weight:normal; margin-top:1px;'>"
+                "<span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span></div>",
+                unsafe_allow_html=True,
+            )
+            _fill = (
+                f"linear-gradient(to right,{_prob_color} 0%,{_prob_color} {manual_prob}%,"
+                f"rgba(151,166,195,0.25) {manual_prob}%,rgba(151,166,195,0.25) 100%)"
+            )
+            st.markdown(
+                "<style>"
+                "section[data-testid='stSidebar'] [data-baseweb='slider'] "
+                "> div:nth-child(1) > div:nth-child(1) > div:nth-child(2)"
+                f"{{background-image:{_fill} !important;}}"
+                "section[data-testid='stSidebar'] [data-baseweb='slider'] [role='slider']"
+                "{background-color:#000 !important; border-color:#000 !important;}"
+                "section[data-testid='stSidebar'] [data-testid='stSliderThumbValue']"
+                "{color:#000 !important;}"
+                "</style>",
+                unsafe_allow_html=True,
+            )
+            _c_box.markdown(
+                f"<div style='text-align:center; padding:0.55rem 0.6rem; background:{_box_bg}; "
+                f"border:1px solid {_box_border}; border-radius:0.5rem;'>"
+                f"<div style='font-size:1.6rem; font-weight:700; color:{_box_border}; line-height:1;'>{manual_prob}%</div>"
+                f"<div style='font-size:0.7rem; font-weight:600; color:{_box_border}; margin-top:0.2rem;'>{_prob_label}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
         # -------- Bloque Inversión: total + %-split + $-split (bidireccional) --------
         # Source of truth en session_state. Callbacks mantienen % y $ sincronizados
