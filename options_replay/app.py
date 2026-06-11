@@ -704,9 +704,20 @@ def _render_sig_results(results, elapsed, partial=False):
 # Señales handed-off desde Alertas (una sola vez): siembran el editor y lo abren.
 _handoff = st.session_state.pop("bt_signals_handoff", None)
 if _handoff:
+    def _norm_hora(h):
+        # Alertas de antes de las 09:00 (pre-market) → entrada por defecto a 09:30
+        # (apertura), así el backtest 0DTE tiene datos. Las demás quedan igual.
+        s = str(h or "").strip()
+        try:
+            _hh, _mm = s.split(":")[:2]
+            if (int(_hh), int(_mm)) < (9, 0):
+                return "09:30"
+        except Exception:
+            pass
+        return s
     st.session_state["bt_iters"] = [
         {"Ticker": str(s.get("symbol") or s.get("ticker") or "").upper(),
-         "Fecha": str(s.get("fecha") or ""), "Hora": str(s.get("hora") or ""),
+         "Fecha": str(s.get("fecha") or ""), "Hora": _norm_hora(s.get("hora")),
          "Tipo": str(s.get("tipo") or "").upper(),
          "% Cumpl.": s.get("prob")} for s in _handoff]
     st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del data_editor
