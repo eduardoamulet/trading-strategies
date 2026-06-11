@@ -310,16 +310,43 @@ if st.button("🛑 KILL SWITCH — cerrar todo y desarmar", use_container_width=
 # ===========================================================================
 # Historial + audit
 # ===========================================================================
-with st.expander("📜 Historial de posiciones cerradas"):
-    closed = [p for p in store.all_positions() if p["status"] == "closed"]
-    if closed:
-        import pandas as pd
-        st.dataframe(pd.DataFrame(closed)[
-            ["underlying", "occ", "qty", "entry_price", "exit_price",
-             "roi_final", "pnl_net", "entry_time", "exit_time"]
-        ], use_container_width=True)
-    else:
-        st.caption("Sin posiciones cerradas todavía.")
+st.header("3 · Reporte de operaciones (paper)")
+closed = [p for p in store.all_positions() if p["status"] == "closed"]
+if not closed:
+    st.caption("Sin operaciones cerradas todavía. Cuando el daemon venda una posición "
+               "(o la cierres a mano), el reporte aparece acá.")
+else:
+    import pandas as pd
+
+    def _f(v, d=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return d
+
+    _n = len(closed)
+    _pnl_tot = sum(_f(p.get("pnl_net")) for p in closed)
+    _wins = sum(1 for p in closed if _f(p.get("pnl_net")) > 0)
+    _avg_roi = sum(_f(p.get("roi_final")) for p in closed) / _n
+    _mc = st.columns(4)
+    _mc[0].metric("Operaciones", _n)
+    _mc[1].metric("P&L total", f"${_pnl_tot:+,.2f}")
+    _mc[2].metric("Ganadoras", f"{_wins}/{_n}")
+    _mc[3].metric("ROI promedio", f"{_avg_roi:+.1f}%")
+
+    _rep = pd.DataFrame([{
+        "Cerrada": str(p.get("exit_time") or "")[:19].replace("T", " "),
+        "Contrato": f"{p['underlying']} · {p['occ']}",
+        "Cant.": int(_f(p.get("qty"))),
+        "Compra": f"${_f(p.get('entry_price')):.2f}",
+        "Venta": f"${_f(p.get('exit_price')):.2f}",
+        "ROI": f"{_f(p.get('roi_final')):+.1f}%",
+        "P&L": f"${_f(p.get('pnl_net')):+,.2f}",
+        "Objetivo": f"{_f(p.get('roi_target_pct')):.0f}%",
+    } for p in sorted(closed, key=lambda p: str(p.get("exit_time") or ""), reverse=True)])
+    st.dataframe(_rep, hide_index=True, use_container_width=True)
+    st.caption("Entorno **SANDBOX** (paper). Compra/Venta = precio de ejecución por contrato · "
+               "P&L = ganancia/pérdida total de la operación · Objetivo = Umbral de ROI configurado.")
 
 with st.expander("🔍 Audit log (últimos 50 eventos)"):
     import pandas as pd
