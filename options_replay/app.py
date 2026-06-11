@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
@@ -2511,6 +2512,74 @@ def render_ops_report(it: IterationResult):
     )
 
 
+_LWC_TF = {"1m": None, "5m": "5min", "15m": "15min", "30m": "30min", "1h": "60min"}
+
+
+def _render_lwc_chart(dl, ticker: str, date: str, hora: str, tf: str, key: str) -> None:
+    """Velas del subyacente con TradingView Lightweight Charts (open-source), usando
+    NUESTROS datos (Polygon), a la temporalidad `tf`, ENFOCADO en `hora` (HH:MM ET).
+    Los datos van embebidos (no salen a ningún servicio externo)."""
+    import json as _j
+    try:
+        under = dl.underlying(ticker, date)
+    except Exception as e:  # noqa: BLE001
+        st.warning(f"No pude traer datos de {ticker} {date}: {e}")
+        return
+    if under is None or under.empty or "open" not in under.columns:
+        st.warning(f"Sin barras de subyacente para {ticker} {date} (¿ya están en cache?).")
+        return
+    df = under.copy()
+    df = df.set_index(pd.DatetimeIndex(df["timestamp"]))
+    rule = _LWC_TF.get(tf)
+    cols = ["open", "high", "low", "close"]
+    if rule:
+        ohlc = df.resample(rule, label="left", closed="left").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+    else:
+        ohlc = df[cols].dropna()
+    if ohlc.empty:
+        st.warning("Sin barras para esa temporalidad.")
+        return
+    # time = wall-clock ET interpretado como UTC → LWC (que muestra UTC) dibuja la hora ET.
+    bars = []
+    for ts, r in ohlc.iterrows():
+        et = ts.tz_convert("America/New_York") if ts.tzinfo else ts
+        u = int(pd.Timestamp(et.strftime("%Y-%m-%d %H:%M:%S"), tz="UTC").timestamp())
+        bars.append({"time": u, "open": round(float(r["open"]), 4), "high": round(float(r["high"]), 4),
+                     "low": round(float(r["low"]), 4), "close": round(float(r["close"]), 4)})
+    try:
+        hh, mm = str(hora).split(":")[:2]
+        center = pd.Timestamp(f"{date} {int(hh):02d}:{int(mm):02d}:00", tz="UTC")
+    except Exception:
+        center = pd.Timestamp(f"{date} 12:00:00", tz="UTC")
+    _c = int(center.timestamp())
+    from_ts = int((center - pd.Timedelta(minutes=75)).timestamp())
+    to_ts = int((center + pd.Timedelta(minutes=75)).timestamp())
+    marker_ts = min(bars, key=lambda b: abs(b["time"] - _c))["time"]   # snap a una barra real
+    _html = f"""
+    <div id="lwc_{key}" style="height:420px;width:100%"></div>
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+      const bars = {_j.dumps(bars)};
+      const el = document.getElementById('lwc_{key}');
+      const chart = LightweightCharts.createChart(el, {{
+        autoSize: true, height: 420,
+        layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }},
+        grid: {{ vertLines: {{ color: '#1e222d' }}, horzLines: {{ color: '#1e222d' }} }},
+        timeScale: {{ timeVisible: true, secondsVisible: false, borderColor: '#2a2e39' }},
+        rightPriceScale: {{ borderColor: '#2a2e39' }},
+      }});
+      const s = chart.addCandlestickSeries({{ upColor: '#26a69a', downColor: '#ef5350',
+        borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' }});
+      s.setData(bars);
+      s.setMarkers([{{ time: {marker_ts}, position: 'aboveBar', color: '#facc15',
+                       shape: 'arrowDown', text: '{hora}' }}]);
+      chart.timeScale().setVisibleRange({{ from: {from_ts}, to: {to_ts} }});
+    </script>
+    """
+    components.html(_html, height=440)
+
+
 def render_iteration(it: IterationResult, ticker: str, date: str):
     # Subheader removido: la info ya está en el label del expander que envuelve esta función.
 
@@ -2751,10 +2820,24 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
             st.caption(f"Filas: {total_rows}")
             rows_to_show = total_rows
         table_height = 38 + 35 * max(min(rows_to_show, total_rows), 1)
-        # st.dataframe: mantiene ordenamiento al click en el header + búsqueda.
-        # El Styler centra las CELDAS (el grid no centra los headers, trade-off
-        # aceptado a cambio de conservar la interactividad).
-        st.dataframe(styled_df, use_container_width=True, height=table_height)
+        # st.dataframe conserva el formato del Styler + ordenamiento/búsqueda. La SELECCIÓN
+        # de filas (casillas a la izquierda) hace de "Ver Gráfico": al marcar un minuto se
+        # dibuja abajo el gráfico de esa zona (mismo ticker/fecha) a la temporalidad elegida.
+        _tf = st.selectbox(
+            "Temporalidad del gráfico", list(_LWC_TF.keys()), index=2, key=f"tf_{_key_suffix}",
+            help="Marcá una o más FILAS (minutos) con la casilla de la izquierda → se dibuja "
+                 "el gráfico de esa zona (mismo ticker/fecha) a esta temporalidad.")
+        _mev = st.dataframe(styled_df, use_container_width=True, height=table_height,
+                            on_select="rerun", selection_mode="multi-row",
+                            key=f"mtable_{_key_suffix}")
+        _msel = sorted(_mev.selection.rows) if (_mev and _mev.selection) else []
+        for _ri in _msel[:4]:   # hasta 4 gráficos a la vez (evita recargar de más)
+            _hora = str(display_df.iloc[_ri]["Minuto"])
+            st.markdown(f"**📈 Ver Gráfico — {ticker} · {date} · {_hora} · {_tf}**")
+            _render_lwc_chart(get_downloader(api_key), ticker, date, _hora, _tf,
+                              f"{_key_suffix}_{_ri}")
+        if len(_msel) > 4:
+            st.caption(f"Marcaste {len(_msel)} filas; muestro 4 gráficos para no recargar.")
 
     dc = st.columns(2)
     csv_bytes = display_df.to_csv(index=False).encode("utf-8")
