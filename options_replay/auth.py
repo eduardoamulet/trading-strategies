@@ -1,4 +1,4 @@
-"""Gate de autenticación para la Trading Suite.
+"""Gate de autenticación para SignalForge.
 
 - require_login(): si no hay sesión, muestra login (o el arranque para crear el primer
   admin si la base de usuarios está vacía) y FRENA la app. Devuelve el usuario logueado.
@@ -24,7 +24,8 @@ import users_db as udb  # noqa: E402
 def _login_form() -> None:
     _, c, _ = st.columns([1.5, 1, 1.5])   # centrado + estrecho
     with c:
-        st.markdown("## 🔐 Iniciar sesión")
+        st.markdown("## 🔨 SignalForge")
+        st.markdown("##### 🔐 Iniciar sesión")
         st.caption("Ingresá con tu email y contraseña.")
         with st.form("login_form"):
             email = st.text_input("Email")
@@ -41,7 +42,8 @@ def _login_form() -> None:
 def _bootstrap_admin() -> None:
     _, c, _ = st.columns([1.5, 1, 1.5])   # centrado + estrecho
     with c:
-        st.markdown("## 👋 Bienvenido")
+        st.markdown("## 🔨 SignalForge")
+        st.markdown("##### 👋 Bienvenido")
         st.caption("No hay usuarios todavía. Creá el primer usuario **administrador**.")
         with st.form("bootstrap_form"):
             nombre = st.text_input("Nombre")

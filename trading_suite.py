@@ -1,4 +1,4 @@
-"""Trading Suite — entry point con login + menú lateral (estilo Investep).
+"""SignalForge — entry point con login + menú lateral (estilo Investep).
 
 Flujo:
   1) Gate de autenticación (auth.require_login): si no hay sesión → login; si no hay
@@ -17,7 +17,8 @@ from pathlib import Path
 
 import streamlit as st
 
-st.set_page_config(page_title="Trading Suite", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="SignalForge", page_icon="🔨", layout="wide",
+                   initial_sidebar_state="expanded")
 
 # Ocultar SOLO el botón Deploy y el menú ⋮ de Streamlit (no toda la barra: si se
 # oculta stToolbar entero se pierde el control para re-expandir la barra lateral).
@@ -68,6 +69,7 @@ nav = {
 if user.get("rol") == "admin":
     nav["Administración"] = [usuarios]
 
+st.sidebar.markdown("## 🔨 SignalForge")
 pg = st.navigation(nav, position="sidebar")
 auth.top_user_menu(user, perfil)   # menú de usuario arriba a la derecha
 pg.run()
