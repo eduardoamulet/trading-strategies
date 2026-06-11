@@ -1,6 +1,6 @@
 """Página 'Activos / Acciones' — universo de tickers en vista de TARJETAS: grid de
-2 columnas (cada tarjeta a media anchura), badge ACTIVO, ESTADO (señal actual),
-búsqueda y paginación.
+4 columnas (tarjetas angostas), badge ACTIVO, ESTADO (señal actual), búsqueda y
+paginación.
 """
 from __future__ import annotations
 import json
@@ -75,17 +75,17 @@ if st.session_state.get("activos_q") != q:
 flt = ([t for t in tickers
         if q in t.upper() or q in (info[t].get("nombre") or "").upper()] if q else tickers)
 
-# Paginación (10 por página → grid de 2 columnas = 5 filas)
-PER, total = 10, len(flt)
+# Paginación (12 por página → grid de 4 columnas = 3 filas)
+PER, total = 12, len(flt)
 pages = max(1, (total + PER - 1) // PER)
 pg = min(max(1, st.session_state.get("activos_page", 1)), pages)
 start = (pg - 1) * PER
 page_items = flt[start:start + PER]
 
-# Grid de tarjetas: 2 columnas → cada tarjeta ocupa la mitad del ancho.
-for r in range(0, len(page_items), 2):
-    cols = st.columns(2)
-    for j, tk in enumerate(page_items[r:r + 2]):
+# Grid de tarjetas: 4 columnas → cada tarjeta a la mitad del ancho que tenía (¼ del total).
+for r in range(0, len(page_items), 4):
+    cols = st.columns(4)
+    for j, tk in enumerate(page_items[r:r + 4]):
         i = info[tk]
         est, tipo = _estado(tk)
         ecol = "#ef4444" if tipo == "PUT" else ("#10b981" if tipo == "CALL" else "#9ca3af")

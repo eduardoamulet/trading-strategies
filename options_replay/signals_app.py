@@ -74,10 +74,10 @@ sel_sym = f2.multiselect("Acción", sorted(df["symbol"].dropna().unique().tolist
 sel_est = f3.selectbox("Estado", ["(todos)"] + xs.ESTADOS)
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
 _fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
-g1, g2, g3, g4 = st.columns([1, 1, 1.3, 1])
+g1, g2, g3, g4 = st.columns(4)
 d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) else datetime.now().date()))
 d_hasta = g2.date_input("Hasta", value=(_fechas.max().date() if len(_fechas) else datetime.now().date()))
-pmin = g3.slider("% Cumpl. mínimo", 0, 100, 0, step=5,
+pmin = g3.slider("% Cumplimiento mínimo", 0, 100, 0, step=5,
                  help="Muestra solo señales con % de cumplimiento ≥ este valor (0 = todas).")
 _page = g4.selectbox("Filas por página", [10, 25, 50, 100, "Todas"], index=4)
 
@@ -97,7 +97,8 @@ m2.metric("💲 Dinero ganado con señales en lista", f"${fdf['ganancia'].sum():
 m3.metric("CALL / PUT", f"{int((fdf['tipo'] == 'CALL').sum())} / {int((fdf['tipo'] == 'PUT').sum())}")
 m4.metric("Aprovechadas", int((fdf["estado"] == "Aprovechada").sum()))
 
-st.divider()
+# Divisor pegado a las métricas: el st.divider por defecto deja mucho margen arriba.
+st.markdown("<hr style='margin:-0.6rem 0 0.6rem 0'>", unsafe_allow_html=True)
 
 
 @st.dialog("📊 Detalle de la señal", width="large")
@@ -230,11 +231,19 @@ _styled = _show.style.apply(lambda _r: [_rowbg[_r.name]] * len(_r), axis=1)
 # Selección multi-fila NATIVA (shift+click = rango). La key versionada se resetea al
 # cambiar el orden / borrar / limpiar (bump de _sig_ed_v) → la selección queda alineada.
 _tkey = f"sig_table_{st.session_state.get('_sig_ed_v', 0)}"
+# use_container_width=False + anchos por columna → las columnas no se aplastan y, si no
+# entran, aparece una barra de desplazamiento horizontal para verlas todas.
 _event = st.dataframe(
-    _styled, use_container_width=True, hide_index=True, key=_tkey,
+    _styled, use_container_width=False, hide_index=True, key=_tkey,
     on_select="rerun", selection_mode="multi-row",
     column_config={
-        "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%"),
+        "Acción": st.column_config.TextColumn("Acción", width="small"),
+        "Hora": st.column_config.TextColumn("Hora", width="small"),
+        "Fecha": st.column_config.TextColumn("Fecha", width="medium"),
+        "Estrategia": st.column_config.TextColumn("Estrategia", width="large"),
+        "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%", width="small"),
+        "Tipo": st.column_config.TextColumn("Tipo", width="small"),
+        "Criterios": st.column_config.TextColumn("Criterios", width="small"),
     },
 )
 st.caption("Tocá una fila para seleccionarla · **shift+click** en otra marca el **rango** · "

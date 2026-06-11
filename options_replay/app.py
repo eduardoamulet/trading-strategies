@@ -545,30 +545,6 @@ st.markdown(
         display: none !important;
     }
 
-    /* Botón 'volver al menú': que se vea como el chevron « nativo de colapsar (sin
-       caja: sin borde ni fondo), no como un botón. Coincide con el << de arriba-derecha. */
-    section[data-testid="stSidebar"] .st-key-sb_back button {
-        border: none !important;
-        background: transparent !important;
-        box-shadow: none !important;
-        padding: 2px 4px !important;
-        min-height: 0 !important;
-        height: auto !important;
-        font-size: 1.5rem !important;
-        line-height: 1 !important;
-        color: inherit !important;
-        opacity: 0.55 !important;
-    }
-    section[data-testid="stSidebar"] .st-key-sb_back button:hover,
-    section[data-testid="stSidebar"] .st-key-sb_back button:focus,
-    section[data-testid="stSidebar"] .st-key-sb_back button:active {
-        border: none !important;
-        background: transparent !important;
-        box-shadow: none !important;
-        color: #16a34a !important;
-        opacity: 1 !important;
-    }
-
 
     /* Pegar el título 'Options Replay — Intraday 0 DTE' al extremo superior
        sin solaparlo con el header de Streamlit (que contiene Deploy / menú). */
@@ -853,11 +829,10 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
 
 
 # ----- Sidebar form -----
-# Cabecera de la página en el sidebar: chevron « (sin caja, estilo el << nativo de
-# colapsar) para volver al menú + nombre de la sección. SignalForge queda arriba
-# (st.logo en el entry). El estilo borderless del « está en el CSS (.st-key-sb_back).
-_cb, _ch = st.sidebar.columns([1, 10], vertical_alignment="center")
-if _cb.button("«", key="sb_back", help="Volver al menú"):
+# Breadcrumb de navegación: botón "‹ Menú" (claro, para volver) + sección actual.
+# SignalForge queda arriba (st.logo en el entry).
+_cb, _ch = st.sidebar.columns([1.4, 2.6], vertical_alignment="center")
+if _cb.button("‹ Menú", key="sb_back", use_container_width=True, help="Volver al menú"):
     st.switch_page("options_replay/dashboard_app.py")
 _ch.markdown("### 🔬 Backtesting")
 st.sidebar.header("Parámetros")
