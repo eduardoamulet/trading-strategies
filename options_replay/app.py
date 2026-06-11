@@ -720,6 +720,7 @@ if _handoff:
          "Tipo": str(s.get("tipo") or "").upper(),
          "% Cumpl.": s.get("prob")} for s in _handoff]
     st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del data_editor
+    st.session_state["_iters_sel_seed"] = True       # nuevo handoff → todas seleccionadas
     st.session_state["bt_iters_open"] = True
 
 _iters_seed = st.session_state.get("bt_iters") or [{"Ticker": "", "Fecha": "", "Hora": "", "Tipo": "CALL"}]
@@ -746,15 +747,30 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         lambda v: str(v).strip() if str(v).strip() in _TIPO_OPTS
         else {"SÓLO CALL": "CALL", "SOLO CALL": "CALL",
               "SÓLO PUT": "PUT", "SOLO PUT": "PUT"}.get(str(v).strip().upper(), "CALL"))
+    # Columna ✓ (1ª, a la izquierda) para elegir qué filas backtestear. Por defecto TODAS
+    # marcadas; los botones marcan/desmarcan todas (re-siembran el editor).
+    _bsa, _bsn, _ = st.columns([1.7, 1.7, 5])
+    if _bsa.button("☑ Seleccionar todas", use_container_width=True, key="iters_sel_all"):
+        st.session_state["_iters_sel_seed"] = True
+        st.session_state.pop("bt_iters_editor", None)
+        st.rerun()
+    if _bsn.button("☐ Quitar todas", use_container_width=True, key="iters_sel_none"):
+        st.session_state["_iters_sel_seed"] = False
+        st.session_state.pop("bt_iters_editor", None)
+        st.rerun()
+    _seed_df.insert(0, "✓", bool(st.session_state.get("_iters_sel_seed", True)))
+    _seed_df["✓"] = _seed_df["✓"].astype(bool)
     # Centrar los VALORES (text-align en celdas vía Styler; los headers no se pueden
     # centrar — limitación del grid de Glide, igual que en la tabla de resultados).
     _ed = st.data_editor(
-        _seed_df[["Ticker", "Fecha", "Hora", "Tipo", "% Cumpl."]].style.set_properties(
+        _seed_df[["✓", "Ticker", "Fecha", "Hora", "Tipo", "% Cumpl."]].style.set_properties(
             **{"text-align": "center"}),
         num_rows="dynamic",
         use_container_width=True, hide_index=True, key="bt_iters_editor",
         disabled=["% Cumpl."],
         column_config={
+            "✓": st.column_config.CheckboxColumn(
+                "✓", default=True, help="Marcá las filas a backtestear (todas por defecto)."),
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Fecha": st.column_config.TextColumn("Fecha (YYYY-MM-DD)"),
             "Hora": st.column_config.TextColumn("Hora (HH:MM)"),
@@ -786,6 +802,8 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
 
     _specs = []
     for _, _r in _ed.iterrows():
+        if not bool(_r.get("✓", False)):   # solo las filas MARCADAS
+            continue
         _tk = str(_r.get("Ticker") or "").strip()
         if not _tk:
             continue

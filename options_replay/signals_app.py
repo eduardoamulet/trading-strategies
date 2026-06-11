@@ -239,10 +239,10 @@ _styled = (_show.style
 # Selección multi-fila NATIVA (shift+click = rango). La key versionada se resetea al
 # cambiar el orden / borrar / limpiar (bump de _sig_ed_v) → la selección queda alineada.
 _tkey = f"sig_table_{st.session_state.get('_sig_ed_v', 0)}"
-# use_container_width=False + anchos por columna → las columnas no se aplastan y, si no
-# entran, aparece una barra de desplazamiento horizontal para verlas todas.
+# use_container_width=True → la tabla ocupa todo el ancho de la página. Con anchos por
+# columna definidos; si aun así no entran, el grid muestra scroll horizontal.
 _event = st.dataframe(
-    _styled, use_container_width=False, hide_index=True, key=_tkey,
+    _styled, use_container_width=True, hide_index=True, key=_tkey,
     on_select="rerun", selection_mode="multi-row",
     column_config={
         "Acción": st.column_config.TextColumn("Acción", width="small"),
@@ -267,15 +267,15 @@ st.session_state["bt_selected_ids"] = set(_sel_ids)
 # (con 1+). El contenedor _acts_ph se creó arriba; lo llenamos ahora con la selección lista.
 with _acts_ph:
     if _sel_rows:
-        # Botones chicos, del mismo tamaño y pegados a la izquierda (al lado del orden).
-        _bv, _bd, _sp = st.columns([1, 1, 6], vertical_alignment="center")
+        # Botones chicos, del mismo tamaño y pegados a la izquierda: Eliminar · Ver.
+        _bd, _bv, _sp = st.columns([1, 1, 6], vertical_alignment="center")
+        if _bd.button("🗑 Eliminar", use_container_width=True,
+                      key="sig_del_top", help=f"Eliminar las {len(_sel_rows)} fila(s) seleccionada(s)."):
+            _confirm_delete(_sel_ids)
         if len(_sel_rows) == 1:
             if _bv.button("🔍 Ver", use_container_width=True, key="sig_ver_top",
                           help="Ver el detalle de la fila seleccionada."):
                 _render_detalle(fdf.iloc[_sel_rows[0]])
-        if _bd.button("🗑 Eliminar", use_container_width=True,
-                      key="sig_del_top", help=f"Eliminar las {len(_sel_rows)} fila(s) seleccionada(s)."):
-            _confirm_delete(_sel_ids)
 
 # ── Backtest / operar las filas SELECCIONADAS ────────────────────────────────
 st.divider()
