@@ -111,7 +111,7 @@ def _render_detalle(r):
         f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
         f"{r.get('fecha', '')} {r.get('hora', '')}** — {r.get('estrategia', '')}"
     )
-    # Criterios a la IZQUIERDA · Gráfica (grande) a la DERECHA.
+    # Criterios + tu evaluación (Estado/Ganancia) a la IZQUIERDA · Gráfica a la DERECHA.
     _dc1, _dc2 = st.columns([1, 1.9])
     with _dc1:
         st.markdown("**Criterios de la estrategia:**")
@@ -124,6 +124,11 @@ def _render_detalle(r):
                 st.markdown(("✅ " if c.get("ok") else "❌ ") + str(c.get("nombre", "")))
         else:
             st.caption(f"Sin detalle de criterios ({r.get('criterios') or '—'}).")
+        st.divider()
+        _i = xs.ESTADOS.index(r["estado"]) if r["estado"] in xs.ESTADOS else 0
+        ne = st.selectbox("Estado", xs.ESTADOS, index=_i, key=f"est_{r['id']}")
+        ng = st.number_input("Ganancia ($)", value=float(r["ganancia"] or 0), step=10.0,
+                             key=f"gan_{r['id']}")
     with _dc2:
         st.markdown("**Gráfica de la señal:**")
         if r.get("chart_url"):
@@ -131,13 +136,9 @@ def _render_detalle(r):
         else:
             st.caption("Sin gráfica.")
 
-    st.divider()
-    _i = xs.ESTADOS.index(r["estado"]) if r["estado"] in xs.ESTADOS else 0
-    _e1, _e2 = st.columns(2)
-    ne = _e1.selectbox("Estado", xs.ESTADOS, index=_i, key=f"est_{r['id']}")
-    ng = _e2.number_input("Ganancia ($)", value=float(r["ganancia"] or 0), step=10.0,
-                          key=f"gan_{r['id']}")
-    if st.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
+    # Guardar: botón chico, abajo a la derecha.
+    _sp, _bt = st.columns([6, 1.4])
+    if _bt.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
         db.update_user_fields(r["id"], estado=ne, ganancia=float(ng))
         st.toast("Guardado")
         st.rerun()   # cierra el modal y refresca
