@@ -723,9 +723,9 @@ if _handoff:
     st.session_state["_iters_sel_seed"] = True       # nuevo handoff → todas seleccionadas
     st.session_state["bt_iters_open"] = True
 
-_iters_seed = st.session_state.get("bt_iters") or [{"Ticker": "", "Fecha": "", "Hora": "", "Tipo": "CALL"}]
+_iters_seed = st.session_state.get("bt_iters")   # None / [] si no hay iteraciones cargadas
 _iters_open = bool(st.session_state.pop("bt_iters_open", False)) or bool(st.session_state.get("sig_bt"))
-with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open):
+def _render_iters_panel(_iters_seed):
     st.caption(
         "Cada fila = 1 iteración. **Tipo** = modo (CALL/PUT una pierna · CALL y PUT · "
         "CALL o PUT + variantes 'plus'; los de dos piernas reparten 50/50) · **Opción 1 "
@@ -848,6 +848,19 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
             "sig_elapsed": time.perf_counter() - _t0, "sig_workers": _wk,
         }
         st.rerun()
+
+
+with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open):
+    if not _iters_seed:
+        st.info("No hay iteraciones cargadas. Seleccioná señales en **Alertas** y tocá "
+                "**Backtestear** para traerlas acá, o empezá una manualmente abajo.")
+        if st.button("➕ Empezar una iteración manual", key="iters_manual_start"):
+            st.session_state["bt_iters"] = [{"Ticker": "", "Fecha": "", "Hora": "", "Tipo": "CALL"}]
+            st.session_state["_iters_sel_seed"] = True
+            st.session_state.pop("bt_iters_editor", None)
+            st.rerun()
+    else:
+        _render_iters_panel(_iters_seed)
 
 
 # ----- Sidebar form -----

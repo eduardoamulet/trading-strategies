@@ -107,9 +107,10 @@ def _render_detalle(r):
     # contain → no deforma el gráfico. Scope: solo la imagen DENTRO del modal.
     st.markdown(
         "<style>"
-        "div[role='dialog'] [data-testid='stImage']{width:100% !important;}"
+        # margin-top negativo → la gráfica sube hasta el tope del modal (debajo del título).
+        "div[role='dialog'] [data-testid='stImage']{width:100% !important; margin-top:-4rem !important;}"
         "div[role='dialog'] [data-testid='stImage'] img{"
-        "height:68vh !important; width:100% !important; object-fit:contain;}"
+        "height:73vh !important; width:100% !important; object-fit:contain;}"
         "</style>",
         unsafe_allow_html=True,
     )
