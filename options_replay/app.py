@@ -746,8 +746,12 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         lambda v: str(v).strip() if str(v).strip() in _TIPO_OPTS
         else {"SÓLO CALL": "CALL", "SOLO CALL": "CALL",
               "SÓLO PUT": "PUT", "SOLO PUT": "PUT"}.get(str(v).strip().upper(), "CALL"))
+    # Centrar los VALORES (text-align en celdas vía Styler; los headers no se pueden
+    # centrar — limitación del grid de Glide, igual que en la tabla de resultados).
     _ed = st.data_editor(
-        _seed_df[["Ticker", "Fecha", "Hora", "Tipo", "% Cumpl."]], num_rows="dynamic",
+        _seed_df[["Ticker", "Fecha", "Hora", "Tipo", "% Cumpl."]].style.set_properties(
+            **{"text-align": "center"}),
+        num_rows="dynamic",
         use_container_width=True, hide_index=True, key="bt_iters_editor",
         disabled=["% Cumpl."],
         column_config={
@@ -2332,16 +2336,11 @@ def _build_display_df(it: IterationResult) -> pd.DataFrame:
     tdf["roi_dol_call"] = it.invest_call * tdf["pct_call"]
     tdf["roi_dol_put"] = it.invest_put * tdf["pct_put"]
     tdf["roi_dol_total"] = tdf["roi_dol_call"] + tdf["roi_dol_put"]
-    # Minutos transcurridos desde la APERTURA del mercado (09:30 ET) hasta cada
-    # fila — útil para saber a qué minuto de la sesión ocurrió cada paso. Se
-    # calcula con el timestamp aún en datetime (antes de pasarlo a HH:MM string).
-    _open = tdf["timestamp"].dt.normalize() + pd.Timedelta(hours=9, minutes=30)
-    tdf["Min mercado"] = ((tdf["timestamp"] - _open).dt.total_seconds() / 60.0).round().astype(int)
     # Timestamp → solo hora:minuto (HH:MM). Cada iteración es de un día, así que
     # el string ordena bien al clickear el header.
     tdf["timestamp"] = tdf["timestamp"].dt.strftime("%H:%M")
     return tdf.rename(columns={
-        "timestamp": "Timestamp",
+        "timestamp": "Minuto",
         "spot": "Spot",
         "call_px": "Px Call",
         "pct_call": "ROI (%) CALL",
@@ -2356,7 +2355,7 @@ def _build_display_df(it: IterationResult) -> pd.DataFrame:
         "pct_total": "ROI (%)",
         "roi_dol_total": "ROI ($)",
         "val_total": "$ Total",
-    })[["Timestamp", "Min mercado", "Spot",
+    })[["Minuto", "Spot",
          "Px Call", "ROI (%) CALL", "ROI ($) CALL", "Capital CALL", "Capital acum CALL",
          "Px Put", "ROI (%) PUT", "ROI ($) PUT", "Capital PUT", "Capital acum PUT",
          "ROI (%)", "ROI ($)", "$ Total"]]
@@ -2737,8 +2736,8 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
     )
     buf = io.BytesIO()
     excel_df = display_df.copy()
-    if pd.api.types.is_datetime64_any_dtype(excel_df["Timestamp"]) and excel_df["Timestamp"].dt.tz is not None:
-        excel_df["Timestamp"] = excel_df["Timestamp"].dt.tz_localize(None)
+    if pd.api.types.is_datetime64_any_dtype(excel_df["Minuto"]) and excel_df["Minuto"].dt.tz is not None:
+        excel_df["Minuto"] = excel_df["Minuto"].dt.tz_localize(None)
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         pd.DataFrame([{
             "iteration": it.iteration,

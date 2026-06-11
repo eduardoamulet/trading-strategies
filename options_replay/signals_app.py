@@ -226,7 +226,15 @@ for _i, _d in enumerate(_fechas):
     if _i > 0 and _d != _fechas[_i - 1]:
         _grp += 1
     _rowbg.append("background-color: #ecfdf3" if _grp % 2 == 0 else "")
-_styled = _show.style.apply(lambda _r: [_rowbg[_r.name]] * len(_r), axis=1)
+# Centrar el CONTENIDO de todas las columnas menos "Estrategia". st.dataframe respeta
+# text-align de las CELDAS vía Styler (los headers no se pueden centrar: limitación del grid).
+_center_cols = [c for c in _show.columns if c != "Estrategia"]
+_styled = (_show.style
+           .apply(lambda _r: [_rowbg[_r.name]] * len(_r), axis=1)
+           .map(lambda _v: "color:#16a34a; font-weight:700" if _v == "CALL"
+                else ("color:#ef4444; font-weight:700" if _v == "PUT" else ""),
+                subset=["Tipo"])
+           .set_properties(subset=_center_cols, **{"text-align": "center"}))
 
 # Selección multi-fila NATIVA (shift+click = rango). La key versionada se resetea al
 # cambiar el orden / borrar / limpiar (bump de _sig_ed_v) → la selección queda alineada.
@@ -259,13 +267,14 @@ st.session_state["bt_selected_ids"] = set(_sel_ids)
 # (con 1+). El contenedor _acts_ph se creó arriba; lo llenamos ahora con la selección lista.
 with _acts_ph:
     if _sel_rows:
-        _sp, _bv, _bd = st.columns([4, 1.4, 2], vertical_alignment="center")
+        # Botones chicos, del mismo tamaño y pegados a la izquierda (al lado del orden).
+        _bv, _bd, _sp = st.columns([1, 1, 6], vertical_alignment="center")
         if len(_sel_rows) == 1:
             if _bv.button("🔍 Ver", use_container_width=True, key="sig_ver_top",
                           help="Ver el detalle de la fila seleccionada."):
                 _render_detalle(fdf.iloc[_sel_rows[0]])
-        if _bd.button(f"🗑 Eliminar ({len(_sel_rows)})", use_container_width=True,
-                      key="sig_del_top", help="Eliminar las filas seleccionadas."):
+        if _bd.button("🗑 Eliminar", use_container_width=True,
+                      key="sig_del_top", help=f"Eliminar las {len(_sel_rows)} fila(s) seleccionada(s)."):
             _confirm_delete(_sel_ids)
 
 # ── Backtest / operar las filas SELECCIONADAS ────────────────────────────────
