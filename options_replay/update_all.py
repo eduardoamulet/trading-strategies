@@ -35,6 +35,10 @@ import config  # type: ignore  # noqa: E402
 from adapter_polygon import PolygonAdapter  # noqa: E402
 from downloader import Downloader  # noqa: E402
 
+# Tickers a SALTEAR: tu plan de Polygon no los cubre (403). Ej: el índice SPX (I:SPX)
+# necesita el add-on de Índices. Quitá un ticker de acá si conseguís ese acceso.
+SKIP_TICKERS = {"SPX"}
+
 
 def _log(*a):
     print(*a, flush=True)
@@ -88,6 +92,10 @@ def main() -> int:
     info = json.loads((HERE / "ticker_info.json").read_text(encoding="utf-8"))
     tickers = ([t.strip().upper() for t in args.tickers.split(",") if t.strip()]
                if args.tickers else sorted(info.keys()))
+    _skipped = [t for t in tickers if t.upper() in SKIP_TICKERS]
+    tickers = [t for t in tickers if t.upper() not in SKIP_TICKERS]
+    if _skipped:
+        _log(f"(salteados por acceso/plan: {', '.join(_skipped)})")
 
     end = _date.today()
     start = end - timedelta(days=args.days + 4)   # +4 para cubrir fin de semana
