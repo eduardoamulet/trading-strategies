@@ -272,3 +272,14 @@ else:
             {"id": str(r["id"]), "symbol": str(r["symbol"]), "tipo": str(r["tipo"])}
             for _, r in _sel_df.iterrows()]
         st.switch_page("live_trader/ui/app.py")
+    # Borrar las seleccionadas del historial (IRREVERSIBLE → requiere confirmar).
+    _del_ok = st.checkbox("Confirmar borrado (irreversible)", key="sig_del_confirm")
+    if st.button(f"🗑 Borrar {len(_sel_df)} señal(es) seleccionada(s)", use_container_width=True,
+                 disabled=not _del_ok,
+                 help="Elimina del historial las señales marcadas. No se puede deshacer."):
+        _n = db.delete_signals(list(_sel_now))
+        st.session_state.pop("bt_selected_ids", None)
+        st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+        st.session_state.pop("sig_del_confirm", None)
+        st.toast(f"🗑 Borradas {_n} señal(es)")
+        st.rerun()

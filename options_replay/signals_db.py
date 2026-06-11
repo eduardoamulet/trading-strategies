@@ -178,3 +178,15 @@ def update_user_fields(signal_id: str, estado: Optional[str] = None,
     with _conn() as con:
         cur = con.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", vals)
         return cur.rowcount
+
+
+def delete_signals(ids) -> int:
+    """Borra las señales cuyos `id` estén en `ids`. Devuelve cuántas borró."""
+    ids = [str(i) for i in (ids or []) if str(i)]
+    if not ids:
+        return 0
+    init_db()
+    with _conn() as con:
+        ph = ",".join("?" * len(ids))
+        cur = con.execute(f"DELETE FROM alerts WHERE id IN ({ph})", ids)
+        return cur.rowcount

@@ -196,10 +196,25 @@ def parse_alert_email(raw) -> pd.DataFrame:
 
 
 # ── Imports (upsert dedup por id) ────────────────────────────────────────────
+def _clamp_hora(h):
+    """Hora ANTES de las 09:30 (pre-market) → '09:30' (apertura). Sobrescribe el valor."""
+    s = str(h or "").strip()
+    try:
+        hh, mm = s.split(":")[:2]
+        if (int(hh), int(mm)) < (9, 30):
+            return "09:30"
+    except Exception:
+        pass
+    return s
+
+
 def _stamp(df, now_iso):
-    if not df.empty and now_iso is not None:
-        df = df.copy()
+    if df.empty:
+        return df
+    df = df.copy()
+    if now_iso is not None:
         df["importado_en"] = now_iso
+    df["hora"] = df["hora"].apply(_clamp_hora)   # pre-09:30 → 09:30 (apertura)
     return df
 
 
