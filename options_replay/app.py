@@ -513,12 +513,12 @@ except Exception:
 st.markdown(
     """
     <style>
-    /* Sidebar ancho 420px solo cuando está expandida. Cuando se colapsa
-       (aria-expanded="false"), no aplica el min/max-width y la animación
-       de colapso de Streamlit puede correr normalmente. */
+    /* Sidebar a la MITAD del ancho (210px) cuando está expandida. Cuando se colapsa
+       (aria-expanded="false"), no aplica el min/max-width y la animación de colapso
+       de Streamlit puede correr normalmente. */
     section[data-testid="stSidebar"][aria-expanded="true"] {
-        min-width: 420px !important;
-        max-width: 420px !important;
+        min-width: 210px !important;
+        max-width: 210px !important;
     }
 
     /* Pegar el contenido al tope de la sidebar (incluyendo el botón << y el
