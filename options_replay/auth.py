@@ -25,7 +25,7 @@ def _auth_css() -> None:
     """Estilo de las pantallas de acceso: tarjeta centrada y angosta, wordmark."""
     st.markdown(
         "<style>"
-        "[data-testid='stMainBlockContainer']{max-width:440px; margin:0 auto;"
+        "[data-testid='stMainBlockContainer']{max-width:520px; margin:0 auto;"
         " padding-top:6rem !important;}"
         ".sf-wordmark{font-size:2.4rem; font-weight:800; letter-spacing:-1px; line-height:1;}"
         ".sf-wordmark .a{color:#16a34a;}"
