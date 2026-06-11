@@ -1153,7 +1153,7 @@ default_start_date = _last_open_market_day(
 #     "Fecha fija / Rango de fechas".
 # Como ya no hay form, los botones de abajo son st.button normales (el handler
 # corre cuando se clickean, leyendo el estado actual de todos los widgets).
-with st.sidebar.container(border=True):
+with st.sidebar.expander("Parámetros de sesión", expanded=True):
     # Inicio/Fin ya NO se ingresan por UI — vienen de market_hours.json
     # (default 09:30–16:00, override por ticker si hace falta).
     t_start, t_end = get_market_hours(ticker)
@@ -1161,13 +1161,7 @@ with st.sidebar.container(border=True):
         f"Se asume que el mercado abre a las {t_start:%H:%M} "
         f"y cierra a las {t_end:%H:%M}"
     )
-    st.markdown(
-        "<p style='text-align:left; font-weight:bold; margin: 0.3rem 0 0.5rem 0;'>"
-        "Parámetros de sesión "
-        f"<span title='{_mkt_tip}' style='cursor:help; color:#888; font-weight:normal;'>ⓘ</span>"
-        "</p>",
-        unsafe_allow_html=True,
-    )
+    st.caption(_mkt_tip)
     _date_mode = st.radio(
         "Modo de fecha",
         options=["Fecha fija", "Rango de fechas"],
@@ -1402,434 +1396,423 @@ with st.sidebar.container(border=True):
             "día siguiente es el único evento). Ej.: compra viernes 15:30 → vende lunes 10:00."
         )
 
-    # Cargar config del predictor — necesario en ambos modos.
-    _predictor_cfg = load_predictor_config()
+# Cargar config del predictor — necesario en ambos modos.
+_predictor_cfg = load_predictor_config()
 
-    # =====================================================================
-    # Probabilidad (%) MANUAL — reemplaza la predicción k-NN. El usuario la
-    # mueve en el slider (0–100, default 50) y de ahí se derivan los
-    # "Parámetros por iteración". Visible en ambos modos.
-    # =====================================================================
-    def _classify_prob(prob, cfg):
-        """Devuelve (label, color, box_bg, box_border) según el rango."""
-        for r in cfg.get("classification_ranges", []):
-            if r["min"] <= prob <= r["max"]:
-                return (r["label"], r["color"],
-                        r.get("box_bg", r["color"]), r.get("box_border", r["color"]))
-        return "?", "#888888", "#eeeeee", "#888888"
+# =====================================================================
+# Probabilidad (%) MANUAL — reemplaza la predicción k-NN. El usuario la
+# mueve en el slider (0–100, default 50) y de ahí se derivan los
+# "Parámetros por iteración". Visible en ambos modos.
+# =====================================================================
+def _classify_prob(prob, cfg):
+    """Devuelve (label, color, box_bg, box_border) según el rango."""
+    for r in cfg.get("classification_ranges", []):
+        if r["min"] <= prob <= r["max"]:
+            return (r["label"], r["color"],
+                    r.get("box_bg", r["color"]), r.get("box_border", r["color"]))
+    return "?", "#888888", "#eeeeee", "#888888"
 
-    _mode_map = {"call_only": "Sólo CALL", "put_only": "Sólo PUT", "both": "CALL y PUT"}
+_mode_map = {"call_only": "Sólo CALL", "put_only": "Sólo PUT", "both": "CALL y PUT"}
 
-    # "Tendencia del mercado": el WIDGET (slider) se renderiza MÁS ABAJO (después del Tipo
-    # de operación, antes de Inversión). Acá solo LEEMOS su valor guardado (key 'manual_prob')
-    # para derivar los parámetros del día y auto-aplicarlos antes de esos widgets. En
-    # "Rango de fechas" no aplica → tendencia neutral (50%) y sin widget.
-    if not is_range:
-        st.session_state.setdefault("manual_prob", 50)
-        manual_prob = int(st.session_state.get("manual_prob", 50))
+# "Tendencia del mercado": el WIDGET (slider) se renderiza MÁS ABAJO (después del Tipo
+# de operación, antes de Inversión). Acá solo LEEMOS su valor guardado (key 'manual_prob')
+# para derivar los parámetros del día y auto-aplicarlos antes de esos widgets. En
+# "Rango de fechas" no aplica → tendencia neutral (50%) y sin widget.
+if not is_range:
+    st.session_state.setdefault("manual_prob", 50)
+    manual_prob = int(st.session_state.get("manual_prob", 50))
+else:
+    manual_prob = 50
+_params = adjust_trading_parameters(manual_prob, _predictor_cfg)
+_mode_lbl = _mode_map[_params["mode"]]
+
+# El aviso de "Modo rango" se muestra como tooltip ⓘ en el header
+# "Parámetros por iteración" (más abajo), solo cuando is_range.
+
+# Parámetros por iteración — VISIBLES EN AMBOS MODOS (single y rango). En rango,
+# estos mismos valores (auto-aplicados desde el slider, editables a mano) se usan
+# para todos los días del batch. Antes esta sección se ocultaba en modo rango, lo
+# que daba la sensación de que "desaparecía todo el panel".
+with st.sidebar.expander("Parámetros por iteración", expanded=True):
+    # AUTO-APPLY: la Probabilidad (%) → Parámetros por iteración. Se aplica
+    # cuando cambia el slider (o el config). Entre cambios, podés editar
+    # CALL%/PUT%/ROI a mano sin que se sobreescriban (key-tracking sobre los
+    # params derivados, no sobre los widgets).
+    _prob_key = (
+        manual_prob, _params["mode"], int(_params["call_allocation"]),
+        int(_params["put_allocation"]), int(_params["roi_threshold"]),
+    )
+    if st.session_state.get("_last_applied_prob_key") != _prob_key:
+        _tot = st.session_state.get("invest_total", 1000.0)
+        st.session_state["straddle_mode_radio"] = _mode_lbl
+        st.session_state["call_pct"] = float(_params["call_allocation"])
+        st.session_state["put_pct"] = float(_params["put_allocation"])
+        st.session_state["call_dollars"] = (_params["call_allocation"] / 100.0) * _tot
+        st.session_state["put_dollars"] = (_params["put_allocation"] / 100.0) * _tot
+        st.session_state["umbral_roi_pct"] = float(_params["roi_threshold"])
+        st.session_state["_last_applied_prob_key"] = _prob_key
+    st.caption(
+        f"→ Aplicado: {_mode_lbl} · CALL {_params['call_allocation']}% / "
+        f"PUT {_params['put_allocation']}% · ROI {_params['roi_threshold']}%  "
+        f"_(podés editarlos a mano)_"
+    )
+
+    if is_range:
+        st.caption("🤖 Modo rango — estos parámetros se aplican a todos "
+                   "los días del rango (un solo set de parámetros para el batch).")
+
+    # Modo de straddle — radio con 3 opciones (mutuamente excluyente por diseño).
+    # El callback fuerza el split CALL%/PUT% según el modo seleccionado:
+    #   CALL y PUT → 50/50,  Sólo CALL → 100/0,  Sólo PUT → 0/100.
+    def _sync_straddle_mode_changed():
+        mode = st.session_state.get("straddle_mode_radio", "CALL y PUT")
+        if mode == "Sólo CALL":
+            new_call_pct, new_put_pct = 100.0, 0.0
+        elif mode == "Sólo PUT":
+            new_call_pct, new_put_pct = 0.0, 100.0
+        else:  # "CALL y PUT" o "CALL o PUT" → ambas piernas 50/50
+            new_call_pct, new_put_pct = 50.0, 50.0
+        st.session_state["call_pct"] = new_call_pct
+        st.session_state["put_pct"] = new_put_pct
+        tot = st.session_state.get("invest_total", 1000.0)
+        st.session_state["call_dollars"] = (new_call_pct / 100.0) * tot
+        st.session_state["put_dollars"] = (new_put_pct / 100.0) * tot
+        # Al SELECCIONAR cualquier modo, resetear los params POR PIERNA a su
+        # baseline: Umbral de ROI 10% y Stop loss -100% para CALL y para PUT.
+        st.session_state["call_roi_pct"] = 10.0
+        st.session_state["put_roi_pct"] = 10.0
+        st.session_state["call_stop_pct"] = -100.0
+        st.session_state["put_stop_pct"] = -100.0
+
+    _straddle_mode = st.selectbox(
+        "Tipo de operación",
+        options=["CALL y PUT", "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)"],
+        index=0,
+        key="straddle_mode_radio",
+        on_change=_sync_straddle_mode_changed,
+    )
+    only_call_now = _straddle_mode == "Sólo CALL"
+    only_put_now = _straddle_mode == "Sólo PUT"
+    is_call_or_put = _straddle_mode == "CALL o PUT"
+    is_call_or_put_plus = _straddle_mode == "CALL o PUT (plus)"
+    is_both_plus = _straddle_mode == "CALL y PUT (plus)"
+    if only_call_now:
+        engine_mode = "call_only"
+    elif only_put_now:
+        engine_mode = "put_only"
+    elif is_call_or_put:
+        engine_mode = "call_or_put"
+    elif is_call_or_put_plus:
+        engine_mode = "call_or_put_plus"
+    elif is_both_plus:
+        engine_mode = "both_plus"
     else:
-        manual_prob = 50
-    _params = adjust_trading_parameters(manual_prob, _predictor_cfg)
-    _mode_lbl = _mode_map[_params["mode"]]
+        engine_mode = "both"
 
-    # El aviso de "Modo rango" se muestra como tooltip ⓘ en el header
-    # "Parámetros por iteración" (más abajo), solo cuando is_range.
+    # Panel de descripción del Tipo de operación elegido (reemplaza al tooltip ⓘ).
+    _MODE_DESC = {
+        "CALL y PUT": "🎯 **CALL y PUT** — se compran ambas piernas (50/50) y la salida es "
+                      "**combinada por ROI total** (Umbral de ROI / Stop loss sobre la suma de "
+                      "las dos). Termina al umbral, al stop o al cierre del día.",
+        "CALL y PUT (plus)": "🎯 **CALL y PUT (plus)** — se compran ambas piernas (50/50) y se "
+                             "venden las dos **solo en el Horario de salida** (sin Umbral de ROI ni "
+                             "Stop loss). Termina al horario o al cierre del día.",
+        "Sólo CALL": "🎯 **Sólo CALL** — una sola pierna (100% CALL). Sale por su **Umbral de "
+                     "ROI** o su **Stop loss**. Termina al umbral, al stop o al cierre del día.",
+        "Sólo PUT": "🎯 **Sólo PUT** — una sola pierna (100% PUT). Sale por su **Umbral de "
+                    "ROI** o su **Stop loss**. Termina al umbral, al stop o al cierre del día.",
+        "CALL o PUT": "🎯 **CALL o PUT** — se compran ambas piernas y se venden las dos en cuanto "
+                      "**cualquiera alcanza +100%** (se duplica). No depende de Umbral de ROI ni "
+                      "Stop loss. Termina al +100% o al cierre del día.",
+        "CALL o PUT (plus)": "🎯 **CALL o PUT (plus)** — se compran ambas piernas. La **1ª pierna "
+                             "que alcanza el Umbral de salida (%)** se vende; la otra se vende "
+                             "cuando, entre lo bancado y su valor, se **recupera la inversión "
+                             "total**. Termina ahí o al cierre del día.",
+    }
+    st.info(_MODE_DESC.get(_straddle_mode, ""))
 
-    # Parámetros por iteración — VISIBLES EN AMBOS MODOS (single y rango). En rango,
-    # estos mismos valores (auto-aplicados desde el slider, editables a mano) se usan
-    # para todos los días del batch. Antes esta sección se ocultaba en modo rango, lo
-    # que daba la sensación de que "desaparecía todo el panel".
-    if True:
-        # AUTO-APPLY: la Probabilidad (%) → Parámetros por iteración. Se aplica
-        # cuando cambia el slider (o el config). Entre cambios, podés editar
-        # CALL%/PUT%/ROI a mano sin que se sobreescriban (key-tracking sobre los
-        # params derivados, no sobre los widgets).
-        _prob_key = (
-            manual_prob, _params["mode"], int(_params["call_allocation"]),
-            int(_params["put_allocation"]), int(_params["roi_threshold"]),
-        )
-        if st.session_state.get("_last_applied_prob_key") != _prob_key:
-            _tot = st.session_state.get("invest_total", 1000.0)
-            st.session_state["straddle_mode_radio"] = _mode_lbl
-            st.session_state["call_pct"] = float(_params["call_allocation"])
-            st.session_state["put_pct"] = float(_params["put_allocation"])
-            st.session_state["call_dollars"] = (_params["call_allocation"] / 100.0) * _tot
-            st.session_state["put_dollars"] = (_params["put_allocation"] / 100.0) * _tot
-            st.session_state["umbral_roi_pct"] = float(_params["roi_threshold"])
-            st.session_state["_last_applied_prob_key"] = _prob_key
-        st.caption(
-            f"→ Aplicado: {_mode_lbl} · CALL {_params['call_allocation']}% / "
-            f"PUT {_params['put_allocation']}% · ROI {_params['roi_threshold']}%  "
-            f"_(podés editarlos a mano)_"
-        )
-
-        st.markdown("---")
-        _range_tip = (
-            "🤖&#10;Modo rango — los Parámetros por iteración de abajo se aplican a "
-            "todos los días del rango (un solo set de parámetros para el batch)."
-        )
-        _range_info = (
-            f" <span title='{_range_tip}' style='cursor:help; color:#888; "
-            "font-weight:normal;'>ⓘ</span>"
-        ) if is_range else ""
+    # "Tendencia del mercado" (widget) — solo single-day. Su valor (key 'manual_prob')
+    # alimenta los Parámetros por iteración, que ya se auto-aplicaron arriba. Va acá,
+    # entre la descripción del Tipo de operación y la Inversión, por pedido.
+    if not is_range:
         st.markdown(
-            "<p style='text-align:left; font-weight:bold; margin: 0.3rem 0 0.8rem 0;'>"
-            f"Parámetros por iteración{_range_info}</p>",
+            "<p style='font-weight:bold; margin: 0.5rem 0 0.2rem 0;'>Tendencia del mercado</p>",
+            unsafe_allow_html=True,
+        )
+        _prob_label, _prob_color, _box_bg, _box_border = _classify_prob(manual_prob, _predictor_cfg)
+        _c_slider, _c_box = st.columns([3, 2], vertical_alignment="center")
+        _c_slider.slider(
+            "Tendencia del mercado", min_value=0, max_value=100, step=5,
+            key="manual_prob", label_visibility="collapsed",
+            help=("Movés la tendencia alcista a mano (de 5 en 5). De este valor se derivan "
+                  "Modo, CALL%, PUT% y Umbral ROI de los Parámetros por iteración."),
+        )
+        _zones = [
+            (r["min"], r["max"], r["color"])
+            for r in _predictor_cfg.get("classification_ranges", [])
+        ]
+        _segs = "".join(
+            f"<div style='flex:1; background:{c}; height:7px;' title='{lo}–{hi}'></div>"
+            for lo, hi, c in _zones
+        )
+        _c_slider.markdown(
+            f"<div style='display:flex; gap:1px; border-radius:3px; overflow:hidden; margin-top:-6px;'>{_segs}</div>"
+            "<div style='display:flex; justify-content:space-between; font-size:0.6rem; color:#000; font-weight:normal; margin-top:1px;'>"
+            "<span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span></div>",
+            unsafe_allow_html=True,
+        )
+        _fill = (
+            f"linear-gradient(to right,{_prob_color} 0%,{_prob_color} {manual_prob}%,"
+            f"rgba(151,166,195,0.25) {manual_prob}%,rgba(151,166,195,0.25) 100%)"
+        )
+        st.markdown(
+            "<style>"
+            "section[data-testid='stSidebar'] [data-baseweb='slider'] "
+            "> div:nth-child(1) > div:nth-child(1) > div:nth-child(2)"
+            f"{{background-image:{_fill} !important;}}"
+            "section[data-testid='stSidebar'] [data-baseweb='slider'] [role='slider']"
+            "{background-color:#000 !important; border-color:#000 !important;}"
+            "section[data-testid='stSidebar'] [data-testid='stSliderThumbValue']"
+            "{color:#000 !important;}"
+            "</style>",
+            unsafe_allow_html=True,
+        )
+        _c_box.markdown(
+            f"<div style='text-align:center; padding:0.55rem 0.6rem; background:{_box_bg}; "
+            f"border:1px solid {_box_border}; border-radius:0.5rem;'>"
+            f"<div style='font-size:1.6rem; font-weight:700; color:{_box_border}; line-height:1;'>{manual_prob}%</div>"
+            f"<div style='font-size:0.7rem; font-weight:600; color:{_box_border}; margin-top:0.2rem;'>{_prob_label}</div>"
+            f"</div>",
             unsafe_allow_html=True,
         )
 
-        # Modo de straddle — radio con 3 opciones (mutuamente excluyente por diseño).
-        # El callback fuerza el split CALL%/PUT% según el modo seleccionado:
-        #   CALL y PUT → 50/50,  Sólo CALL → 100/0,  Sólo PUT → 0/100.
-        def _sync_straddle_mode_changed():
-            mode = st.session_state.get("straddle_mode_radio", "CALL y PUT")
-            if mode == "Sólo CALL":
-                new_call_pct, new_put_pct = 100.0, 0.0
-            elif mode == "Sólo PUT":
-                new_call_pct, new_put_pct = 0.0, 100.0
-            else:  # "CALL y PUT" o "CALL o PUT" → ambas piernas 50/50
-                new_call_pct, new_put_pct = 50.0, 50.0
-            st.session_state["call_pct"] = new_call_pct
-            st.session_state["put_pct"] = new_put_pct
-            tot = st.session_state.get("invest_total", 1000.0)
-            st.session_state["call_dollars"] = (new_call_pct / 100.0) * tot
-            st.session_state["put_dollars"] = (new_put_pct / 100.0) * tot
-            # Al SELECCIONAR cualquier modo, resetear los params POR PIERNA a su
-            # baseline: Umbral de ROI 10% y Stop loss -100% para CALL y para PUT.
-            st.session_state["call_roi_pct"] = 10.0
-            st.session_state["put_roi_pct"] = 10.0
-            st.session_state["call_stop_pct"] = -100.0
-            st.session_state["put_stop_pct"] = -100.0
+    # -------- Bloque Inversión: total + %-split + $-split (bidireccional) --------
+    # Source of truth en session_state. Callbacks mantienen % y $ sincronizados
+    # entre sí y con el monto total. Funciona porque estamos en un container
+    # (no en st.form, donde los on_change no se permiten).
 
-        _straddle_mode = st.selectbox(
-            "Tipo de operación",
-            options=["CALL y PUT", "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)"],
-            index=0,
-            key="straddle_mode_radio",
-            on_change=_sync_straddle_mode_changed,
-        )
-        only_call_now = _straddle_mode == "Sólo CALL"
-        only_put_now = _straddle_mode == "Sólo PUT"
-        is_call_or_put = _straddle_mode == "CALL o PUT"
-        is_call_or_put_plus = _straddle_mode == "CALL o PUT (plus)"
-        is_both_plus = _straddle_mode == "CALL y PUT (plus)"
-        if only_call_now:
-            engine_mode = "call_only"
-        elif only_put_now:
-            engine_mode = "put_only"
-        elif is_call_or_put:
-            engine_mode = "call_or_put"
-        elif is_call_or_put_plus:
-            engine_mode = "call_or_put_plus"
-        elif is_both_plus:
-            engine_mode = "both_plus"
+    # Inicialización: la primera vez que se renderiza, sembramos los 5 keys.
+    if "invest_total" not in st.session_state:
+        st.session_state["invest_total"] = 1000.0
+    if "call_pct" not in st.session_state:
+        st.session_state["call_pct"] = 50.0
+    if "put_pct" not in st.session_state:
+        st.session_state["put_pct"] = 50.0
+    if "call_dollars" not in st.session_state:
+        st.session_state["call_dollars"] = 500.0
+    if "put_dollars" not in st.session_state:
+        st.session_state["put_dollars"] = 500.0
+
+    # Aplicar reset de % de inversión pendiente desde la iteración anterior.
+    # Debe ocurrir ANTES de instanciar los number_inputs para que tomen el
+    # nuevo valor. Respeta el modo activo: si "Sólo CALL"/"Sólo PUT", el split
+    # va a 100/0 ó 0/100, sino 50/50.
+    if st.session_state.pop("_pending_invest_reset", False):
+        _reset_mode = st.session_state.get("straddle_mode_radio", "CALL y PUT")
+        if _reset_mode == "Sólo CALL":
+            _reset_cpct, _reset_ppct = 100.0, 0.0
+        elif _reset_mode == "Sólo PUT":
+            _reset_cpct, _reset_ppct = 0.0, 100.0
         else:
-            engine_mode = "both"
+            _reset_cpct, _reset_ppct = 50.0, 50.0
+        _reset_tot = st.session_state["invest_total"]
+        st.session_state["call_pct"] = _reset_cpct
+        st.session_state["put_pct"] = _reset_ppct
+        st.session_state["call_dollars"] = (_reset_cpct / 100.0) * _reset_tot
+        st.session_state["put_dollars"] = (_reset_ppct / 100.0) * _reset_tot
 
-        # Panel de descripción del Tipo de operación elegido (reemplaza al tooltip ⓘ).
-        _MODE_DESC = {
-            "CALL y PUT": "🎯 **CALL y PUT** — se compran ambas piernas (50/50) y la salida es "
-                          "**combinada por ROI total** (Umbral de ROI / Stop loss sobre la suma de "
-                          "las dos). Termina al umbral, al stop o al cierre del día.",
-            "CALL y PUT (plus)": "🎯 **CALL y PUT (plus)** — se compran ambas piernas (50/50) y se "
-                                 "venden las dos **solo en el Horario de salida** (sin Umbral de ROI ni "
-                                 "Stop loss). Termina al horario o al cierre del día.",
-            "Sólo CALL": "🎯 **Sólo CALL** — una sola pierna (100% CALL). Sale por su **Umbral de "
-                         "ROI** o su **Stop loss**. Termina al umbral, al stop o al cierre del día.",
-            "Sólo PUT": "🎯 **Sólo PUT** — una sola pierna (100% PUT). Sale por su **Umbral de "
-                        "ROI** o su **Stop loss**. Termina al umbral, al stop o al cierre del día.",
-            "CALL o PUT": "🎯 **CALL o PUT** — se compran ambas piernas y se venden las dos en cuanto "
-                          "**cualquiera alcanza +100%** (se duplica). No depende de Umbral de ROI ni "
-                          "Stop loss. Termina al +100% o al cierre del día.",
-            "CALL o PUT (plus)": "🎯 **CALL o PUT (plus)** — se compran ambas piernas. La **1ª pierna "
-                                 "que alcanza el Umbral de salida (%)** se vende; la otra se vende "
-                                 "cuando, entre lo bancado y su valor, se **recupera la inversión "
-                                 "total**. Termina ahí o al cierre del día.",
-        }
-        st.info(_MODE_DESC.get(_straddle_mode, ""))
+    # Invariante: CALL (%) + PUT (%) == 100 SIEMPRE.
+    # Cualquier edición que toque un % o un $ propaga al otro leg para mantener
+    # la suma. Si CALL ($) excede la Inversión total, se clampea a 100/0.
 
-        # "Tendencia del mercado" (widget) — solo single-day. Su valor (key 'manual_prob')
-        # alimenta los Parámetros por iteración, que ya se auto-aplicaron arriba. Va acá,
-        # entre la descripción del Tipo de operación y la Inversión, por pedido.
-        if not is_range:
-            st.markdown(
-                "<p style='font-weight:bold; margin: 0.5rem 0 0.2rem 0;'>Tendencia del mercado</p>",
-                unsafe_allow_html=True,
-            )
-            _prob_label, _prob_color, _box_bg, _box_border = _classify_prob(manual_prob, _predictor_cfg)
-            _c_slider, _c_box = st.columns([3, 2], vertical_alignment="center")
-            _c_slider.slider(
-                "Tendencia del mercado", min_value=0, max_value=100, step=5,
-                key="manual_prob", label_visibility="collapsed",
-                help=("Movés la tendencia alcista a mano (de 5 en 5). De este valor se derivan "
-                      "Modo, CALL%, PUT% y Umbral ROI de los Parámetros por iteración."),
-            )
-            _zones = [
-                (r["min"], r["max"], r["color"])
-                for r in _predictor_cfg.get("classification_ranges", [])
-            ]
-            _segs = "".join(
-                f"<div style='flex:1; background:{c}; height:7px;' title='{lo}–{hi}'></div>"
-                for lo, hi, c in _zones
-            )
-            _c_slider.markdown(
-                f"<div style='display:flex; gap:1px; border-radius:3px; overflow:hidden; margin-top:-6px;'>{_segs}</div>"
-                "<div style='display:flex; justify-content:space-between; font-size:0.6rem; color:#000; font-weight:normal; margin-top:1px;'>"
-                "<span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span></div>",
-                unsafe_allow_html=True,
-            )
-            _fill = (
-                f"linear-gradient(to right,{_prob_color} 0%,{_prob_color} {manual_prob}%,"
-                f"rgba(151,166,195,0.25) {manual_prob}%,rgba(151,166,195,0.25) 100%)"
-            )
-            st.markdown(
-                "<style>"
-                "section[data-testid='stSidebar'] [data-baseweb='slider'] "
-                "> div:nth-child(1) > div:nth-child(1) > div:nth-child(2)"
-                f"{{background-image:{_fill} !important;}}"
-                "section[data-testid='stSidebar'] [data-baseweb='slider'] [role='slider']"
-                "{background-color:#000 !important; border-color:#000 !important;}"
-                "section[data-testid='stSidebar'] [data-testid='stSliderThumbValue']"
-                "{color:#000 !important;}"
-                "</style>",
-                unsafe_allow_html=True,
-            )
-            _c_box.markdown(
-                f"<div style='text-align:center; padding:0.55rem 0.6rem; background:{_box_bg}; "
-                f"border:1px solid {_box_border}; border-radius:0.5rem;'>"
-                f"<div style='font-size:1.6rem; font-weight:700; color:{_box_border}; line-height:1;'>{manual_prob}%</div>"
-                f"<div style='font-size:0.7rem; font-weight:600; color:{_box_border}; margin-top:0.2rem;'>{_prob_label}</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+    def _sync_total_to_dollars():
+        """Cambió Inversión total → recomputar $ de cada leg manteniendo %s
+        (los %s ya suman 100 por invariante)."""
+        tot = st.session_state["invest_total"]
+        st.session_state["call_dollars"] = (st.session_state["call_pct"] / 100.0) * tot
+        st.session_state["put_dollars"] = (st.session_state["put_pct"] / 100.0) * tot
 
-        # -------- Bloque Inversión: total + %-split + $-split (bidireccional) --------
-        # Source of truth en session_state. Callbacks mantienen % y $ sincronizados
-        # entre sí y con el monto total. Funciona porque estamos en un container
-        # (no en st.form, donde los on_change no se permiten).
+    def _sync_call_pct_changed():
+        """Editaron CALL (%) → forzar PUT (%) = 100 - CALL (%), recomputar ambos $."""
+        tot = st.session_state["invest_total"]
+        call_pct = float(st.session_state["call_pct"])
+        st.session_state["put_pct"] = 100.0 - call_pct
+        st.session_state["call_dollars"] = (call_pct / 100.0) * tot
+        st.session_state["put_dollars"] = (st.session_state["put_pct"] / 100.0) * tot
 
-        # Inicialización: la primera vez que se renderiza, sembramos los 5 keys.
-        if "invest_total" not in st.session_state:
-            st.session_state["invest_total"] = 1000.0
-        if "call_pct" not in st.session_state:
-            st.session_state["call_pct"] = 50.0
-        if "put_pct" not in st.session_state:
-            st.session_state["put_pct"] = 50.0
-        if "call_dollars" not in st.session_state:
-            st.session_state["call_dollars"] = 500.0
-        if "put_dollars" not in st.session_state:
-            st.session_state["put_dollars"] = 500.0
+    def _sync_put_pct_changed():
+        """Editaron PUT (%) → forzar CALL (%) = 100 - PUT (%), recomputar ambos $."""
+        tot = st.session_state["invest_total"]
+        put_pct = float(st.session_state["put_pct"])
+        st.session_state["call_pct"] = 100.0 - put_pct
+        st.session_state["put_dollars"] = (put_pct / 100.0) * tot
+        st.session_state["call_dollars"] = (st.session_state["call_pct"] / 100.0) * tot
 
-        # Aplicar reset de % de inversión pendiente desde la iteración anterior.
-        # Debe ocurrir ANTES de instanciar los number_inputs para que tomen el
-        # nuevo valor. Respeta el modo activo: si "Sólo CALL"/"Sólo PUT", el split
-        # va a 100/0 ó 0/100, sino 50/50.
-        if st.session_state.pop("_pending_invest_reset", False):
-            _reset_mode = st.session_state.get("straddle_mode_radio", "CALL y PUT")
-            if _reset_mode == "Sólo CALL":
-                _reset_cpct, _reset_ppct = 100.0, 0.0
-            elif _reset_mode == "Sólo PUT":
-                _reset_cpct, _reset_ppct = 0.0, 100.0
-            else:
-                _reset_cpct, _reset_ppct = 50.0, 50.0
-            _reset_tot = st.session_state["invest_total"]
-            st.session_state["call_pct"] = _reset_cpct
-            st.session_state["put_pct"] = _reset_ppct
-            st.session_state["call_dollars"] = (_reset_cpct / 100.0) * _reset_tot
-            st.session_state["put_dollars"] = (_reset_ppct / 100.0) * _reset_tot
+    def _sync_call_dollars_changed():
+        """Editaron CALL ($) → derivar CALL (%), forzar PUT (%) = 100 - CALL (%),
+        recomputar PUT ($). Si CALL ($) > total, clampea a 100% CALL / 0% PUT."""
+        tot = st.session_state["invest_total"]
+        if tot <= 0:
+            return
+        call_d = float(st.session_state["call_dollars"])
+        # Clamp a [0, tot]: si excede, ajusta el $ a tot y % a 100.
+        if call_d > tot:
+            call_d = tot
+            st.session_state["call_dollars"] = tot
+        call_pct = (call_d / tot) * 100.0
+        st.session_state["call_pct"] = call_pct
+        st.session_state["put_pct"] = 100.0 - call_pct
+        st.session_state["put_dollars"] = tot - call_d
 
-        # Invariante: CALL (%) + PUT (%) == 100 SIEMPRE.
-        # Cualquier edición que toque un % o un $ propaga al otro leg para mantener
-        # la suma. Si CALL ($) excede la Inversión total, se clampea a 100/0.
+    def _sync_put_dollars_changed():
+        """Editaron PUT ($) → derivar PUT (%), forzar CALL (%) = 100 - PUT (%),
+        recomputar CALL ($). Si PUT ($) > total, clampea a 100% PUT / 0% CALL."""
+        tot = st.session_state["invest_total"]
+        if tot <= 0:
+            return
+        put_d = float(st.session_state["put_dollars"])
+        if put_d > tot:
+            put_d = tot
+            st.session_state["put_dollars"] = tot
+        put_pct = (put_d / tot) * 100.0
+        st.session_state["put_pct"] = put_pct
+        st.session_state["call_pct"] = 100.0 - put_pct
+        st.session_state["call_dollars"] = tot - put_d
 
-        def _sync_total_to_dollars():
-            """Cambió Inversión total → recomputar $ de cada leg manteniendo %s
-            (los %s ya suman 100 por invariante)."""
-            tot = st.session_state["invest_total"]
-            st.session_state["call_dollars"] = (st.session_state["call_pct"] / 100.0) * tot
-            st.session_state["put_dollars"] = (st.session_state["put_pct"] / 100.0) * tot
-
-        def _sync_call_pct_changed():
-            """Editaron CALL (%) → forzar PUT (%) = 100 - CALL (%), recomputar ambos $."""
-            tot = st.session_state["invest_total"]
-            call_pct = float(st.session_state["call_pct"])
-            st.session_state["put_pct"] = 100.0 - call_pct
-            st.session_state["call_dollars"] = (call_pct / 100.0) * tot
-            st.session_state["put_dollars"] = (st.session_state["put_pct"] / 100.0) * tot
-
-        def _sync_put_pct_changed():
-            """Editaron PUT (%) → forzar CALL (%) = 100 - PUT (%), recomputar ambos $."""
-            tot = st.session_state["invest_total"]
-            put_pct = float(st.session_state["put_pct"])
-            st.session_state["call_pct"] = 100.0 - put_pct
-            st.session_state["put_dollars"] = (put_pct / 100.0) * tot
-            st.session_state["call_dollars"] = (st.session_state["call_pct"] / 100.0) * tot
-
-        def _sync_call_dollars_changed():
-            """Editaron CALL ($) → derivar CALL (%), forzar PUT (%) = 100 - CALL (%),
-            recomputar PUT ($). Si CALL ($) > total, clampea a 100% CALL / 0% PUT."""
-            tot = st.session_state["invest_total"]
-            if tot <= 0:
-                return
-            call_d = float(st.session_state["call_dollars"])
-            # Clamp a [0, tot]: si excede, ajusta el $ a tot y % a 100.
-            if call_d > tot:
-                call_d = tot
-                st.session_state["call_dollars"] = tot
-            call_pct = (call_d / tot) * 100.0
-            st.session_state["call_pct"] = call_pct
-            st.session_state["put_pct"] = 100.0 - call_pct
-            st.session_state["put_dollars"] = tot - call_d
-
-        def _sync_put_dollars_changed():
-            """Editaron PUT ($) → derivar PUT (%), forzar CALL (%) = 100 - PUT (%),
-            recomputar CALL ($). Si PUT ($) > total, clampea a 100% PUT / 0% CALL."""
-            tot = st.session_state["invest_total"]
-            if tot <= 0:
-                return
-            put_d = float(st.session_state["put_dollars"])
-            if put_d > tot:
-                put_d = tot
-                st.session_state["put_dollars"] = tot
-            put_pct = (put_d / tot) * 100.0
-            st.session_state["put_pct"] = put_pct
-            st.session_state["call_pct"] = 100.0 - put_pct
-            st.session_state["call_dollars"] = tot - put_d
-
-        # Fila 1: Inversión total (ocupa solo la mitad izquierda para mantener consistencia)
-        c_inv_total, _c_inv_spacer = st.columns(2)
-        c_inv_total.number_input(
-            "Inversión ($)",
-            key="invest_total",
-            step=1000.0,
-            min_value=0.0,
-            format="%.2f",
-            on_change=_sync_total_to_dollars,
-        )
-
-        # Fila 2: %-split por leg
-        c_call_pct, c_put_pct = st.columns(2)
-        c_call_pct.number_input(
-            "Inversión en CALL (%)",
-            key="call_pct",
-            step=5.0,
-            min_value=0.0,
-            max_value=100.0,
-            format="%.1f",
-            on_change=_sync_call_pct_changed,
-            disabled=only_put_now,
-        )
-        c_put_pct.number_input(
-            "Inversión en PUT (%)",
-            key="put_pct",
-            step=5.0,
-            min_value=0.0,
-            max_value=100.0,
-            format="%.1f",
-            on_change=_sync_put_pct_changed,
-            disabled=only_call_now,
-        )
-
-        # Fila 3: $-split por leg (bidireccional con %)
-        c_call_d, c_put_d = st.columns(2)
-        invest_call = c_call_d.number_input(
-            "Inversión en CALL ($)",
-            key="call_dollars",
-            step=100.0,
-            min_value=0.0,
-            format="%.2f",
-            on_change=_sync_call_dollars_changed,
-            disabled=only_put_now,
-        )
-        invest_put = c_put_d.number_input(
-            "Inversión en PUT ($)",
-            key="put_dollars",
-            step=100.0,
-            min_value=0.0,
-            format="%.2f",
-            on_change=_sync_put_dollars_changed,
-            disabled=only_call_now,
-        )
-
-        # Default del Umbral si nunca se sembró (caso primera carga).
-        # El auto-apply de la Predicción Apertura ya escribe a este key cuando
-        # cambia la predicción — no necesitamos el messenger _pending_roi_threshold.
-        if "umbral_roi_pct" not in st.session_state:
-            st.session_state["umbral_roi_pct"] = 10.0
-        # Defaults de params por pierna ("CALL o PUT") y del umbral de salida ("plus").
-        for _k, _v in (("call_roi_pct", 10.0), ("call_stop_pct", -100.0),
-                       ("put_roi_pct", 10.0), ("put_stop_pct", -100.0),
-                       ("exit_plus_pct", 50.0)):
-            if _k not in st.session_state:
-                st.session_state[_k] = _v
-        # El cierre por umbral siempre se evalúa sobre el ROI (%) total.
-        exit_metric = "total"
-        exit_plus_threshold_pct = 0.50  # default; solo en "CALL o PUT (plus)"
-        exit_plus_time = None           # default; solo en "CALL o PUT (plus)"
-
-        if is_call_or_put:
-            # CALL o PUT: salida COMBINADA al +100%. Se venden AMBAS piernas cuando
-            # CUALQUIERA alcanza +100% (se duplica). NO usa Umbral de ROI ni Stop
-            # loss — por eso no se muestran esos inputs. Termina al +100% o al cierre.
-            exit_threshold_pct = 1.0          # +100% (solo referencia de estilo)
-            stop_loss_pct = -1.0
-            call_exit_threshold_pct = put_exit_threshold_pct = 1.0
-            call_stop_loss_pct = put_stop_loss_pct = -1.0
-        elif is_both_plus:
-            # CALL y PUT (plus): se compran ambas y se venden las DOS SOLO al llegar al
-            # Horario de salida (1 min antes). NO usa Umbral de ROI ni Stop loss.
-            exit_threshold_pct = 1.0          # ignorado por el modo both_plus
-            stop_loss_pct = -1.0
-            call_exit_threshold_pct = put_exit_threshold_pct = 1.0
-            call_stop_loss_pct = put_stop_loss_pct = -1.0
-        elif is_call_or_put_plus:
-            # CALL o PUT (plus): la 1ª pierna que alcanza el "Umbral de salida (%)" se
-            # vende y banca su ganancia; la otra se vende cuando, sumando lo bancado +
-            # su valor, se recupera la inversión TOTAL. Si no, cierran al fin del día.
-            exit_plus_threshold_pct = st.number_input(
-                "Umbral de salida (%)", key="exit_plus_pct",
-                step=5.0, min_value=1.0, format="%.2f",
-                help="ROI% al que se vende la PRIMERA pierna (la que llegue primero al umbral).",
-            ) / 100.0
-            # La "Hora de salida" del plus es ahora el "Horario de salida" GENERAL
-            # (arriba, default 16:00): la pierna pendiente se liquida en el minuto ANTES
-            # de esa hora (vía end_ts = salida - 1min), igual que las demás estrategias.
-            exit_plus_time = horario_salida
-            exit_threshold_pct = exit_plus_threshold_pct   # referencia de estilo
-            stop_loss_pct = -1.0
-            call_exit_threshold_pct = put_exit_threshold_pct = exit_plus_threshold_pct
-            call_stop_loss_pct = put_stop_loss_pct = -1.0
-        else:
-            c7, c8 = st.columns(2)
-            exit_threshold_pct = c7.number_input(
-                "Umbral de ROI (%)",
-                key="umbral_roi_pct",
-                step=5.0, min_value=1.0,
-            ) / 100.0
-            stop_loss_pct = c8.number_input(
-                "Stop loss (%)",
-                value=-100.0, step=10.0, max_value=0.0, format="%.2f",
-            ) / 100.0
-            # Per-leg no usados en estos modos: defaults inocuos para el engine.
-            call_exit_threshold_pct = put_exit_threshold_pct = exit_threshold_pct
-            call_stop_loss_pct = put_stop_loss_pct = stop_loss_pct
-
-    st.markdown("---")
-    btn_iniciar = st.button(
-        "Iniciar nueva simulación",
-        type="primary",
-        use_container_width=True,
-        key="btn_iniciar",
-        help="Resetea el estado y corre la primera iteración",
+    # Fila 1: Inversión total (ocupa solo la mitad izquierda para mantener consistencia)
+    c_inv_total, _c_inv_spacer = st.columns(2)
+    c_inv_total.number_input(
+        "Inversión ($)",
+        key="invest_total",
+        step=1000.0,
+        min_value=0.0,
+        format="%.2f",
+        on_change=_sync_total_to_dollars,
     )
-    btn_proxima = st.button(
-        "Próxima iteración",
-        type="secondary",
-        use_container_width=True,
-        disabled=(not has_session) or session_exhausted,
-        key="btn_proxima",
-        help="Usa los parámetros actuales del sidebar para la siguiente iteración",
+
+    # Fila 2: %-split por leg
+    c_call_pct, c_put_pct = st.columns(2)
+    c_call_pct.number_input(
+        "Inversión en CALL (%)",
+        key="call_pct",
+        step=5.0,
+        min_value=0.0,
+        max_value=100.0,
+        format="%.1f",
+        on_change=_sync_call_pct_changed,
+        disabled=only_put_now,
     )
+    c_put_pct.number_input(
+        "Inversión en PUT (%)",
+        key="put_pct",
+        step=5.0,
+        min_value=0.0,
+        max_value=100.0,
+        format="%.1f",
+        on_change=_sync_put_pct_changed,
+        disabled=only_call_now,
+    )
+
+    # Fila 3: $-split por leg (bidireccional con %)
+    c_call_d, c_put_d = st.columns(2)
+    invest_call = c_call_d.number_input(
+        "Inversión en CALL ($)",
+        key="call_dollars",
+        step=100.0,
+        min_value=0.0,
+        format="%.2f",
+        on_change=_sync_call_dollars_changed,
+        disabled=only_put_now,
+    )
+    invest_put = c_put_d.number_input(
+        "Inversión en PUT ($)",
+        key="put_dollars",
+        step=100.0,
+        min_value=0.0,
+        format="%.2f",
+        on_change=_sync_put_dollars_changed,
+        disabled=only_call_now,
+    )
+
+    # Default del Umbral si nunca se sembró (caso primera carga).
+    # El auto-apply de la Predicción Apertura ya escribe a este key cuando
+    # cambia la predicción — no necesitamos el messenger _pending_roi_threshold.
+    if "umbral_roi_pct" not in st.session_state:
+        st.session_state["umbral_roi_pct"] = 10.0
+    # Defaults de params por pierna ("CALL o PUT") y del umbral de salida ("plus").
+    for _k, _v in (("call_roi_pct", 10.0), ("call_stop_pct", -100.0),
+                   ("put_roi_pct", 10.0), ("put_stop_pct", -100.0),
+                   ("exit_plus_pct", 50.0)):
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
+    # El cierre por umbral siempre se evalúa sobre el ROI (%) total.
+    exit_metric = "total"
+    exit_plus_threshold_pct = 0.50  # default; solo en "CALL o PUT (plus)"
+    exit_plus_time = None           # default; solo en "CALL o PUT (plus)"
+
+    if is_call_or_put:
+        # CALL o PUT: salida COMBINADA al +100%. Se venden AMBAS piernas cuando
+        # CUALQUIERA alcanza +100% (se duplica). NO usa Umbral de ROI ni Stop
+        # loss — por eso no se muestran esos inputs. Termina al +100% o al cierre.
+        exit_threshold_pct = 1.0          # +100% (solo referencia de estilo)
+        stop_loss_pct = -1.0
+        call_exit_threshold_pct = put_exit_threshold_pct = 1.0
+        call_stop_loss_pct = put_stop_loss_pct = -1.0
+    elif is_both_plus:
+        # CALL y PUT (plus): se compran ambas y se venden las DOS SOLO al llegar al
+        # Horario de salida (1 min antes). NO usa Umbral de ROI ni Stop loss.
+        exit_threshold_pct = 1.0          # ignorado por el modo both_plus
+        stop_loss_pct = -1.0
+        call_exit_threshold_pct = put_exit_threshold_pct = 1.0
+        call_stop_loss_pct = put_stop_loss_pct = -1.0
+    elif is_call_or_put_plus:
+        # CALL o PUT (plus): la 1ª pierna que alcanza el "Umbral de salida (%)" se
+        # vende y banca su ganancia; la otra se vende cuando, sumando lo bancado +
+        # su valor, se recupera la inversión TOTAL. Si no, cierran al fin del día.
+        exit_plus_threshold_pct = st.number_input(
+            "Umbral de salida (%)", key="exit_plus_pct",
+            step=5.0, min_value=1.0, format="%.2f",
+            help="ROI% al que se vende la PRIMERA pierna (la que llegue primero al umbral).",
+        ) / 100.0
+        # La "Hora de salida" del plus es ahora el "Horario de salida" GENERAL
+        # (arriba, default 16:00): la pierna pendiente se liquida en el minuto ANTES
+        # de esa hora (vía end_ts = salida - 1min), igual que las demás estrategias.
+        exit_plus_time = horario_salida
+        exit_threshold_pct = exit_plus_threshold_pct   # referencia de estilo
+        stop_loss_pct = -1.0
+        call_exit_threshold_pct = put_exit_threshold_pct = exit_plus_threshold_pct
+        call_stop_loss_pct = put_stop_loss_pct = -1.0
+    else:
+        c7, c8 = st.columns(2)
+        exit_threshold_pct = c7.number_input(
+            "Umbral de ROI (%)",
+            key="umbral_roi_pct",
+            step=5.0, min_value=1.0,
+        ) / 100.0
+        stop_loss_pct = c8.number_input(
+            "Stop loss (%)",
+            value=-100.0, step=10.0, max_value=0.0, format="%.2f",
+        ) / 100.0
+        # Per-leg no usados en estos modos: defaults inocuos para el engine.
+        call_exit_threshold_pct = put_exit_threshold_pct = exit_threshold_pct
+        call_stop_loss_pct = put_stop_loss_pct = stop_loss_pct
+
+st.sidebar.markdown("---")
+btn_iniciar = st.sidebar.button(
+    "Iniciar nueva simulación",
+    type="primary",
+    use_container_width=True,
+    key="btn_iniciar",
+    help="Resetea el estado y corre la primera iteración",
+)
+btn_proxima = st.sidebar.button(
+    "Próxima iteración",
+    type="secondary",
+    use_container_width=True,
+    disabled=(not has_session) or session_exhausted,
+    key="btn_proxima",
+    help="Usa los parámetros actuales del sidebar para la siguiente iteración",
+)
 
 
 def _validate_form() -> bool:
