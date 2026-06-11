@@ -1,17 +1,15 @@
 """Importador de señales (investepacademyia.com — Historial de Señales).
 
-Dos parsers que producen el MISMO esquema (db.COLUMNS), con dedup por `id` estable:
-  - parse_api_payload(json)  : el JSON del Historial (API / pegado).
-  - parse_alert_email(eml)   : el email HTML de alerta ("N señales activas").
+Parser del email HTML de alerta ("N señales activas") → esquema db.COLUMNS, con dedup
+por `id` estable (parse_alert_email).
 
-Tres vías de ingesta:
-  - Pegar el JSON            → import_payload()           (manual)
+Dos vías de ingesta:
   - Subir/pegar un .eml      → import_email()             (manual)
   - Poller IMAP a Gmail      → fetch_from_email()          (automático)
 
-El `id` se deriva del token único del gráfico (igual en API y email) → la misma señal
-no se duplica entre fuentes. Secretos (Gmail app password) en signals_secrets.py
-(gitignored); este módulo solo los lee, nunca hardcodea credenciales.
+El `id` se deriva del token único del gráfico → la misma señal no se duplica entre
+envíos. Secretos (Gmail app password) en signals_secrets.py (gitignored); este módulo
+solo los lee, nunca hardcodea credenciales.
 """
 from __future__ import annotations
 
@@ -20,13 +18,11 @@ import hashlib as _hashlib
 import json as _json
 import re as _re
 from email import policy as _policy
-from typing import Union
 
 import pandas as pd
 
 import signals_db as db
 
-_ET_TZ = "America/New_York"   # el sitio/email muestran horarios en hora del Este
 IMAP_HOST = "imap.gmail.com"
 EMAIL_SENDER = "investepacademyia.com"   # filtro IMAP
 
@@ -41,13 +37,6 @@ STRAT_LABEL = {
 }
 # Estados posibles de una señal (como en el sitio).
 ESTADOS = ["Por definir", "Aprovechada", "No aprovechada"]
-# Nombres de los criterios por estrategia (para el detalle expandible del JSON).
-CRITERIA_NAMES = {
-    "trend-reversal": ["Tendencia Previa (+2 Días)", "Ruptura Línea de Tendencia y MM20H",
-                       "Tendencia B15m", "Integridad MM"],
-    "trend-reversal-15m": ["Cierre de ayer vs SMA20", "Precio actual vs SMA20 recalculado",
-                           "Posición respecto a Bandas de Bollinger", "Confirmación de ruptura"],
-}
 _MESES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
           "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12}
 
@@ -57,20 +46,6 @@ class ScraperNotConfigured(RuntimeError):
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-def _to_et(iso_utc) -> tuple:
-    """ISO UTC ('2026-06-08T13:24:47Z') → (fecha ISO, 'HH:MM') en hora del Este."""
-    if not iso_utc:
-        return (None, None)
-    try:
-        ts = pd.Timestamp(iso_utc)
-        if ts.tzinfo is None:
-            ts = ts.tz_localize("UTC")
-        ts = ts.tz_convert(_ET_TZ)
-        return (ts.strftime("%Y-%m-%d"), ts.strftime("%H:%M"))
-    except Exception:
-        return (None, None)
-
-
 def _signal_id(chart_url, symbol, strat_raw, tipo, fecha, hora, uuid=None) -> str:
     """ID estable para dedup. Usa el token único del nombre del gráfico (idéntico en
     la API y en el email) → la misma señal dedupea entre fuentes. Si no hay gráfico,
@@ -83,47 +58,6 @@ def _signal_id(chart_url, symbol, strat_raw, tipo, fecha, hora, uuid=None) -> st
         return str(uuid)
     key = f"{symbol}|{strat_raw}|{tipo}|{fecha}|{hora}"
     return "h-" + _hashlib.md5(key.encode("utf-8")).hexdigest()[:16]
-
-
-# ── Parser del JSON de la API ────────────────────────────────────────────────
-def parse_api_payload(payload: Union[str, dict, list]) -> pd.DataFrame:
-    """Historial de Señales (dict {items:[...]}, lista, o texto JSON) → DataFrame."""
-    if isinstance(payload, str):
-        payload = _json.loads(payload)
-    items = payload.get("items", []) if isinstance(payload, dict) else (
-        payload if isinstance(payload, list) else [])
-
-    rows = []
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        cd = it.get("criteriaData") or {}
-        crit_flags = [bool(cd.get(f"criterio{i}")) for i in (1, 2, 3, 4)]
-        n_ok = sum(crit_flags)
-        _cnames = CRITERIA_NAMES.get(it.get("strategyName"),
-                                     [f"Criterio {i}" for i in (1, 2, 3, 4)])
-        crit_list = [{"nombre": _cnames[i], "ok": crit_flags[i]} for i in range(4)]
-        fecha, hora = _to_et(it.get("createdAt") or it.get("lastNotificationAt"))
-        prob, gain, used = it.get("probability"), it.get("userGain"), it.get("userUsedSignal")
-        chart = it.get("chartUrl")
-        rows.append({
-            "id": _signal_id(chart, it.get("symbol"), it.get("strategyName"),
-                             it.get("signalType"), fecha, hora, uuid=it.get("id")),
-            "symbol": it.get("symbol"),
-            "tipo": it.get("signalType"),
-            "estrategia": STRAT_LABEL.get(it.get("strategyName"), it.get("strategyName")),
-            "estrategia_raw": it.get("strategyName"),
-            "probabilidad": float(prob) if prob not in (None, "") else None,
-            "fecha": fecha, "hora": hora,
-            "estado": "Por definir" if used in (None, "") else str(used),
-            "ganancia": float(gain) if gain not in (None, "") else 0.0,
-            "is_active": 1 if it.get("isActive") else 0,
-            "criterios": f"{n_ok}/4",
-            "criterios_json": _json.dumps(crit_list, ensure_ascii=False),
-            "chart_url": chart, "creado_en": it.get("createdAt"),
-            "fuente": "api", "importado_en": None,
-        })
-    return pd.DataFrame(rows, columns=COLUMNS) if rows else pd.DataFrame(columns=COLUMNS)
 
 
 # ── Parser del email HTML de alerta ──────────────────────────────────────────
@@ -216,11 +150,6 @@ def _stamp(df, now_iso):
         df["importado_en"] = now_iso
     df["hora"] = df["hora"].apply(_clamp_hora)   # pre-09:30 → 09:30 (apertura)
     return df
-
-
-def import_payload(payload, now_iso=None) -> int:
-    """Parsea JSON y hace upsert. Devuelve cuántas señales NUEVAS entraron."""
-    return db.upsert_signals(_stamp(parse_api_payload(payload), now_iso))
 
 
 def import_email(raw, now_iso=None) -> int:

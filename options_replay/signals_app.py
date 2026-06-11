@@ -1,8 +1,8 @@
 """Página 'Alertas' — Historial de Señales con filas EXPANDIBLES.
 
 Cada fila se expande para mostrar los Criterios de la estrategia (✓/✗) + la Gráfica
-de la señal, y permite editar Estado / Ganancia. Importación: pegar JSON · subir .eml
-· poller IMAP. Selección MULTI-fila → "Backtestear señales" redirige a la página
+de la señal, y permite editar Estado / Ganancia. Importación: subir .eml · poller IMAP.
+Selección MULTI-fila → "Backtestear señales" redirige a la página
 Backtesting con esas señales cargadas como iteraciones.
 """
 from __future__ import annotations
@@ -32,16 +32,7 @@ _now = lambda: datetime.now().isoformat(timespec="seconds")
 
 # ── Importar ─────────────────────────────────────────────────────────────────
 with st.expander("📥 Importar señales", expanded=False):
-    t_json, t_eml, t_mail = st.tabs(["Pegar JSON", "Subir email (.eml)", "Revisar correo (auto)"])
-    with t_json:
-        _txt = st.text_area("JSON del Historial", height=140, label_visibility="collapsed",
-                            placeholder='{ "items": [ { "symbol": "AAPL", ... } ] }')
-        if st.button("Importar JSON"):
-            try:
-                n = xs.import_payload(_txt, now_iso=_now())
-                st.success(f"Importadas {n} señales nuevas.") if n else st.info("Sin señales nuevas.")
-            except Exception as e:
-                st.error(f"No se pudo parsear el JSON: {e}")
+    t_eml, t_mail = st.tabs(["Subir email (.eml)", "Revisar correo (auto)"])
     with t_eml:
         _files = st.file_uploader("Emails (.eml)", type=["eml"], accept_multiple_files=True,
                                   label_visibility="collapsed")
@@ -72,7 +63,7 @@ with st.expander("📥 Importar señales", expanded=False):
 
 df = xs.load_signals()
 if df.empty:
-    st.info("Todavía no hay señales. Importá pegando el JSON, subiendo un .eml, o por correo.")
+    st.info("Todavía no hay señales. Importá subiendo un .eml, o por correo (IMAP).")
     st.stop()
 
 # ── Filtros ──────────────────────────────────────────────────────────────────

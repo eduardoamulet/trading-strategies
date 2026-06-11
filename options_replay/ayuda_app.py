@@ -16,8 +16,8 @@ st.markdown(
 
 - **🏠 Dashboard** — resumen: cantidad de señales, activas, aprovechadas y ganancia.
 - **🔔 Alertas** — Historial de Señales (importadas de investepacademyia). Importás
-  *pegando el JSON*, *subiendo el email .eml*, o *por correo automático* (IMAP).
-  Filtrás por estrategia/acción/estado/tipo/fechas y editás **Estado** y **Ganancia**.
+  *subiendo el email .eml* o *por correo automático* (IMAP). Filtrás por
+  estrategia/acción/estado/tipo/fechas y editás **Estado** y **Ganancia**.
 - **🎯 Estrategias** — definición de las estrategias (Trend Reversal, etc.).
 - **📈 Activos** — universo de símbolos y su rango óptimo.
 - **🔬 Backtesting** — simulación histórica de opciones 0DTE/1DTE con datos de Polygon.
