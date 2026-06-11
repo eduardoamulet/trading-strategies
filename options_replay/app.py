@@ -1776,11 +1776,6 @@ with st.sidebar.container(border=True):
             # CALL o PUT: salida COMBINADA al +100%. Se venden AMBAS piernas cuando
             # CUALQUIERA alcanza +100% (se duplica). NO usa Umbral de ROI ni Stop
             # loss — por eso no se muestran esos inputs. Termina al +100% o al cierre.
-            st.info(
-                "🎯 **CALL o PUT** — se compran ambas piernas y se **venden las dos** "
-                "en cuanto **cualquiera alcanza +100%** (se duplica). No depende de "
-                "Umbral de ROI ni Stop loss. Termina al +100% o al **cierre del día**."
-            )
             exit_threshold_pct = 1.0          # +100% (solo referencia de estilo)
             stop_loss_pct = -1.0
             call_exit_threshold_pct = put_exit_threshold_pct = 1.0
@@ -1788,11 +1783,6 @@ with st.sidebar.container(border=True):
         elif is_both_plus:
             # CALL y PUT (plus): se compran ambas y se venden las DOS SOLO al llegar al
             # Horario de salida (1 min antes). NO usa Umbral de ROI ni Stop loss.
-            st.info(
-                "🎯 **CALL y PUT (plus)** — se compran ambas piernas y se **venden las dos "
-                "al llegar al Horario de salida** (1 min antes). No depende de Umbral de "
-                "ROI ni Stop loss; no hay salida anticipada."
-            )
             exit_threshold_pct = 1.0          # ignorado por el modo both_plus
             stop_loss_pct = -1.0
             call_exit_threshold_pct = put_exit_threshold_pct = 1.0
@@ -1801,19 +1791,6 @@ with st.sidebar.container(border=True):
             # CALL o PUT (plus): la 1ª pierna que alcanza el "Umbral de salida (%)" se
             # vende y banca su ganancia; la otra se vende cuando, sumando lo bancado +
             # su valor, se recupera la inversión TOTAL. Si no, cierran al fin del día.
-            _plus_tip = (
-                "🎯&#10;CALL o PUT (plus) — la 1ª pierna que alcanza el Umbral de salida "
-                "(%) se vende y banca su ganancia. La otra se vende cuando, sumando lo "
-                "bancado + su valor, se recupera la inversión total (CALL + PUT). Si no "
-                "se cumple antes del Horario de salida, ambas se venden 1 min antes."
-            )
-            st.markdown(
-                "<p style='text-align:left; font-weight:bold; margin: 0.2rem 0 0.5rem 0;'>"
-                "🎯 CALL o PUT (plus) "
-                f"<span title='{_plus_tip}' style='cursor:help; color:#888; "
-                "font-weight:normal;'>ⓘ</span></p>",
-                unsafe_allow_html=True,
-            )
             exit_plus_threshold_pct = st.number_input(
                 "Umbral de salida (%)", key="exit_plus_pct",
                 step=5.0, min_value=1.0, format="%.2f",

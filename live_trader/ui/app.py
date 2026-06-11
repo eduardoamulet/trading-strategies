@@ -339,6 +339,7 @@ else:
         "Contrato": f"{p['underlying']} · {p['occ']}",
         "Cant.": int(_f(p.get("qty"))),
         "Compra": f"${_f(p.get('entry_price')):.2f}",
+        "Inversión": f"${_f(p.get('cost_total')):,.2f}",
         "Venta": f"${_f(p.get('exit_price')):.2f}",
         "ROI": f"{_f(p.get('roi_final')):+.1f}%",
         "P&L": f"${_f(p.get('pnl_net')):+,.2f}",
