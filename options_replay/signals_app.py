@@ -160,7 +160,8 @@ def _render_detalle(r):
             st.caption("Sin gráfica.")
 
 
-# Tabla (grilla) ordenable con una casilla "Ver" por fila → al marcarla abre el modal.
+# Tabla ordenable con SELECCIÓN de filas NATIVA (multi-row): click + shift+click marca un
+# rango. Las acciones (ver, backtestear, operar, borrar) van en botones debajo de la tabla.
 fdf = fdf.reset_index(drop=True)
 if fdf.empty:
     st.info("No hay señales que cumplan los filtros seleccionados. "
@@ -184,26 +185,15 @@ elif _sort_opt == "Estado":
     fdf = fdf.sort_values("estado")
 fdf = fdf.reset_index(drop=True)
 
-# Al cambiar el orden, reseteamos la grilla (bump de key) → las casillas "Ver" quedan
-# alineadas con las filas nuevas y destildadas.
+# Al cambiar el orden, reseteamos la tabla (bump de key) → la selección de filas queda
+# alineada con el nuevo orden (y vacía).
 if st.session_state.get("_sig_sort_prev") != _sort_opt:
     st.session_state["_sig_sort_prev"] = _sort_opt
     st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
 
-_sel_ids = st.session_state.get("bt_selected_ids", set())
-# Base de "Selección" CONSTANTE por versión de grilla (_sig_ed_v). Si se re-sembrara
-# desde bt_selected_ids en CADA run, el st.data_editor se pelea con su propio output
-# (aplica/poda sus edits sobre un base movedizo) → la marca se "cae" sola al clickear.
-# Tomamos UN snapshot por key; el widget acumula los clicks encima. Al bumpear la key
-# (orden/Ver/limpiar) se re-snapshotea desde bt_selected_ids (que ya quedó guardado).
-_snap_key = f"_sig_sel_snap_{st.session_state.get('_sig_ed_v', 0)}"
-_snap = st.session_state.get(_snap_key)
-if _snap is None or len(_snap) != len(fdf):
-    _snap = [str(fdf.iloc[i]["id"]) in _sel_ids for i in range(len(fdf))]
-    st.session_state[_snap_key] = _snap
+# Tabla SOLO LECTURA con selección multi-fila NATIVA: NO lleva casillas; la selección
+# (shift+click = rango) la maneja Streamlit. Sólo columnas de datos + bandas por fecha.
 _show = pd.DataFrame({
-    # "Selección" (1ª columna): base constante (snapshot); el widget guarda los clicks.
-    "Selección": list(_snap),
     "Acción": fdf["symbol"].values,
     "Hora": fdf["hora"].values,
     "Fecha": fdf["fecha"].values,
@@ -213,13 +203,10 @@ _show = pd.DataFrame({
     "Criterios": fdf["criterios"].values,
     "Estado": fdf["estado"].values,
     "Ganancia": pd.to_numeric(fdf["ganancia"], errors="coerce").fillna(0.0).values,
-    "Ver": [False] * len(fdf),
-    "Borrar": [False] * len(fdf),
 })
 
-# Bandas por fecha: las filas de la MISMA fecha van en VERDE CLARO / BLANCO, alternando
-# el color cada vez que cambia la fecha (según el orden actual de la tabla). El Styler
-# pinta el fondo; las casillas Selección/Ver siguen siendo editables.
+# Bandas por fecha: filas de la MISMA fecha en VERDE CLARO / BLANCO, alternando el color
+# al cambiar la fecha (según el orden actual). El Styler pinta el fondo.
 _fechas = _show["Fecha"].tolist()
 _grp, _rowbg = 0, []
 for _i, _d in enumerate(_fechas):
@@ -228,84 +215,70 @@ for _i, _d in enumerate(_fechas):
     _rowbg.append("background-color: #ecfdf3" if _grp % 2 == 0 else "")
 _styled = _show.style.apply(lambda _r: [_rowbg[_r.name]] * len(_r), axis=1)
 
-_ekey = f"sig_ed_{st.session_state.get('_sig_ed_v', 0)}"
-_edited = st.data_editor(
-    _styled, use_container_width=True, hide_index=True, key=_ekey,
-    disabled=["Acción", "Hora", "Fecha", "Estrategia", "% Cumpl.", "Tipo",
-              "Criterios", "Estado", "Ganancia"],
+# Selección multi-fila NATIVA (shift+click = rango). La key versionada se resetea al
+# cambiar el orden / borrar / limpiar (bump de _sig_ed_v) → la selección queda alineada.
+_tkey = f"sig_table_{st.session_state.get('_sig_ed_v', 0)}"
+_event = st.dataframe(
+    _styled, use_container_width=True, hide_index=True, key=_tkey,
+    on_select="rerun", selection_mode="multi-row",
     column_config={
-        "Selección": st.column_config.CheckboxColumn(
-            "Selección", help="Marcá para backtestear esta alerta"),
         "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%"),
         "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
-        "Ver": st.column_config.CheckboxColumn(
-            "🔍", help="Marcá para ver el detalle de la señal (y borrarla desde el modal)."),
-        "Borrar": st.column_config.CheckboxColumn(
-            "🗑", help="Marcá las filas a borrar; luego confirmá y tocá el botón de abajo."),
     },
 )
-st.caption("Casilla **Selección** (1ª col.) = elegir alertas para el backtest · 🔍 = abrir el "
-           "detalle · 🗑 (última col.) = marcar filas para borrar · **'Ordenar por'** ordena.")
-# Selección PERSISTENTE (alimenta el backtest de abajo). Se guarda por `id`.
-st.session_state["bt_selected_ids"] = {
-    str(fdf.iloc[i]["id"]) for i, v in enumerate(_edited["Selección"].tolist()) if v}
-# La casilla "Ver" es momentánea: al marcarla se abre el modal y se resetea la grilla
-# (bump de key) → se destilda al cerrar. La "Selección" se re-siembra desde
-# bt_selected_ids, así NO se pierde con ese reset.
-_checked = [i for i, v in enumerate(_edited["Ver"].tolist()) if v]
-if _checked:
-    st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
-    _render_detalle(fdf.iloc[_checked[0]])
+st.caption("Tocá una fila para seleccionarla · **shift+click** en otra marca el **rango** · "
+           "**Ctrl/Cmd+click** suma sueltas · **'Ordenar por'** ordena. Las acciones están abajo.")
 
-# ── Borrar las filas marcadas con la casilla 🗑 (IRREVERSIBLE → pide confirmar) ──
-_del_marked = [i for i, v in enumerate(_edited["Borrar"].tolist()) if v]
-if _del_marked:
-    _del_ids = [str(fdf.iloc[i]["id"]) for i in _del_marked]
-    _rd1, _rd2 = st.columns([2.6, 1], vertical_alignment="center")
-    _row_del_ok = _rd2.checkbox("Confirmar", key="sig_row_del_confirm",
-                                help="Borrado irreversible de las filas marcadas con 🗑.")
-    if _rd1.button(f"🗑 Borrar {len(_del_ids)} fila(s) marcada(s)", type="primary",
-                   use_container_width=True, disabled=not _row_del_ok):
-        _n = db.delete_signals(_del_ids)
+# Posiciones seleccionadas (en el orden actual) → ids. Alimenta los botones de abajo.
+_sel_rows = sorted(_event.selection.rows) if (_event and _event.selection) else []
+_sel_ids = [str(fdf.iloc[i]["id"]) for i in _sel_rows]
+st.session_state["bt_selected_ids"] = set(_sel_ids)
+
+# ── Acciones sobre las filas SELECCIONADAS ───────────────────────────────────
+st.divider()
+st.subheader("🔬 Backtest de señales")
+if not _sel_rows:
+    st.info("Seleccioná una o más alertas en la tabla de arriba "
+            "(click · **shift+click** para un rango · **Ctrl/Cmd+click** para sueltas).")
+else:
+    _sel_df = fdf.iloc[_sel_rows]
+    st.markdown(f"🧺 **{len(_sel_rows)} seleccionada(s):**  " + "  ·  ".join(
+        f"{r['symbol']} {r['tipo']} ({r['fecha']} {r['hora']})" for _, r in _sel_df.iterrows()))
+
+    # Ver detalle (1 fila) · Backtestear · Operar en vivo.
+    _b1, _b2, _b3 = st.columns(3)
+    if _b1.button("🔍 Ver detalle", use_container_width=True, disabled=len(_sel_rows) != 1,
+                  help="Abre el modal de la fila seleccionada (requiere exactamente 1)."):
+        _render_detalle(fdf.iloc[_sel_rows[0]])
+    if _b2.button(f"▶ Backtestear {len(_sel_rows)}  →  Backtesting", type="primary",
+                  use_container_width=True):
+        st.session_state["bt_signals_handoff"] = [
+            {"symbol": str(r["symbol"]), "fecha": str(r["fecha"]), "hora": str(r["hora"]),
+             "tipo": str(r["tipo"]), "prob": r.get("probabilidad")} for _, r in _sel_df.iterrows()]
+        st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+        st.switch_page("options_replay/app.py")
+    if _b3.button(f"🟢 Operar {len(_sel_rows)} (paper)  →  Live", use_container_width=True,
+                  help="Abre 1 posición por alerta en el sandbox (paper, NO dinero real). El "
+                       "daemon monitorea y vende al Umbral de ROI. Requiere mercado abierto."):
+        st.session_state["live_alerts_handoff"] = [
+            {"id": str(r["id"]), "symbol": str(r["symbol"]), "tipo": str(r["tipo"])}
+            for _, r in _sel_df.iterrows()]
+        st.switch_page("live_trader/ui/app.py")
+
+    # Borrar las seleccionadas (IRREVERSIBLE → confirmar) · Limpiar selección.
+    _d1, _d2, _d3 = st.columns([2.4, 1, 1.4], vertical_alignment="center")
+    _row_del_ok = _d2.checkbox("Confirmar", key="sig_row_del_confirm",
+                               help="Borrado irreversible de las filas seleccionadas.")
+    if _d1.button(f"🗑 Borrar {len(_sel_rows)} seleccionada(s)", use_container_width=True,
+                  disabled=not _row_del_ok,
+                  help="Elimina del historial las señales seleccionadas. No se puede deshacer."):
+        _n = db.delete_signals(_sel_ids)
         st.session_state.pop("bt_selected_ids", None)
         st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
         st.session_state.pop("sig_row_del_confirm", None)
         st.toast(f"🗑 Borradas {_n} señal(es)")
         st.rerun()
-
-# ── Backtest de las alertas SELECCIONADAS → redirige a la página Backtesting ──
-st.divider()
-st.subheader("🔬 Backtest de señales")
-st.caption(
-    "Marcá la casilla **Selección** (1ª columna) de las alertas a backtestear. Cada señal = "
-    "1 iteración (Sólo CALL/PUT según Tipo · Opción 1 menor spread · mismo día). El botón te "
-    "lleva a **Backtesting** con las señales cargadas."
-)
-_sel_now = st.session_state.get("bt_selected_ids", set())
-_sel_df = df[df["id"].astype(str).isin(_sel_now)] if _sel_now else df.iloc[0:0]
-if _sel_df.empty:
-    st.info("Marcá la casilla **Selección** de una o más alertas en la tabla de arriba.")
-else:
-    st.markdown("🧺 **Seleccionadas:**  " + "  ·  ".join(
-        f"{r['symbol']} {r['tipo']} ({r['fecha']} {r['hora']})" for _, r in _sel_df.iterrows()))
-    _bk1, _bk2 = st.columns([2, 1])
-    if _bk1.button(f"▶ Backtestear {len(_sel_df)} señal(es)  →  Backtesting", type="primary",
-                   use_container_width=True):
-        st.session_state["bt_signals_handoff"] = [
-            {"symbol": str(r["symbol"]), "fecha": str(r["fecha"]), "hora": str(r["hora"]),
-             "tipo": str(r["tipo"]), "prob": r.get("probabilidad")} for _, r in _sel_df.iterrows()]
-        st.session_state.pop("bt_selected_ids", None)
-        st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
-        st.switch_page("options_replay/app.py")
-    if _bk2.button("🗑 Limpiar selección", use_container_width=True):
+    if _d3.button("🧹 Limpiar", use_container_width=True, help="Vaciar la selección actual."):
         st.session_state.pop("bt_selected_ids", None)
         st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
         st.rerun()
-    if st.button(f"🟢 Operar {len(_sel_df)} en vivo (paper)  →  Live", use_container_width=True,
-                 help="Abre 1 posición por alerta en el sandbox (paper, NO dinero real). El "
-                      "daemon monitorea y vende al Umbral de ROI. Requiere mercado abierto."):
-        st.session_state["live_alerts_handoff"] = [
-            {"id": str(r["id"]), "symbol": str(r["symbol"]), "tipo": str(r["tipo"])}
-            for _, r in _sel_df.iterrows()]
-        st.switch_page("live_trader/ui/app.py")
-    st.caption("Para **borrar** señales usá la casilla 🗑 (última columna de la tabla de arriba).")
