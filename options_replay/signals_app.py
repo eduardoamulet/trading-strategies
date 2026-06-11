@@ -203,7 +203,7 @@ _grp, _rowbg = 0, []
 for _i, _d in enumerate(_fechas):
     if _i > 0 and _d != _fechas[_i - 1]:
         _grp += 1
-    _rowbg.append("background-color: #d4edda" if _grp % 2 == 0 else "")
+    _rowbg.append("background-color: #ecfdf3" if _grp % 2 == 0 else "")
 _styled = _show.style.apply(lambda _r: [_rowbg[_r.name]] * len(_r), axis=1)
 
 _ekey = f"sig_ed_{st.session_state.get('_sig_ed_v', 0)}"
