@@ -111,13 +111,23 @@ st.divider()
 
 @st.dialog("📊 Detalle de la señal", width="large")
 def _render_detalle(r):
+    # Imagen del diálogo a 2/3 del ancho y pegada de arriba a abajo (alto en vh). object-fit:
+    # contain → no deforma el gráfico. Scope: solo la imagen DENTRO del modal.
+    st.markdown(
+        "<style>"
+        "div[role='dialog'] [data-testid='stImage']{width:100% !important;}"
+        "div[role='dialog'] [data-testid='stImage'] img{"
+        "height:68vh !important; width:100% !important; object-fit:contain;}"
+        "</style>",
+        unsafe_allow_html=True,
+    )
     st.markdown(
         f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
         f"{r.get('fecha', '')} {r.get('hora', '')}** — {r.get('estrategia', '')}"
     )
-    # Toda la info y los controles a la IZQUIERDA · Gráfica sola a la DERECHA, pegada al
-    # borde inferior del modal (vertical_alignment="bottom").
-    _dc1, _dc2 = st.columns([1.3, 1], vertical_alignment="bottom")
+    # Info y controles a la IZQUIERDA (1/3) · Gráfica a la DERECHA (2/3), pegada de arriba
+    # a abajo del modal (alto fijo en el CSS de arriba).
+    _dc1, _dc2 = st.columns([1, 2])
     with _dc1:
         st.markdown("**Criterios de la estrategia:**")
         try:
