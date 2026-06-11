@@ -211,6 +211,7 @@ _show = pd.DataFrame({
     "Estado": fdf["estado"].values,
     "Ganancia": pd.to_numeric(fdf["ganancia"], errors="coerce").fillna(0.0).values,
     "Ver": [False] * len(fdf),
+    "Borrar": [False] * len(fdf),
 })
 
 # Bandas por fecha: las filas de la MISMA fecha van en VERDE CLARO / BLANCO, alternando
@@ -236,10 +237,12 @@ _edited = st.data_editor(
         "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
         "Ver": st.column_config.CheckboxColumn(
             "🔍", help="Marcá para ver el detalle de la señal (y borrarla desde el modal)."),
+        "Borrar": st.column_config.CheckboxColumn(
+            "🗑", help="Marcá las filas a borrar; luego confirmá y tocá el botón de abajo."),
     },
 )
-st.caption("Casilla **Selección** (1ª col.) = elegir alertas para el backtest · casilla "
-           "**Ver** = abrir el detalle en un modal · **'Ordenar por'** cambia el orden.")
+st.caption("Casilla **Selección** (1ª col.) = elegir alertas para el backtest · 🔍 = abrir el "
+           "detalle · 🗑 (última col.) = marcar filas para borrar · **'Ordenar por'** ordena.")
 # Selección PERSISTENTE (alimenta el backtest de abajo). Se guarda por `id`.
 st.session_state["bt_selected_ids"] = {
     str(fdf.iloc[i]["id"]) for i, v in enumerate(_edited["Selección"].tolist()) if v}
@@ -250,6 +253,22 @@ _checked = [i for i, v in enumerate(_edited["Ver"].tolist()) if v]
 if _checked:
     st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
     _render_detalle(fdf.iloc[_checked[0]])
+
+# ── Borrar las filas marcadas con la casilla 🗑 (IRREVERSIBLE → pide confirmar) ──
+_del_marked = [i for i, v in enumerate(_edited["Borrar"].tolist()) if v]
+if _del_marked:
+    _del_ids = [str(fdf.iloc[i]["id"]) for i in _del_marked]
+    _rd1, _rd2 = st.columns([2.6, 1], vertical_alignment="center")
+    _row_del_ok = _rd2.checkbox("Confirmar", key="sig_row_del_confirm",
+                                help="Borrado irreversible de las filas marcadas con 🗑.")
+    if _rd1.button(f"🗑 Borrar {len(_del_ids)} fila(s) marcada(s)", type="primary",
+                   use_container_width=True, disabled=not _row_del_ok):
+        _n = db.delete_signals(_del_ids)
+        st.session_state.pop("bt_selected_ids", None)
+        st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+        st.session_state.pop("sig_row_del_confirm", None)
+        st.toast(f"🗑 Borradas {_n} señal(es)")
+        st.rerun()
 
 # ── Backtest de las alertas SELECCIONADAS → redirige a la página Backtesting ──
 st.divider()
@@ -286,14 +305,4 @@ else:
             {"id": str(r["id"]), "symbol": str(r["symbol"]), "tipo": str(r["tipo"])}
             for _, r in _sel_df.iterrows()]
         st.switch_page("live_trader/ui/app.py")
-    # Borrar las seleccionadas del historial (IRREVERSIBLE → requiere confirmar).
-    _del_ok = st.checkbox("Confirmar borrado (irreversible)", key="sig_del_confirm")
-    if st.button(f"🗑 Borrar {len(_sel_df)} señal(es) seleccionada(s)", use_container_width=True,
-                 disabled=not _del_ok,
-                 help="Elimina del historial las señales marcadas. No se puede deshacer."):
-        _n = db.delete_signals(list(_sel_now))
-        st.session_state.pop("bt_selected_ids", None)
-        st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
-        st.session_state.pop("sig_del_confirm", None)
-        st.toast(f"🗑 Borradas {_n} señal(es)")
-        st.rerun()
+    st.caption("Para **borrar** señales usá la casilla 🗑 (última columna de la tabla de arriba).")
