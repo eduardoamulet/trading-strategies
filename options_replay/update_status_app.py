@@ -52,6 +52,12 @@ def _dotnet_date(v) -> str:
         return str(v)
 
 
+def _fmt_iso(s) -> str:
+    """ISO '2026-06-11T05:00:03' → '2026-06-11 05:00' (mismo formato que la última corrida)."""
+    s = str(s or "")
+    return s.replace("T", " ")[:16] if s and s != "—" else "—"
+
+
 # ── Tarea programada ─────────────────────────────────────────────────────────
 st.subheader("🗓️ Tarea programada")
 _rc, _out, _err = _ps(f"Get-ScheduledTaskInfo -TaskName '{TASK_NAME}' | "
@@ -101,13 +107,13 @@ if not _st:
             "la tarea corra de madrugada.")
 else:
     m = st.columns(4)
-    m[0].metric("Inicio", _st.get("started", "—"))
+    m[0].metric("Inicio", _fmt_iso(_st.get("started")))
     m[1].metric("Duración", f"{_st.get('duration_min', 0)} min")
     m[2].metric("Tickers", _st.get("n_tickers", 0))
     m[3].metric("Errores", _st.get("n_errors", 0))
     st.caption(f"Ventana: **{_st.get('window_start')} → {_st.get('window_end')}**  ·  "
                f"Modo: **{_st.get('mode')}**  ·  Llamadas a opciones: **{_st.get('total_opt_calls', 0)}**  ·  "
-               f"Fin: {_st.get('finished', '—')}")
+               f"Fin: {_fmt_iso(_st.get('finished'))}")
     _rows = _st.get("tickers") or []
     if _rows:
         _df = pd.DataFrame(_rows).rename(columns={"ticker": "Ticker", "days": "Días",
