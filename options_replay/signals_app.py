@@ -83,16 +83,19 @@ sel_sym = f2.multiselect("Acción", sorted(df["symbol"].dropna().unique().tolist
 sel_est = f3.selectbox("Estado", ["(todos)"] + xs.ESTADOS)
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
 _fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
-g1, g2, g3 = st.columns([1, 1, 2])
+g1, g2, g3, g4 = st.columns([1, 1, 1.3, 1])
 d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) else datetime.now().date()))
 d_hasta = g2.date_input("Hasta", value=(_fechas.max().date() if len(_fechas) else datetime.now().date()))
-_page = g3.selectbox("Filas por página", [10, 25, 50, 100, "Todas"], index=4)
+pmin = g3.slider("% Cumpl. mínimo", 0, 100, 0, step=5,
+                 help="Muestra solo señales con % de cumplimiento ≥ este valor (0 = todas).")
+_page = g4.selectbox("Filas por página", [10, 25, 50, 100, "Todas"], index=4)
 
 fdf = df.copy()
 if sel_estr != "(todas)": fdf = fdf[fdf["estrategia"] == sel_estr]
 if sel_sym: fdf = fdf[fdf["symbol"].isin(sel_sym)]
 if sel_est != "(todos)": fdf = fdf[fdf["estado"] == sel_est]
 if sel_tipo != "(todos)": fdf = fdf[fdf["tipo"] == sel_tipo]
+if pmin > 0: fdf = fdf[pd.to_numeric(fdf["probabilidad"], errors="coerce") >= pmin]
 fdf = fdf[(fdf["fecha"] >= d_desde.isoformat()) & (fdf["fecha"] <= d_hasta.isoformat())]
 if _page != "Todas": fdf = fdf.head(int(_page))
 
