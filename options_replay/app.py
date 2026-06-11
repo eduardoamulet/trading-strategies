@@ -707,7 +707,8 @@ if _handoff:
     st.session_state["bt_iters"] = [
         {"Ticker": str(s.get("symbol") or s.get("ticker") or "").upper(),
          "Fecha": str(s.get("fecha") or ""), "Hora": str(s.get("hora") or ""),
-         "Tipo": str(s.get("tipo") or "").upper()} for s in _handoff]
+         "Tipo": str(s.get("tipo") or "").upper(),
+         "% Cumpl.": s.get("prob")} for s in _handoff]
     st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del data_editor
     st.session_state["bt_iters_open"] = True
 
@@ -724,6 +725,9 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
     for _c in ("Ticker", "Fecha", "Hora", "Tipo"):
         if _c not in _seed_df.columns:
             _seed_df[_c] = ""
+    if "% Cumpl." not in _seed_df.columns:
+        _seed_df["% Cumpl."] = None
+    _seed_df["% Cumpl."] = pd.to_numeric(_seed_df["% Cumpl."], errors="coerce")
     # Tipo = modo del motor. Una pierna = "CALL"/"PUT" (= lo que viene en la alerta, así
     # ese es el DEFAULT). Compat: si quedó "Sólo CALL/PUT" de antes, se mapea a CALL/PUT.
     _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (plus)",
@@ -733,13 +737,16 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         else {"SÓLO CALL": "CALL", "SOLO CALL": "CALL",
               "SÓLO PUT": "PUT", "SOLO PUT": "PUT"}.get(str(v).strip().upper(), "CALL"))
     _ed = st.data_editor(
-        _seed_df[["Ticker", "Fecha", "Hora", "Tipo"]], num_rows="dynamic",
+        _seed_df[["Ticker", "Fecha", "Hora", "Tipo", "% Cumpl."]], num_rows="dynamic",
         use_container_width=True, hide_index=True, key="bt_iters_editor",
+        disabled=["% Cumpl."],
         column_config={
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Fecha": st.column_config.TextColumn("Fecha (YYYY-MM-DD)"),
             "Hora": st.column_config.TextColumn("Hora (HH:MM)"),
             "Tipo": st.column_config.SelectboxColumn("Tipo", options=_TIPO_OPTS, required=True),
+            "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%",
+                                                      help="Probabilidad de la señal (informativo)."),
         },
     )
     _sp1, _sp2, _sp3, _sp4 = st.columns(4)
