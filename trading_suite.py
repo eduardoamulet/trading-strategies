@@ -36,6 +36,14 @@ st.markdown(
     "[data-testid='stMainBlockContainer'],"
     "[data-testid='stAppViewContainer'] > .main > .block-container"
     "{padding-top:1.5rem !important;}"
+    # Menú lateral pegado al margen superior (sin el gap por defecto de Streamlit).
+    "section[data-testid='stSidebar'] > div:first-child,"
+    "section[data-testid='stSidebar'] [data-testid='stSidebarContent'],"
+    "section[data-testid='stSidebar'] [data-testid='stSidebarUserContent'],"
+    "section[data-testid='stSidebar'] .block-container"
+    "{padding-top:0 !important; margin-top:0 !important;}"
+    "section[data-testid='stSidebar'] [data-testid='stSidebarHeader']"
+    "{padding:0 !important; min-height:0 !important; height:auto !important;}"
     "</style>", unsafe_allow_html=True)
 
 sys.path.insert(0, str(Path(__file__).parent / "options_replay"))
