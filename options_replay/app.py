@@ -514,12 +514,12 @@ except Exception:
 st.markdown(
     """
     <style>
-    /* En Backtesting el panel izquierdo va al DOBLE del ancho inicial (250px → 500px),
+    /* En Backtesting el panel izquierdo es algo más ancho que el menú (300px → 400px),
        solo cuando está expandida. Al volver al menú, este CSS no se aplica y la regla
-       global (250px) restaura el ancho inicial. */
+       global (300px) restaura el ancho inicial. */
     section[data-testid="stSidebar"][aria-expanded="true"] {
-        min-width: 500px !important;
-        max-width: 500px !important;
+        min-width: 400px !important;
+        max-width: 400px !important;
     }
 
     /* Pegar el contenido al tope de la sidebar (incluyendo el botón << y el
