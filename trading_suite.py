@@ -6,7 +6,7 @@ Flujo:
   2) Menú según rol: la sección Administración (👥 Usuarios) solo la ven los admin.
 
 Menú: 🏠 Dashboard · 🔔 Alertas · 🎯 Estrategias · 📈 Activos · 👤 Perfil · ❓ Ayuda
-Herramientas: 🔬 Backtesting · 🟢 Live   ·   Administración (admin): 👥 Usuarios
+Herramientas: 🔬 Backtesting · 🟢 Live · 📓 Registro   ·   Administración (admin): 👥 Usuarios
 
 Correr desde la raíz (Traiding/):  py -m streamlit run trading_suite.py
 """
@@ -72,13 +72,15 @@ ayuda = st.Page("options_replay/ayuda_app.py", title="Ayuda", icon="❓", url_pa
 backtesting = st.Page("options_replay/app.py", title="Backtesting", icon="🔬",
                       url_path="simulation")
 live = st.Page("live_trader/ui/app.py", title="Live", icon="🟢", url_path="live")
+registro = st.Page("options_replay/registro_app.py", title="Registro", icon="📓",
+                   url_path="registro")
 usuarios = st.Page("options_replay/usuarios_app.py", title="Usuarios", icon="👥",
                    url_path="usuarios")
 
 # ── 3) Navegación según rol ──────────────────────────────────────────────────
 nav = {
     "Menú": [dashboard, alertas, estrategias, activos, perfil, ayuda],
-    "Herramientas": [backtesting, live],
+    "Herramientas": [backtesting, live, registro],
 }
 if user.get("rol") == "admin":
     nav["Administración"] = [usuarios]
