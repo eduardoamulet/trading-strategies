@@ -5,6 +5,7 @@ Sandbox: https://sandbox.tradier.com/v1  (paper money, quotes con delay 15min)
 """
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime
 from typing import Optional
@@ -22,6 +23,12 @@ def _occ_underlying(occ: str) -> str:
     while i < len(occ) and occ[i].isalpha():
         i += 1
     return occ[:i]
+
+
+def _clean_tag(tag) -> str:
+    # Tradier SOLO acepta letras, números y guiones en el tag; un "_" (u otro símbolo)
+    # devuelve 400 "Invalid parameter, tag: contains invalid characters". Sanitizamos.
+    return re.sub(r"[^A-Za-z0-9-]", "-", str(tag or ""))[:255]
 
 
 class TradierAdapter(BrokerAdapter):
@@ -49,7 +56,8 @@ class TradierAdapter(BrokerAdapter):
                     last = BrokerError(f"{r.status_code} {r.text[:120]}")
                     time.sleep(2 ** a)
                     continue
-                r.raise_for_status()
+                if r.status_code >= 400:   # 4xx: surface el detalle de Tradier (no el genérico)
+                    raise BrokerError(f"{r.status_code} {r.text[:300]}")
                 return r.json()
             except (requests.Timeout, requests.ConnectionError) as e:
                 last = e
@@ -141,7 +149,7 @@ class TradierAdapter(BrokerAdapter):
             "type": "limit",
             "duration": req.duration,
             "price": f"{req.limit_price:.2f}",
-            "tag": req.tag[:255] if req.tag else "",
+            "tag": _clean_tag(req.tag),
         }
         d = self._req("POST", f"/accounts/{self._account}/orders", data=data)
         o = d.get("order") or {}
