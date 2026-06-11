@@ -140,9 +140,18 @@ def _render_detalle(r):
         else:
             st.caption("Sin gráfica.")
 
-    # Guardar: botón chico, abajo a la derecha.
-    _sp, _bt = st.columns([6, 1.4])
-    if _bt.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
+    # Acciones: 🗑 Borrar (con confirmación) a la izquierda · 💾 Guardar a la derecha.
+    _c_del, _c_ok, _c_sp, _c_save = st.columns([1.3, 1.5, 2.3, 1.4], vertical_alignment="center")
+    _del_ok = _c_ok.checkbox("Confirmar", key=f"delok_{r['id']}",
+                             help="Borrado irreversible de esta señal.")
+    if _c_del.button("🗑 Borrar", key=f"del_{r['id']}", disabled=not _del_ok,
+                     use_container_width=True):
+        db.delete_signals([str(r["id"])])
+        st.session_state.pop("bt_selected_ids", None)
+        st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+        st.toast("🗑 Señal borrada")
+        st.rerun()
+    if _c_save.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
         db.update_user_fields(r["id"], estado=ne, ganancia=float(ng))
         st.toast("Guardado")
         st.rerun()   # cierra el modal y refresca
@@ -225,7 +234,8 @@ _edited = st.data_editor(
             "Selección", help="Marcá para backtestear esta alerta"),
         "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%"),
         "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
-        "Ver": st.column_config.CheckboxColumn("Ver", help="Marcá para ver el detalle"),
+        "Ver": st.column_config.CheckboxColumn(
+            "🔍", help="Marcá para ver el detalle de la señal (y borrarla desde el modal)."),
     },
 )
 st.caption("Casilla **Selección** (1ª col.) = elegir alertas para el backtest · casilla "
