@@ -8,7 +8,9 @@ correr la actualización ahora (dispara la tarea).
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +41,17 @@ def _ps(cmd: str):
         return 1, "", str(e)
 
 
+def _dotnet_date(v) -> str:
+    """ConvertTo-Json serializa DateTime como '/Date(ms)/'. Lo pasamos a 'YYYY-MM-DD HH:MM'."""
+    m = re.match(r"/Date\((\d+)(?:[-+]\d+)?\)/", str(v or ""))
+    if not m:
+        return str(v or "—")
+    try:
+        return datetime.fromtimestamp(int(m.group(1)) / 1000).strftime("%Y-%m-%d %H:%M")
+    except Exception:  # noqa: BLE001
+        return str(v)
+
+
 # ── Tarea programada ─────────────────────────────────────────────────────────
 st.subheader("🗓️ Tarea programada")
 _rc, _out, _err = _ps(f"Get-ScheduledTaskInfo -TaskName '{TASK_NAME}' | "
@@ -52,8 +65,8 @@ if _rc == 0 and _out:
         _info = None
 if _info:
     c = st.columns(4)
-    c[0].metric("Última corrida", str(_info.get("LastRunTime") or "—"))
-    c[1].metric("Próxima corrida", str(_info.get("NextRunTime") or "—"))
+    c[0].metric("Última corrida", _dotnet_date(_info.get("LastRunTime")))
+    c[1].metric("Próxima corrida", _dotnet_date(_info.get("NextRunTime")))
     _res = _info.get("LastTaskResult")
     c[2].metric("Último resultado", "OK ✅" if _res == 0 else (f"código {_res}" if _res is not None else "—"))
     c[3].metric("Corridas perdidas", str(_info.get("NumberOfMissedRuns") if _info.get("NumberOfMissedRuns") is not None else "—"))
