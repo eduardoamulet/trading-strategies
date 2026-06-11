@@ -513,12 +513,12 @@ except Exception:
 st.markdown(
     """
     <style>
-    /* Sidebar a la MITAD del ancho (210px) cuando está expandida. Cuando se colapsa
-       (aria-expanded="false"), no aplica el min/max-width y la animación de colapso
-       de Streamlit puede correr normalmente. */
+    /* En Backtesting el panel izquierdo va al DOBLE del ancho inicial (250px → 500px),
+       solo cuando está expandida. Al volver al menú, este CSS no se aplica y la regla
+       global (250px) restaura el ancho inicial. */
     section[data-testid="stSidebar"][aria-expanded="true"] {
-        min-width: 210px !important;
-        max-width: 210px !important;
+        min-width: 500px !important;
+        max-width: 500px !important;
     }
 
     /* Pegar el contenido al tope de la sidebar (incluyendo el botón << y el

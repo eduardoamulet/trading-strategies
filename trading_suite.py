@@ -44,6 +44,10 @@ st.markdown(
     "{padding-top:0 !important; margin-top:0 !important;}"
     "section[data-testid='stSidebar'] [data-testid='stSidebarHeader']"
     "{padding:0 !important; min-height:0 !important; height:auto !important;}"
+    # Ancho INICIAL del panel izquierdo (menú) = 250px. Backtesting lo duplica (500px)
+    # en su propio CSS; al volver al menú, esta regla restaura el ancho inicial.
+    "section[data-testid='stSidebar'][aria-expanded='true']"
+    "{min-width:250px !important; max-width:250px !important;}"
     "</style>", unsafe_allow_html=True)
 
 sys.path.insert(0, str(Path(__file__).parent / "options_replay"))
