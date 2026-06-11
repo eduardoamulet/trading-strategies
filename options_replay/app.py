@@ -377,7 +377,7 @@ def render_temporal_distribution(iterations: list, entrada, chart_key: str = "te
              if it is not None and getattr(it, "exit_reason", "") == "100%_threshold"]
     with st.expander(
         f"⏱️ Distribución temporal de operaciones exitosas ({len(_wins)})",
-        expanded=True,
+        expanded=False,
     ):
         if not _wins:
             st.caption(
@@ -2516,68 +2516,105 @@ _LWC_TF = {"1m": None, "5m": "5min", "15m": "15min", "30m": "30min", "1h": "60mi
 
 
 def _render_lwc_chart(dl, ticker: str, date: str, hora: str, tf: str, key: str) -> None:
-    """Velas del subyacente con TradingView Lightweight Charts (open-source), usando
-    NUESTROS datos (Polygon), a la temporalidad `tf`, ENFOCADO en `hora` (HH:MM ET).
-    Los datos van embebidos (no salen a ningún servicio externo)."""
+    """Velas del subyacente (TradingView Lightweight Charts, datos propios de Polygon) a la
+    temporalidad `tf`, con **Bandas de Bollinger (20, 2σ) + media móvil central**, una vista
+    AÉREA (toda la sesión del día → muchas velas) y un marcador en `hora` (HH:MM ET). Para
+    que las BB tengan lookback se traen también días hábiles previos (solo para el cálculo).
+    Datos embebidos: no salen a ningún servicio externo."""
     import json as _j
+
+    def _utc(ts) -> int:   # wall-clock ET de ts como UTC → LWC (muestra UTC) dibuja hora ET
+        et = ts.tz_convert("America/New_York") if getattr(ts, "tzinfo", None) else ts
+        return int(pd.Timestamp(et.strftime("%Y-%m-%d %H:%M:%S"), tz="UTC").timestamp())
+
     try:
-        under = dl.underlying(ticker, date)
-    except Exception as e:  # noqa: BLE001
-        st.warning(f"No pude traer datos de {ticker} {date}: {e}")
+        _d0 = pd.Timestamp(date).normalize()
+    except Exception:  # noqa: BLE001
+        st.warning(f"Fecha inválida: {date}")
         return
-    if under is None or under.empty or "open" not in under.columns:
+    # Día del trade + hasta 4 hábiles previos (lookback de las BB / más contexto).
+    _days, _d = [], _d0
+    while len(_days) < 5:
+        if _d.weekday() < 5:
+            _days.append(_d.strftime("%Y-%m-%d"))
+        _d = _d - pd.Timedelta(days=1)
+    frames = []
+    for _ds in sorted(_days):
+        try:
+            u = dl.underlying(ticker, _ds)
+        except Exception:  # noqa: BLE001
+            u = None
+        if u is not None and not u.empty and "open" in u.columns:
+            frames.append(u)
+    if not frames:
         st.warning(f"Sin barras de subyacente para {ticker} {date} (¿ya están en cache?).")
         return
-    df = under.copy()
-    df = df.set_index(pd.DatetimeIndex(df["timestamp"]))
+    df = pd.concat(frames, ignore_index=True)
+    df = df.set_index(pd.DatetimeIndex(df["timestamp"])).sort_index()
+    df = df[~df.index.duplicated(keep="last")]
     rule = _LWC_TF.get(tf)
-    cols = ["open", "high", "low", "close"]
     if rule:
         ohlc = df.resample(rule, label="left", closed="left").agg(
             {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
     else:
-        ohlc = df[cols].dropna()
+        ohlc = df[["open", "high", "low", "close"]].dropna()
     if ohlc.empty:
         st.warning("Sin barras para esa temporalidad.")
         return
-    # time = wall-clock ET interpretado como UTC → LWC (que muestra UTC) dibuja la hora ET.
-    bars = []
-    for ts, r in ohlc.iterrows():
-        et = ts.tz_convert("America/New_York") if ts.tzinfo else ts
-        u = int(pd.Timestamp(et.strftime("%Y-%m-%d %H:%M:%S"), tz="UTC").timestamp())
+    # Bandas de Bollinger (20, 2σ) sobre la serie continua (con lookback de días previos).
+    _mid = ohlc["close"].rolling(20).mean()
+    _sd = ohlc["close"].rolling(20).std(ddof=0)
+    _up, _lo = _mid + 2 * _sd, _mid - 2 * _sd
+    # Mostrar SOLO las barras del día del trade (las BB ya quedan pobladas por el lookback).
+    _d0d = _d0.date()
+    bars, mid_l, up_l, lo_l = [], [], [], []
+    for ts, r in ohlc[pd.Index(ohlc.index.date) == _d0d].iterrows():
+        u = _utc(ts)
         bars.append({"time": u, "open": round(float(r["open"]), 4), "high": round(float(r["high"]), 4),
                      "low": round(float(r["low"]), 4), "close": round(float(r["close"]), 4)})
+        if pd.notna(_mid.loc[ts]):
+            mid_l.append({"time": u, "value": round(float(_mid.loc[ts]), 4)})
+            up_l.append({"time": u, "value": round(float(_up.loc[ts]), 4)})
+            lo_l.append({"time": u, "value": round(float(_lo.loc[ts]), 4)})
+    if not bars:
+        st.warning("Sin barras del día para graficar.")
+        return
     try:
         hh, mm = str(hora).split(":")[:2]
-        center = pd.Timestamp(f"{date} {int(hh):02d}:{int(mm):02d}:00", tz="UTC")
-    except Exception:
-        center = pd.Timestamp(f"{date} 12:00:00", tz="UTC")
-    _c = int(center.timestamp())
-    from_ts = int((center - pd.Timedelta(minutes=75)).timestamp())
-    to_ts = int((center + pd.Timedelta(minutes=75)).timestamp())
-    marker_ts = min(bars, key=lambda b: abs(b["time"] - _c))["time"]   # snap a una barra real
+        _c = int(pd.Timestamp(f"{date} {int(hh):02d}:{int(mm):02d}:00", tz="UTC").timestamp())
+    except Exception:  # noqa: BLE001
+        _c = bars[len(bars) // 2]["time"]
+    marker_ts = min(bars, key=lambda b: abs(b["time"] - _c))["time"]
+    # Vista AÉREA: toda la sesión del día (09:30–16:00 ET) → se ven muchas más velas.
+    from_ts = int(pd.Timestamp(f"{date} 09:30:00", tz="UTC").timestamp())
+    to_ts = int(pd.Timestamp(f"{date} 16:00:00", tz="UTC").timestamp())
     _html = f"""
-    <div id="lwc_{key}" style="height:420px;width:100%"></div>
+    <div id="lwc_{key}" style="height:460px;width:100%"></div>
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <script>
-      const bars = {_j.dumps(bars)};
       const el = document.getElementById('lwc_{key}');
       const chart = LightweightCharts.createChart(el, {{
-        autoSize: true, height: 420,
+        autoSize: true, height: 460,
         layout: {{ background: {{ color: '#0e1117' }}, textColor: '#d1d4dc' }},
         grid: {{ vertLines: {{ color: '#1e222d' }}, horzLines: {{ color: '#1e222d' }} }},
         timeScale: {{ timeVisible: true, secondsVisible: false, borderColor: '#2a2e39' }},
         rightPriceScale: {{ borderColor: '#2a2e39' }},
       }});
-      const s = chart.addCandlestickSeries({{ upColor: '#26a69a', downColor: '#ef5350',
+      const candle = chart.addCandlestickSeries({{ upColor: '#26a69a', downColor: '#ef5350',
         borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' }});
-      s.setData(bars);
-      s.setMarkers([{{ time: {marker_ts}, position: 'aboveBar', color: '#facc15',
-                       shape: 'arrowDown', text: '{hora}' }}]);
+      candle.setData({_j.dumps(bars)});
+      candle.setMarkers([{{ time: {marker_ts}, position: 'aboveBar', color: '#facc15',
+                            shape: 'arrowDown', text: '{hora}' }}]);
+      const mid = chart.addLineSeries({{ color: '#f59e0b', lineWidth: 2 }});      // media móvil (SMA20)
+      mid.setData({_j.dumps(mid_l)});
+      const bbUp = chart.addLineSeries({{ color: '#3b82f6', lineWidth: 1, lineStyle: 2 }});
+      bbUp.setData({_j.dumps(up_l)});
+      const bbLo = chart.addLineSeries({{ color: '#3b82f6', lineWidth: 1, lineStyle: 2 }});
+      bbLo.setData({_j.dumps(lo_l)});
       chart.timeScale().setVisibleRange({{ from: {from_ts}, to: {to_ts} }});
     </script>
     """
-    components.html(_html, height=440)
+    components.html(_html, height=480)
 
 
 def render_iteration(it: IterationResult, ticker: str, date: str):

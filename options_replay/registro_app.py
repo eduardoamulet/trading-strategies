@@ -111,14 +111,13 @@ _k = lambda name: f"reg_{name}_{_fv}"   # key versionada
 # ── Formulario (nuevo / edición) ─────────────────────────────────────────────
 with st.container(border=True):
     st.subheader(("✏️ Editar registro" if _editing else "➕ Nuevo registro"))
-    h1, h2, h3 = st.columns([1, 1, 1])
+    h1, h2 = st.columns([1, 1])
     fecha = h1.date_input("Fecha", value=_d["fecha"], key=_k("fecha"))
     _topts = [""] + _TICKERS
     if _d["ticker"] and _d["ticker"] not in _topts:
         _topts.append(_d["ticker"])   # ticker viejo que no esté en ticker_info.json
     _t_idx = _topts.index(_d["ticker"]) if _d["ticker"] in _topts else 0
     ticker = h2.selectbox("Ticker", _topts, index=_t_idx, key=_k("ticker"))
-    rango = h3.text_input("Rango precio", value=_d["rango_precio"], key=_k("rango"))
 
     # Info básica + rangos (USD) del ticker elegido (de ticker_info.json).
     _ti = _TINFO.get(ticker, {})
@@ -174,7 +173,7 @@ with st.container(border=True):
     _s1, _s2, _s3 = st.columns([1.4, 1.4, 5])
     if _s1.button("💾 Guardar", type="primary", use_container_width=True, key=_k("save")):
         _rec = {
-            "fecha": fecha.isoformat(), "ticker": ticker, "rango_precio": rango,
+            "fecha": fecha.isoformat(), "ticker": ticker,
             "checklist": {"fed": fed, "earning": earning, "bollinger": bollinger,
                           "pm_notas": pm_notas, "rupturas": rupturas, "gap": gap,
                           "bid": float(bid), "ask": float(ask), "rangos": _ranges},
@@ -212,8 +211,8 @@ def _count_trades(j):
 
 
 _df["# trades"] = _df["trades_json"].apply(_count_trades)
-_show = _df[["fecha", "ticker", "rango_precio", "# trades", "rentabilidad_total"]].rename(
-    columns={"fecha": "Fecha", "ticker": "Ticker", "rango_precio": "Rango precio",
+_show = _df[["fecha", "ticker", "# trades", "rentabilidad_total"]].rename(
+    columns={"fecha": "Fecha", "ticker": "Ticker",
              "rentabilidad_total": "Rentabilidad $"})
 _event = st.dataframe(
     _show, use_container_width=True, hide_index=True, key="reg_hist",
