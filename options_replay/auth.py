@@ -21,15 +21,34 @@ sys.path.insert(0, str(HERE))
 import users_db as udb  # noqa: E402
 
 
+def _auth_css() -> None:
+    """Estilo de las pantallas de acceso: tarjeta centrada y angosta, wordmark."""
+    st.markdown(
+        "<style>"
+        "[data-testid='stMainBlockContainer']{max-width:440px; margin:0 auto;"
+        " padding-top:6rem !important;}"
+        ".sf-wordmark{font-size:2.4rem; font-weight:800; letter-spacing:-1px; line-height:1;}"
+        ".sf-wordmark .a{color:#16a34a;}"
+        ".sf-tag{color:#6b7280; font-size:.95rem; margin:.35rem 0 1.4rem;}"
+        ".sf-foot{color:#9ca3af; font-size:.8rem; text-align:center; margin-top:1.1rem;}"
+        "</style>", unsafe_allow_html=True)
+
+
+def _brand() -> None:
+    st.markdown(
+        "<div class='sf-wordmark'>Signal<span class='a'>Forge</span></div>"
+        "<div class='sf-tag'>Señales → backtest → ejecución de opciones</div>",
+        unsafe_allow_html=True)
+
+
 def _login_form() -> None:
-    _, c, _ = st.columns([1.5, 1, 1.5])   # centrado + estrecho
-    with c:
-        st.markdown("## 🔨 SignalForge")
-        st.markdown("##### 🔐 Iniciar sesión")
-        st.caption("Ingresá con tu email y contraseña.")
+    _auth_css()
+    _brand()
+    with st.container(border=True):
+        st.markdown("#### Iniciar sesión")
         with st.form("login_form"):
-            email = st.text_input("Email")
-            pwd = st.text_input("Contraseña", type="password")
+            email = st.text_input("Email", placeholder="tu@email.com")
+            pwd = st.text_input("Contraseña", type="password", placeholder="••••••••")
             if st.form_submit_button("Entrar", type="primary", use_container_width=True):
                 u = udb.verify(email, pwd)
                 if u:
@@ -37,17 +56,19 @@ def _login_form() -> None:
                     st.rerun()
                 else:
                     st.error("Email o contraseña incorrectos (o usuario inactivo).")
+    st.markdown("<div class='sf-foot'>🔒 Acceso privado · SignalForge</div>",
+                unsafe_allow_html=True)
 
 
 def _bootstrap_admin() -> None:
-    _, c, _ = st.columns([1.5, 1, 1.5])   # centrado + estrecho
-    with c:
-        st.markdown("## 🔨 SignalForge")
-        st.markdown("##### 👋 Bienvenido")
-        st.caption("No hay usuarios todavía. Creá el primer usuario **administrador**.")
+    _auth_css()
+    _brand()
+    with st.container(border=True):
+        st.markdown("#### 👋 Creá el primer usuario")
+        st.caption("No hay usuarios todavía — este será el **administrador**.")
         with st.form("bootstrap_form"):
             nombre = st.text_input("Nombre")
-            email = st.text_input("Email")
+            email = st.text_input("Email", placeholder="tu@email.com")
             pwd = st.text_input("Contraseña", type="password", help="Mínimo 6 caracteres")
             if st.form_submit_button("Crear administrador", type="primary",
                                      use_container_width=True):

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import streamlit as st
 
-st.set_page_config(page_title="SignalForge", page_icon="🔨", layout="wide",
+st.set_page_config(page_title="SignalForge", page_icon="📈", layout="wide",
                    initial_sidebar_state="expanded")
 
 # Ocultar SOLO el botón Deploy y el menú ⋮ de Streamlit (no toda la barra: si se
@@ -69,7 +69,8 @@ nav = {
 if user.get("rol") == "admin":
     nav["Administración"] = [usuarios]
 
-st.sidebar.markdown("## 🔨 SignalForge")
+st.sidebar.markdown("## Signal<span style='color:#16a34a'>Forge</span>",
+                    unsafe_allow_html=True)
 pg = st.navigation(nav, position="sidebar")
 auth.top_user_menu(user, perfil)   # menú de usuario arriba a la derecha
 pg.run()
