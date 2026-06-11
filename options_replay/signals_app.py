@@ -194,9 +194,21 @@ _show = pd.DataFrame({
     "Ganancia": pd.to_numeric(fdf["ganancia"], errors="coerce").fillna(0.0).values,
     "Ver": [False] * len(fdf),
 })
+
+# Bandas por fecha: las filas de la MISMA fecha van en VERDE CLARO / BLANCO, alternando
+# el color cada vez que cambia la fecha (según el orden actual de la tabla). El Styler
+# pinta el fondo; las casillas Selección/Ver siguen siendo editables.
+_fechas = _show["Fecha"].tolist()
+_grp, _rowbg = 0, []
+for _i, _d in enumerate(_fechas):
+    if _i > 0 and _d != _fechas[_i - 1]:
+        _grp += 1
+    _rowbg.append("background-color: #d4edda" if _grp % 2 == 0 else "")
+_styled = _show.style.apply(lambda _r: [_rowbg[_r.name]] * len(_r), axis=1)
+
 _ekey = f"sig_ed_{st.session_state.get('_sig_ed_v', 0)}"
 _edited = st.data_editor(
-    _show, use_container_width=True, hide_index=True, key=_ekey,
+    _styled, use_container_width=True, hide_index=True, key=_ekey,
     disabled=["Acción", "Hora", "Fecha", "Estrategia", "% Cumpl.", "Tipo",
               "Criterios", "Estado", "Ganancia"],
     column_config={
