@@ -22,7 +22,7 @@ import argparse
 import json
 import sys
 import time as _t
-from datetime import date as _date, timedelta
+from datetime import date as _date, datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -98,17 +98,39 @@ def main() -> int:
     _log(f"== update_all == {len(tickers)} tickers · ventana {start}..{end} "
          f"({len(days)} días hábiles) · "
          f"{'SOLO subyacente' if args.underlying_only else f'subyacente+chain+opciones (±{args.strikes})'}")
+    _started = datetime.now()
     t0 = _t.time()
     tot_opt = 0
+    results = []
     for i, tk in enumerate(tickers, 1):
         try:
             n_days, n_opt = update_ticker(dl, tk, days, args.strikes, args.underlying_only)
             tot_opt += n_opt
+            results.append({"ticker": tk, "days": n_days, "opt": n_opt, "error": None})
             _log(f"[{i:3d}/{len(tickers)}] {tk:6s} ok · {n_days} día(s) · {n_opt} opt · "
                  f"{(_t.time() - t0) / 60:.1f}min")
         except Exception as e:  # noqa: BLE001 — un ticker que falla no debe frenar al resto
+            results.append({"ticker": tk, "days": 0, "opt": 0, "error": str(e)})
             _log(f"[{i:3d}/{len(tickers)}] {tk:6s} ERROR: {e}")
-    _log(f"== listo en {(_t.time() - t0) / 60:.1f} min · {tot_opt} llamadas a opciones ==")
+    _dur = (_t.time() - t0) / 60
+    _log(f"== listo en {_dur:.1f} min · {tot_opt} llamadas a opciones ==")
+    # Reporte estructurado para la página de estado (Herramientas → Datos).
+    try:
+        status = {
+            "started": _started.isoformat(timespec="seconds"),
+            "finished": datetime.now().isoformat(timespec="seconds"),
+            "duration_min": round(_dur, 1),
+            "window_start": str(start), "window_end": str(end),
+            "mode": "underlying-only" if args.underlying_only else f"full (±{args.strikes})",
+            "n_tickers": len(tickers), "total_opt_calls": tot_opt,
+            "n_errors": sum(1 for r in results if r["error"]),
+            "tickers": results,
+        }
+        (HERE / "data").mkdir(parents=True, exist_ok=True)
+        (HERE / "data" / "update_status.json").write_text(
+            json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        _log(f"(no pude escribir update_status.json: {e})")
     return 0
 
 

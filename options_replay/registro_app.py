@@ -34,6 +34,24 @@ GRID_ROWS = ["Distancia", "Spot Price", "Strike Price"]
 TRADE_COLS = ["Fecha Exp", "Tipo", "Fecha", "Hora", "N° Contratos",
               "Trade Price", "Rentabilidad $", "Plan %"]
 
+try:
+    _TINFO = _jsonlib.loads((HERE / "ticker_info.json").read_text(encoding="utf-8"))
+except Exception:
+    _TINFO = {}
+_TICKERS = sorted(_TINFO.keys())
+
+
+def _ticker_ranges(ti: dict) -> dict:
+    """Rangos (USD) del ticker: óptimo (rango_optimo_lo/hi ÷100) y extendido (min/max ÷100)."""
+    def _d100(v):
+        return (float(v) / 100.0) if v not in (None, "") else None
+    return {"opt_min": _d100(ti.get("rango_optimo_lo")), "opt_max": _d100(ti.get("rango_optimo_hi")),
+            "ext_min": _d100(ti.get("min")), "ext_max": _d100(ti.get("max"))}
+
+
+def _money(v):
+    return f"${v:.2f}" if v is not None else "—"
+
 
 def _idx(val):
     return SI_NO.index(val) if val in SI_NO else 0
@@ -95,8 +113,25 @@ with st.container(border=True):
     st.subheader(("✏️ Editar registro" if _editing else "➕ Nuevo registro"))
     h1, h2, h3 = st.columns([1, 1, 1])
     fecha = h1.date_input("Fecha", value=_d["fecha"], key=_k("fecha"))
-    ticker = h2.text_input("Ticker", value=_d["ticker"], key=_k("ticker")).upper().strip()
+    _topts = [""] + _TICKERS
+    if _d["ticker"] and _d["ticker"] not in _topts:
+        _topts.append(_d["ticker"])   # ticker viejo que no esté en ticker_info.json
+    _t_idx = _topts.index(_d["ticker"]) if _d["ticker"] in _topts else 0
+    ticker = h2.selectbox("Ticker", _topts, index=_t_idx, key=_k("ticker"))
     rango = h3.text_input("Rango precio", value=_d["rango_precio"], key=_k("rango"))
+
+    # Info básica + rangos (USD) del ticker elegido (de ticker_info.json).
+    _ti = _TINFO.get(ticker, {})
+    _ranges = _ticker_ranges(_ti)
+    if ticker and _ti:
+        st.markdown(
+            f"**{_ti.get('nombre') or ticker}**  ·  📍 {_ti.get('indice') or '—'} · "
+            f"🏷️ {_ti.get('bloque_sector') or '—'}  ·  _{_ti.get('sectores') or ''}_")
+        _rc = st.columns(4)
+        _rc[0].metric("Rango óptimo Min (USD)", _money(_ranges["opt_min"]))
+        _rc[1].metric("Rango óptimo Max (USD)", _money(_ranges["opt_max"]))
+        _rc[2].metric("Rango extendido Min (USD)", _money(_ranges["ext_min"]))
+        _rc[3].metric("Rango extendido Max (USD)", _money(_ranges["ext_max"]))
 
     st.markdown("**Requisitos**")
     c1, c2 = st.columns(2)
@@ -142,7 +177,7 @@ with st.container(border=True):
             "fecha": fecha.isoformat(), "ticker": ticker, "rango_precio": rango,
             "checklist": {"fed": fed, "earning": earning, "bollinger": bollinger,
                           "pm_notas": pm_notas, "rupturas": rupturas, "gap": gap,
-                          "bid": float(bid), "ask": float(ask)},
+                          "bid": float(bid), "ask": float(ask), "rangos": _ranges},
             "grid": grid_df.to_dict("records"),
             "trades": trades_df.fillna("").to_dict("records"),
             "notas": notas,
