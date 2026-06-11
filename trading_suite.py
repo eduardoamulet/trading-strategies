@@ -48,6 +48,8 @@ st.markdown(
     # en su propio CSS; al volver al menú, esta regla restaura el ancho inicial.
     "section[data-testid='stSidebar'][aria-expanded='true']"
     "{min-width:250px !important; max-width:250px !important;}"
+    # Pequeño espacio encima del logo SignalForge.
+    "[data-testid='stHeaderLogo']{margin-top:1rem !important;}"
     "</style>", unsafe_allow_html=True)
 
 sys.path.insert(0, str(Path(__file__).parent / "options_replay"))
