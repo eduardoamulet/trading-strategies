@@ -78,7 +78,8 @@ if df.empty:
 # ── Filtros ──────────────────────────────────────────────────────────────────
 f1, f2, f3, f4 = st.columns(4)
 sel_estr = f1.selectbox("Estrategia", ["(todas)"] + sorted(df["estrategia"].dropna().unique().tolist()))
-sel_sym = f2.selectbox("Acción", ["(todas)"] + sorted(df["symbol"].dropna().unique().tolist()))
+sel_sym = f2.multiselect("Acción", sorted(df["symbol"].dropna().unique().tolist()),
+                         placeholder="(todas)")
 sel_est = f3.selectbox("Estado", ["(todos)"] + xs.ESTADOS)
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
 _fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
@@ -89,7 +90,7 @@ _page = g3.selectbox("Filas por página", [10, 25, 50, 100, "Todas"], index=4)
 
 fdf = df.copy()
 if sel_estr != "(todas)": fdf = fdf[fdf["estrategia"] == sel_estr]
-if sel_sym != "(todas)": fdf = fdf[fdf["symbol"] == sel_sym]
+if sel_sym: fdf = fdf[fdf["symbol"].isin(sel_sym)]
 if sel_est != "(todos)": fdf = fdf[fdf["estado"] == sel_est]
 if sel_tipo != "(todos)": fdf = fdf[fdf["tipo"] == sel_tipo]
 fdf = fdf[(fdf["fecha"] >= d_desde.isoformat()) & (fdf["fecha"] <= d_hasta.isoformat())]
