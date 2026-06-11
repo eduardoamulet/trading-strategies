@@ -865,12 +865,14 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
 
 
 # ----- Sidebar form -----
-# Breadcrumb de navegación: botón "‹ Menú" (claro, para volver) + sección actual.
-# SignalForge queda arriba (st.logo en el entry).
-_cb, _ch = st.sidebar.columns([1.4, 2.6], vertical_alignment="center")
-if _cb.button("‹ Menú", key="sb_back", use_container_width=True, help="Volver al menú"):
-    st.switch_page("options_replay/dashboard_app.py")
-_ch.markdown("### 🔬 Backtesting")
+# Breadcrumb EN EL LOGO: "SignalForge \ Backtesting" — se sobreescribe el logo global solo
+# en esta página (st.logo, última llamada gana). Se quita el botón "Menú".
+_LOGO_BT_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="30">'
+    '<text x="0" y="23" font-family="sans-serif" font-size="22" font-weight="800">'
+    '<tspan fill="#1f2937">Signal</tspan><tspan fill="#16a34a">Forge</tspan>'
+    '<tspan fill="#9ca3af" font-weight="600"> \\ Backtesting</tspan></text></svg>')
+st.logo(_LOGO_BT_SVG)
 st.sidebar.header("Parámetros")
 
 replay_state = st.session_state.get("replay")
@@ -2586,10 +2588,7 @@ def _render_lwc_chart(dl, ticker: str, date: str, hora: str, tf: str, key: str) 
         _center = pd.Timestamp(f"{date} 12:00:00", tz="UTC")
     _c = int(_center.timestamp())
     marker_ts = min(bars, key=lambda b: abs(b["time"] - _c))["time"]
-    # FLECHA AL CENTRO + vista panorámica: ventana SIMÉTRICA de ±4h alrededor de la hora
-    # (se ven muchas velas y la hora queda justo en el medio).
-    from_ts = int((_center - pd.Timedelta(hours=4)).timestamp())
-    to_ts = int((_center + pd.Timedelta(hours=4)).timestamp())
+    # Mostrar TODAS las velas del día (fitContent en el HTML); la flecha marca la hora.
     _html = f"""
     <div id="lwc_{key}" style="height:460px;width:100%"></div>
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -2613,7 +2612,7 @@ def _render_lwc_chart(dl, ticker: str, date: str, hora: str, tf: str, key: str) 
       bbUp.setData({_j.dumps(up_l)});
       const bbLo = chart.addLineSeries({{ color: '#3b82f6', lineWidth: 1, lineStyle: 2 }});
       bbLo.setData({_j.dumps(lo_l)});
-      chart.timeScale().setVisibleRange({{ from: {from_ts}, to: {to_ts} }});
+      chart.timeScale().fitContent();
     </script>
     """
     components.html(_html, height=480)
