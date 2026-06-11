@@ -29,6 +29,12 @@ st.markdown(
     "[data-testid='stStatusWidget']{position:fixed !important; left:50% !important;"
     " right:auto !important; transform:translateX(-50%) !important; top:8px !important;"
     " z-index:9999998 !important;}"
+    # Subir el header de cada página hacia arriba (sin que se oculte bajo la barra).
+    # Selector ESPECÍFICO para ganarle al padding-top default (~6rem) de Streamlit;
+    # aplica a TODAS las páginas del menú. 1.5rem = alto pero libre de la toolbar.
+    "[data-testid='stMainBlockContainer'],"
+    "[data-testid='stAppViewContainer'] > .main > .block-container"
+    "{padding-top:1.5rem !important;}"
     "</style>", unsafe_allow_html=True)
 
 sys.path.insert(0, str(Path(__file__).parent / "options_replay"))

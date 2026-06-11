@@ -25,8 +25,6 @@ try:
 except Exception:
     pass
 
-st.markdown("<style>.block-container{padding-top:2rem !important;}</style>",
-            unsafe_allow_html=True)
 st.title("📡 Historial de Señales")
 st.caption("Alertas de investepacademyia (Trend Reversal) — importadas a tu app")
 
