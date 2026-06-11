@@ -4,9 +4,12 @@ Por qué SQLite: ingreso INCREMENTAL, DEDUP por `id` (UUID estable de cada seña
 UPDATE de estado/ganancia por fila, y queries — todo en un archivo local sin
 servidor. Consistente con live_trader.
 
-DB en data/signals.db (gitignored). Dedup por PRIMARY KEY `id` (INSERT OR IGNORE),
-así reimportar el mismo payload no duplica ni pisa tus ediciones locales
-(estado/ganancia/notas).
+DB en data/signals.db (gitignored). Dedup en DOS niveles para que reimportar (o
+mezclar fuentes) NO duplique ni pise tus ediciones locales (estado/ganancia/notas):
+  1) PRIMARY KEY `id` (token del gráfico) — INSERT OR IGNORE.
+  2) CONTENIDO (symbol·tipo·estrategia_raw·fecha·hora) — si ya existe una señal con
+     el mismo contenido, se omite aunque traiga otro `id` (p.ej. la URL de la imagen
+     del email cambia entre envíos y generaría un id distinto).
 """
 from __future__ import annotations
 
@@ -60,6 +63,8 @@ def init_db() -> None:
             """
         )
         con.execute("CREATE INDEX IF NOT EXISTS ix_alerts_fecha ON alerts(fecha)")
+        con.execute("CREATE INDEX IF NOT EXISTS ix_alerts_content "
+                    "ON alerts(symbol, tipo, estrategia_raw, fecha, hora)")
         try:  # migración para DBs viejas
             con.execute("ALTER TABLE alerts ADD COLUMN criterios_json TEXT")
         except sqlite3.OperationalError:
@@ -79,14 +84,28 @@ def _na(v):
 
 
 def upsert_signals(df: pd.DataFrame) -> int:
-    """Inserta las señales nuevas (dedup por `id`). Devuelve cuántas son NUEVAS.
-    Las ya existentes se IGNORAN (no se pisan tus ediciones locales)."""
+    """Inserta SOLO las señales nuevas. Devuelve cuántas son NUEVAS. Una señal se
+    considera repetida (y se OMITE) si:
+      - ya existe su `id` (PRIMARY KEY), o
+      - ya existe otra con el MISMO contenido (symbol·tipo·estrategia_raw·fecha·hora),
+        aunque tenga un `id` distinto.
+    Las existentes no se pisan (preserva tus ediciones de estado/ganancia)."""
     if df is None or df.empty:
         return 0
     init_db()
     inserted = 0
     with _conn() as con:
         for _, r in df.iterrows():
+            # Dedup por CONTENIDO: misma señal con otro id (p.ej. la imagen del email
+            # cambió de URL) → no la duplicamos. `IS` compara NULL de forma segura.
+            dup = con.execute(
+                "SELECT 1 FROM alerts WHERE symbol IS ? AND tipo IS ? AND "
+                "estrategia_raw IS ? AND fecha IS ? AND hora IS ? LIMIT 1",
+                (_na(r.get("symbol")), _na(r.get("tipo")), _na(r.get("estrategia_raw")),
+                 _na(r.get("fecha")), _na(r.get("hora"))),
+            ).fetchone()
+            if dup is not None:
+                continue
             vals = [_na(r.get(c)) for c in COLUMNS]
             if vals[COLUMNS.index("ganancia")] is None:
                 vals[COLUMNS.index("ganancia")] = 0.0
