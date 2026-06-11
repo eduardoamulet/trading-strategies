@@ -545,13 +545,6 @@ st.markdown(
         display: none !important;
     }
 
-    /* Tirar el h2 'Parámetros' hacia arriba para que quede pegado al borde y centrarlo. */
-    section[data-testid="stSidebar"] h2:first-child,
-    section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] h2:first-child {
-        margin-top: -1.5rem !important;
-        padding-top: 0 !important;
-        text-align: center !important;
-    }
 
     /* Pegar el título 'Options Replay — Intraday 0 DTE' al extremo superior
        sin solaparlo con el header de Streamlit (que contiene Deploy / menú). */
@@ -643,14 +636,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-# Breadcrumb: el menú está oculto en esta página → este botón vuelve al menú principal
-# (st.switch_page = navegación in-app confiable, sin recargar ni perder la sesión).
-_bc1, _bc2 = st.columns([1.6, 8], vertical_alignment="center")
-with _bc1:
-    if st.button("🏠 Inicio", use_container_width=True, key="bc_home"):
-        st.switch_page("options_replay/dashboard_app.py")
-_bc2.markdown("›&nbsp;&nbsp;🔬 **Backtesting**", unsafe_allow_html=True)
-
 st.title("Options Replay — Intraday 0 DTE")
 st.caption(
     "Reproducción minuto a minuto de un Call + Put 0 DTE cuyo premium de apertura "
@@ -839,9 +824,12 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
 
 
 # ----- Sidebar form -----
-# El menú de navegación quedó oculto en esta página → acceso CLARO para volver al menú.
-if st.sidebar.button("🏠  Volver al menú", use_container_width=True, key="sb_home"):
+# Cabecera de la página en el sidebar: « para volver al menú (oculto) + nombre de la
+# sección. SignalForge queda arriba (st.logo en el entry).
+_cb, _ch = st.sidebar.columns([1, 4], vertical_alignment="center")
+if _cb.button("«", use_container_width=True, key="sb_back", help="Volver al menú"):
     st.switch_page("options_replay/dashboard_app.py")
+_ch.markdown("### 🔬 Backtesting")
 st.sidebar.header("Parámetros")
 
 replay_state = st.session_state.get("replay")

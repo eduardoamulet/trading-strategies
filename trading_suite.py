@@ -77,8 +77,12 @@ nav = {
 if user.get("rol") == "admin":
     nav["Administración"] = [usuarios]
 
-st.sidebar.markdown("## Signal<span style='color:#16a34a'>Forge</span>",
-                    unsafe_allow_html=True)
+# Logo arriba del menú: st.logo lo fija en el TOPE del panel izquierdo (sobre la
+# navegación) → "SignalForge" siempre en el top, en todas las páginas.
+_LOGO_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="150" height="30">'
+             '<text x="0" y="23" font-family="sans-serif" font-size="22" font-weight="800">'
+             '<tspan fill="#1f2937">Signal</tspan><tspan fill="#16a34a">Forge</tspan></text></svg>')
+st.logo(_LOGO_SVG)
 pg = st.navigation(nav, position="sidebar")
 auth.top_user_menu(user, perfil)   # menú de usuario arriba a la derecha
 pg.run()
