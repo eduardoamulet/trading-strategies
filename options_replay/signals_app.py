@@ -115,8 +115,9 @@ def _render_detalle(r):
         f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
         f"{r.get('fecha', '')} {r.get('hora', '')}** — {r.get('estrategia', '')}"
     )
-    # Criterios + tu evaluación (Estado/Ganancia) a la IZQUIERDA · Gráfica a la DERECHA.
-    _dc1, _dc2 = st.columns([1, 1.9])
+    # Toda la info y los controles a la IZQUIERDA · Gráfica sola a la DERECHA, pegada al
+    # borde inferior del modal (vertical_alignment="bottom").
+    _dc1, _dc2 = st.columns([1.3, 1], vertical_alignment="bottom")
     with _dc1:
         st.markdown("**Criterios de la estrategia:**")
         try:
@@ -129,32 +130,33 @@ def _render_detalle(r):
         else:
             st.caption(f"Sin detalle de criterios ({r.get('criterios') or '—'}).")
         st.divider()
+        # Estado y Ganancia en la MISMA fila.
+        _e1, _e2 = st.columns(2)
         _i = xs.ESTADOS.index(r["estado"]) if r["estado"] in xs.ESTADOS else 0
-        ne = st.selectbox("Estado", xs.ESTADOS, index=_i, key=f"est_{r['id']}")
-        ng = st.number_input("Ganancia ($)", value=float(r["ganancia"] or 0), step=10.0,
-                             key=f"gan_{r['id']}")
+        ne = _e1.selectbox("Estado", xs.ESTADOS, index=_i, key=f"est_{r['id']}")
+        ng = _e2.number_input("Ganancia ($)", value=float(r["ganancia"] or 0), step=10.0,
+                              key=f"gan_{r['id']}")
+        # Borrar + Confirmar (arriba) · Guardar (debajo).
+        _d1, _d2 = st.columns([1, 1], vertical_alignment="center")
+        _del_ok = _d2.checkbox("Confirmar", key=f"delok_{r['id']}",
+                               help="Borrado irreversible de esta señal.")
+        if _d1.button("🗑 Borrar", key=f"del_{r['id']}", disabled=not _del_ok,
+                      use_container_width=True):
+            db.delete_signals([str(r["id"])])
+            st.session_state.pop("bt_selected_ids", None)
+            st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+            st.toast("🗑 Señal borrada")
+            st.rerun()
+        if st.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True,
+                     type="primary"):
+            db.update_user_fields(r["id"], estado=ne, ganancia=float(ng))
+            st.toast("Guardado")
+            st.rerun()   # cierra el modal y refresca
     with _dc2:
-        st.markdown("**Gráfica de la señal:**")
         if r.get("chart_url"):
             st.image(r["chart_url"], use_container_width=True)
         else:
             st.caption("Sin gráfica.")
-
-    # Acciones: 🗑 Borrar (con confirmación) a la izquierda · 💾 Guardar a la derecha.
-    _c_del, _c_ok, _c_sp, _c_save = st.columns([1.3, 1.5, 2.3, 1.4], vertical_alignment="center")
-    _del_ok = _c_ok.checkbox("Confirmar", key=f"delok_{r['id']}",
-                             help="Borrado irreversible de esta señal.")
-    if _c_del.button("🗑 Borrar", key=f"del_{r['id']}", disabled=not _del_ok,
-                     use_container_width=True):
-        db.delete_signals([str(r["id"])])
-        st.session_state.pop("bt_selected_ids", None)
-        st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
-        st.toast("🗑 Señal borrada")
-        st.rerun()
-    if _c_save.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True, type="primary"):
-        db.update_user_fields(r["id"], estado=ne, ganancia=float(ng))
-        st.toast("Guardado")
-        st.rerun()   # cierra el modal y refresca
 
 
 # Tabla (grilla) ordenable con una casilla "Ver" por fila → al marcarla abre el modal.
