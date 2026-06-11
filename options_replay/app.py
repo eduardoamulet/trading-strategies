@@ -2581,13 +2581,15 @@ def _render_lwc_chart(dl, ticker: str, date: str, hora: str, tf: str, key: str) 
         return
     try:
         hh, mm = str(hora).split(":")[:2]
-        _c = int(pd.Timestamp(f"{date} {int(hh):02d}:{int(mm):02d}:00", tz="UTC").timestamp())
+        _center = pd.Timestamp(f"{date} {int(hh):02d}:{int(mm):02d}:00", tz="UTC")
     except Exception:  # noqa: BLE001
-        _c = bars[len(bars) // 2]["time"]
+        _center = pd.Timestamp(f"{date} 12:00:00", tz="UTC")
+    _c = int(_center.timestamp())
     marker_ts = min(bars, key=lambda b: abs(b["time"] - _c))["time"]
-    # Vista AÉREA: toda la sesión del día (09:30–16:00 ET) → se ven muchas más velas.
-    from_ts = int(pd.Timestamp(f"{date} 09:30:00", tz="UTC").timestamp())
-    to_ts = int(pd.Timestamp(f"{date} 16:00:00", tz="UTC").timestamp())
+    # FLECHA AL CENTRO + vista panorámica: ventana SIMÉTRICA de ±4h alrededor de la hora
+    # (se ven muchas velas y la hora queda justo en el medio).
+    from_ts = int((_center - pd.Timedelta(hours=4)).timestamp())
+    to_ts = int((_center + pd.Timedelta(hours=4)).timestamp())
     _html = f"""
     <div id="lwc_{key}" style="height:460px;width:100%"></div>
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
