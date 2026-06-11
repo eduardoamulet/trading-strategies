@@ -58,6 +58,18 @@ with st.expander("📥 Importar señales", expanded=False):
             except Exception as e:
                 st.error(f"Error IMAP: {e}")
 
+    st.divider()
+    if st.button(f"🧹 Limpiar duplicados existentes ({db.count()} señales)",
+                 help="Borra señales repetidas por contenido (símbolo·tipo·estrategia·fecha·"
+                      "hora) que hayan quedado de antes, conservando 1 por grupo (prioriza las "
+                      "que tengan estado/ganancia editados)."):
+        _rm = db.dedupe_existing()
+        if _rm:
+            st.success(f"🧹 Eliminadas {_rm} duplicada(s). Quedan {db.count()}.")
+            st.rerun()
+        else:
+            st.info("No había duplicados. 👍")
+
 df = xs.load_signals()
 if df.empty:
     st.info("Todavía no hay señales. Importá pegando el JSON, subiendo un .eml, o por correo.")

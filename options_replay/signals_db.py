@@ -118,6 +118,31 @@ def upsert_signals(df: pd.DataFrame) -> int:
     return inserted
 
 
+def dedupe_existing() -> int:
+    """Borra duplicados YA presentes en la base por contenido (symbol·tipo·
+    estrategia_raw·fecha·hora). Conserva 1 por grupo, priorizando la que tenga estado
+    editado (≠ 'Por definir') y/o ganancia ≠ 0; desempata por importación más vieja.
+    Devuelve cuántas filas borró. (Para limpiar lo que entró duplicado antes del fix.)"""
+    init_db()
+    with _conn() as con:
+        cur = con.execute(
+            """
+            DELETE FROM alerts WHERE id IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY symbol, tipo, estrategia_raw, fecha, hora
+                        ORDER BY
+                          (CASE WHEN estado IS NOT NULL AND estado <> 'Por definir' THEN 0 ELSE 1 END),
+                          (CASE WHEN ganancia IS NOT NULL AND ganancia <> 0 THEN 0 ELSE 1 END),
+                          importado_en, id
+                    ) AS rn FROM alerts
+                ) WHERE rn > 1
+            )
+            """
+        )
+        return cur.rowcount
+
+
 def load_signals() -> pd.DataFrame:
     """Todas las señales guardadas (más recientes primero)."""
     init_db()
