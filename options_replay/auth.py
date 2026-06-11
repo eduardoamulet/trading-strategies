@@ -47,7 +47,8 @@ def _login_form() -> None:
     with st.container(border=True):
         st.markdown("#### Iniciar sesión")
         with st.form("login_form"):
-            email = st.text_input("Email", placeholder="tu@email.com")
+            email = st.text_input("Email", value="muletinternational@gmail.com",
+                                   placeholder="tu@email.com")
             pwd = st.text_input("Contraseña", type="password", placeholder="••••••••")
             if st.form_submit_button("Entrar", type="primary", use_container_width=True):
                 u = udb.verify(email, pwd)
