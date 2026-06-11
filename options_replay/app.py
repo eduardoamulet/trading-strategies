@@ -1561,22 +1561,12 @@ with st.sidebar.container(border=True):
             st.session_state["call_stop_pct"] = -100.0
             st.session_state["put_stop_pct"] = -100.0
 
-        _straddle_mode = st.radio(
-            "Modo",
+        _straddle_mode = st.selectbox(
+            "Tipo de operación",
             options=["CALL y PUT", "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)"],
             index=0,
-            horizontal=True,
             key="straddle_mode_radio",
             on_change=_sync_straddle_mode_changed,
-            label_visibility="collapsed",
-            help=(
-                "CALL y PUT: salida combinada por ROI total. · CALL y PUT (plus): se "
-                "venden ambas SOLO en el Horario de salida (sin umbral ni stop). · Sólo "
-                "CALL / Sólo PUT: una pierna. · CALL o PUT: se venden AMBAS cuando cualquiera llega a "
-                "+100%. · CALL o PUT (plus): la 1ª pierna que alcanza el 'Umbral de "
-                "salida (%)' se vende; la otra se vende cuando entre lo bancado y su "
-                "valor se recupera la inversión total."
-            ),
         )
         only_call_now = _straddle_mode == "Sólo CALL"
         only_put_now = _straddle_mode == "Sólo PUT"
@@ -1595,6 +1585,28 @@ with st.sidebar.container(border=True):
             engine_mode = "both_plus"
         else:
             engine_mode = "both"
+
+        # Panel de descripción del Tipo de operación elegido (reemplaza al tooltip ⓘ).
+        _MODE_DESC = {
+            "CALL y PUT": "🎯 **CALL y PUT** — se compran ambas piernas (50/50) y la salida es "
+                          "**combinada por ROI total** (Umbral de ROI / Stop loss sobre la suma de "
+                          "las dos). Termina al umbral, al stop o al cierre del día.",
+            "CALL y PUT (plus)": "🎯 **CALL y PUT (plus)** — se compran ambas piernas (50/50) y se "
+                                 "venden las dos **solo en el Horario de salida** (sin Umbral de ROI ni "
+                                 "Stop loss). Termina al horario o al cierre del día.",
+            "Sólo CALL": "🎯 **Sólo CALL** — una sola pierna (100% CALL). Sale por su **Umbral de "
+                         "ROI** o su **Stop loss**. Termina al umbral, al stop o al cierre del día.",
+            "Sólo PUT": "🎯 **Sólo PUT** — una sola pierna (100% PUT). Sale por su **Umbral de "
+                        "ROI** o su **Stop loss**. Termina al umbral, al stop o al cierre del día.",
+            "CALL o PUT": "🎯 **CALL o PUT** — se compran ambas piernas y se venden las dos en cuanto "
+                          "**cualquiera alcanza +100%** (se duplica). No depende de Umbral de ROI ni "
+                          "Stop loss. Termina al +100% o al cierre del día.",
+            "CALL o PUT (plus)": "🎯 **CALL o PUT (plus)** — se compran ambas piernas. La **1ª pierna "
+                                 "que alcanza el Umbral de salida (%)** se vende; la otra se vende "
+                                 "cuando, entre lo bancado y su valor, se **recupera la inversión "
+                                 "total**. Termina ahí o al cierre del día.",
+        }
+        st.info(_MODE_DESC.get(_straddle_mode, ""))
 
         # -------- Bloque Inversión: total + %-split + $-split (bidireccional) --------
         # Source of truth en session_state. Callbacks mantienen % y $ sincronizados
