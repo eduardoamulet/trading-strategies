@@ -3047,10 +3047,9 @@ if _mode == "range":
             if view_df.empty:
                 st.info("Ningún día cumple el filtro.")
             else:
-                # Insertar la columna "Ver detalles" (bool) como primera columna
-                # — será un CheckboxColumn editable en el data_editor.
+                # Tabla de resultados con SELECCIÓN multi-fila nativa (shift+click = rango):
+                # las filas seleccionadas se expanden abajo. (Sin columna de casilla.)
                 editor_df = view_df.copy().reset_index(drop=True)
-                editor_df.insert(0, "Ver detalles", False)
 
                 styled_editor = (
                     editor_df.style
@@ -3070,30 +3069,20 @@ if _mode == "range":
                     })
                 )
 
-                # Todas las columnas excepto "Ver detalles" son read-only.
-                _disabled_cols = [c for c in editor_df.columns if c != "Ver detalles"]
-                # Incluyo el filtro en el key para que al cambiar de filtro el
-                # editor resetee su estado interno (evita "checks fantasmas" en
-                # índices de fila que cambiaron de día).
-                _editor_key = f"batch_summary_editor_{_roi_filter}"
+                # Incluyo el filtro en el key para que al cambiar de filtro la tabla
+                # resetee su selección interna (evita "checks fantasmas" en índices
+                # de fila que cambiaron de día).
+                _table_key = f"batch_summary_table_{_roi_filter}"
 
-                edited = st.data_editor(
+                _event = st.dataframe(
                     styled_editor,
                     use_container_width=True,
                     height=min(38 + 35 * len(editor_df), 600),
                     hide_index=True,
-                    disabled=_disabled_cols,
-                    key=_editor_key,
+                    key=_table_key,
+                    on_select="rerun",
+                    selection_mode="multi-row",
                     column_config={
-                        "Ver detalles": st.column_config.CheckboxColumn(
-                            "Ver detalles",
-                            help=(
-                                "Marcá las filas cuyo detalle (gráfico + tabla "
-                                "minuto a minuto) quieras ver abajo, en paneles "
-                                "colapsables. Sólo se renderiza lo seleccionado."
-                            ),
-                            default=False,
-                        ),
                         "Razón": st.column_config.TextColumn(
                             "Razón",
                             width="small",
@@ -3124,7 +3113,10 @@ if _mode == "range":
                     },
                 )
 
-                selected_dates = list(edited.loc[edited["Ver detalles"], "Fecha"])
+                _sel_rows = sorted(_event.selection.rows) if (_event and _event.selection) else []
+                selected_dates = list(editor_df.iloc[_sel_rows]["Fecha"])
+                st.caption("Seleccioná filas (click · **shift+click** para un rango) para ver "
+                           "su detalle abajo.")
 
                 # Leyenda visible de los iconos de la columna "Razón".
                 st.caption(
@@ -3167,7 +3159,7 @@ if _mode == "range":
             for r in failed:
                 st.markdown(f"**{r['date']}** — {r['error']}")
 
-    # Render lazy: 1 expander colapsado por cada día marcado en "Ver detalles".
+    # Render lazy: 1 expander colapsado por cada día seleccionado en la tabla.
     if selected_dates:
         st.markdown("### 🔍 Detalle de los días seleccionados")
         for sel_fecha in selected_dates:
