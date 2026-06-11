@@ -150,6 +150,10 @@ def _render_detalle(r):
 
 # Tabla (grilla) ordenable con una casilla "Ver" por fila → al marcarla abre el modal.
 fdf = fdf.reset_index(drop=True)
+if fdf.empty:
+    st.info("No hay señales que cumplan los filtros seleccionados. "
+            "Ajustá los filtros (por ej., bajá el **% Cumpl. mínimo**).")
+    st.stop()
 _so1, _so2 = st.columns([2, 5])
 _sort_opt = _so1.selectbox(
     "Ordenar por", ["Fecha (recientes)", "Fecha (antiguas)", "Acción", "% Cumpl.",
