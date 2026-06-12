@@ -125,6 +125,60 @@ else:
 
 st.divider()
 
+# ── Cobertura de datos locales por ticker ────────────────────────────────────
+st.subheader("📦 Datos locales por ticker")
+st.caption("Rango de fechas con barras 1-min del **subyacente** cacheadas (Parquet) desde "
+           "Polygon, por ticker. **Días** = cantidad de días hábiles efectivamente guardados "
+           "en ese rango. Clic en un encabezado para ordenar.")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _local_coverage() -> pd.DataFrame:
+    """Escanea data/underlying/*.parquet (nombre = TICKER_YYYY-MM-DD.parquet) y arma,
+    por ticker, el rango de fechas cacheado (mín/máx) y la cantidad de días. Solo lee
+    NOMBRES de archivo (no abre los parquet) → rápido aun con miles de archivos."""
+    udir = HERE / "data" / "underlying"
+    pat = re.compile(r"^(.+)_(\d{4}-\d{2}-\d{2})\.parquet$")
+    by: dict[str, list[str]] = {}
+    if udir.exists():
+        for p in udir.glob("*.parquet"):
+            m = pat.match(p.name)
+            if m:
+                by.setdefault(m.group(1), []).append(m.group(2))
+    rows = []
+    for tk, ds in by.items():
+        ds.sort()
+        rows.append({"Ticker": tk, "Desde": ds[0], "Hasta": ds[-1], "Días": len(ds)})
+    return pd.DataFrame(rows)
+
+
+_cov = _local_coverage()
+if _cov.empty:
+    st.info("Todavía no hay datos de subyacente cacheados en `data/underlying/`.")
+else:
+    _mc = st.columns(4)
+    _mc[0].metric("Tickers", len(_cov))
+    _mc[1].metric("Día más antiguo", _cov["Desde"].min())
+    _mc[2].metric("Día más reciente", _cov["Hasta"].max())
+    _mc[3].metric("Archivos (días·ticker)", int(_cov["Días"].sum()))
+    _q = st.text_input("Filtrar por ticker", "", placeholder="Ej.: QQQ").strip().upper()
+    _show = _cov[_cov["Ticker"].str.contains(_q, regex=False)] if _q else _cov
+    _show = _show.sort_values(["Días", "Ticker"], ascending=[False, True]).reset_index(drop=True)
+    st.dataframe(
+        _show, use_container_width=True, hide_index=True,
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker"),
+            "Desde": st.column_config.TextColumn("Desde"),
+            "Hasta": st.column_config.TextColumn("Hasta"),
+            "Días": st.column_config.NumberColumn("Días", format="%d",
+                                                  help="Días hábiles cacheados en el rango"),
+        },
+    )
+    if _q and _show.empty:
+        st.caption(f"Ningún ticker contiene «{_q}».")
+
+st.divider()
+
 # ── Log ──────────────────────────────────────────────────────────────────────
 st.subheader("📜 Log")
 if LOG_PATH.exists():
