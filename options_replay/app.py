@@ -2686,10 +2686,6 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
     # la tabla minuto a minuto). Las pestañas no anidan → se ve todo bien.
     _key_suffix = f"{date}_{it.iteration}"
     display_df = _build_display_df(it)
-    styled_df = _style_display_df(
-        display_df, it.exit_threshold_pct, getattr(it, "exit_metric", "total"),
-        getattr(it, "stop_loss_pct", 1.0), it=it,
-    )
     _step_min = 1
     if getattr(it, "df", None) is not None and len(it.df) > 1:
         _d = it.df["timestamp"].diff().dropna().dt.total_seconds().div(60).round()
@@ -2820,20 +2816,28 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         else:
             st.caption(f"Filas: {total_rows}")
             rows_to_show = total_rows
-        table_height = 38 + 35 * max(min(rows_to_show, total_rows), 1)
-        # st.dataframe conserva el formato del Styler + ordenamiento/búsqueda. La SELECCIÓN
-        # de filas (casillas a la izquierda) hace de "Ver Gráfico": al marcar un minuto se
-        # dibuja abajo el gráfico de esa zona (mismo ticker/fecha) a la temporalidad elegida.
+        # La tabla muestra EXACTAMENTE 'rows_to_show' filas (sin scroll interno que se
+        # traba): se rebana display_df y el alto se ajusta a esas filas. Para ver más, subí
+        # "Filas visibles" (o "todas") → scrollea la PÁGINA, no la tabla.
+        _df_show = display_df.head(int(rows_to_show)).reset_index(drop=True)
+        _styled_show = _style_display_df(
+            _df_show, it.exit_threshold_pct, getattr(it, "exit_metric", "total"),
+            getattr(it, "stop_loss_pct", 1.0), it=it,
+        )
+        table_height = 38 + 35 * max(min(int(rows_to_show), total_rows), 1) + 5
+        # SELECCIÓN de filas (casillas a la izquierda) = "Ver Gráfico": al marcar un minuto
+        # se dibuja el gráfico de esa zona abajo, a la temporalidad elegida.
+        _mev = st.dataframe(_styled_show, use_container_width=True, height=table_height,
+                            on_select="rerun", selection_mode="multi-row",
+                            key=f"mtable_{_key_suffix}")
+        # "Temporalidad del gráfico": DEBAJO de la tabla, justo encima del gráfico.
         _tf = st.selectbox(
             "Temporalidad del gráfico", list(_LWC_TF.keys()), index=2, key=f"tf_{_key_suffix}",
             help="Marcá una o más FILAS (minutos) con la casilla de la izquierda → se dibuja "
                  "el gráfico de esa zona (mismo ticker/fecha) a esta temporalidad.")
-        _mev = st.dataframe(styled_df, use_container_width=True, height=table_height,
-                            on_select="rerun", selection_mode="multi-row",
-                            key=f"mtable_{_key_suffix}")
         _msel = sorted(_mev.selection.rows) if (_mev and _mev.selection) else []
         for _ri in _msel[:4]:   # hasta 4 gráficos a la vez (evita recargar de más)
-            _hora = str(display_df.iloc[_ri]["Minuto"])
+            _hora = str(_df_show.iloc[_ri]["Minuto"])
             st.markdown(f"**📈 Ver Gráfico — {ticker} · {date} · {_hora} · {_tf}**")
             _render_lwc_chart(get_downloader(api_key), ticker, date, _hora, _tf,
                               f"{_key_suffix}_{_ri}")
