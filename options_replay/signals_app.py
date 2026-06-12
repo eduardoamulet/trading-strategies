@@ -102,25 +102,27 @@ st.markdown("<hr style='margin:-0.6rem 0 0.6rem 0'>", unsafe_allow_html=True)
 
 @st.dialog("📊 Detalle de la señal", width="large")
 def _render_detalle(r):
-    # Imagen del diálogo a 2/3 del ancho y pegada de arriba a abajo (alto en vh). object-fit:
-    # contain → no deforma el gráfico. Scope: solo la imagen DENTRO del modal.
+    # Modal compacto. Toda la INFO va en la columna izquierda (debajo del título); la
+    # gráfica (derecha, 2/3) sube hasta el tope del modal (junto al título) y baja hasta
+    # abajo. object-fit:contain → no deforma. Scope: solo dentro del modal.
     st.markdown(
         "<style>"
-        # margin-top negativo → la gráfica sube hasta el tope del modal (debajo del título).
-        "div[role='dialog'] [data-testid='stImage']{width:100% !important; margin-top:-4rem !important;}"
+        "div[role='dialog']{max-width:1040px !important;}"   # modal más chico/ajustado
+        "div[role='dialog'] [data-testid='stImage']{width:100% !important; margin-top:-2.6rem !important;}"
         "div[role='dialog'] [data-testid='stImage'] img{"
-        "height:73vh !important; width:100% !important; object-fit:contain;}"
+        "height:78vh !important; width:100% !important; object-fit:contain;}"
         "</style>",
         unsafe_allow_html=True,
     )
-    st.markdown(
-        f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
-        f"{r.get('fecha', '')} {r.get('hora', '')}** — {r.get('estrategia', '')}"
-    )
     # Info y controles a la IZQUIERDA (1/3) · Gráfica a la DERECHA (2/3), pegada de arriba
-    # a abajo del modal (alto fijo en el CSS de arriba).
+    # (al título) a abajo del modal (alto en el CSS de arriba).
     _dc1, _dc2 = st.columns([1, 2])
     with _dc1:
+        st.markdown(
+            f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
+            f"{r.get('fecha', '')} {r.get('hora', '')}**"
+        )
+        st.markdown(f"**estrategia:** — {r.get('estrategia', '')}")
         st.markdown("**Criterios de la estrategia:**")
         try:
             crits = json.loads(r["criterios_json"]) if r.get("criterios_json") else []
