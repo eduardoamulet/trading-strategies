@@ -224,14 +224,13 @@ with st.expander("📦 Datos locales por ticker", expanded=False):
                    f"archivos subyacente: **{int(_cov['Días'].sum())}**.")
 
         _fc1, _fc2 = st.columns([3, 2])
-        _q = _fc1.multiselect("Filtrar por ticker", sorted(_cov["Ticker"].tolist()),
-                              placeholder="(todos)")
+        _q = _fc1.selectbox("Filtrar por ticker", ["(todos)"] + sorted(_cov["Ticker"].tolist()))
         _only_stale = _fc2.checkbox("⚠️ Solo atrasados", value=False,
                                     help="Tickers cuyo último día cacheado es anterior al "
                                          "día más reciente global.")
         _show = _cov
-        if _q:
-            _show = _show[_show["Ticker"].isin(_q)]
+        if _q and _q != "(todos)":
+            _show = _show[_show["Ticker"] == _q]
         if _only_stale:
             _show = _show[_show["Atraso"] > 0]
         _show = _show.sort_values(["Días", "Ticker"], ascending=[False, True]).reset_index(drop=True)
