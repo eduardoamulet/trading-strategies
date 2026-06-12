@@ -2803,31 +2803,15 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
 
     with _tab_tbl:
         total_rows = len(display_df)
-        row_options = sorted(set([n for n in [15, 30, 60, 120, 240, 390] if n < total_rows] + [total_rows]))
-        if len(row_options) > 1:
-            default_n = 30 if 30 in row_options else row_options[0]
-            rows_to_show = st.select_slider(
-                f"Filas visibles  (total: {total_rows})",
-                options=row_options,
-                value=default_n,
-                format_func=lambda n: f"{n} filas" if n < total_rows else f"todas ({total_rows})",
-                key=f"rows_iter_{_key_suffix}",
-            )
-        else:
-            st.caption(f"Filas: {total_rows}")
-            rows_to_show = total_rows
-        # La tabla muestra EXACTAMENTE 'rows_to_show' filas (sin scroll interno que se
-        # traba): se rebana display_df y el alto se ajusta a esas filas. Para ver más, subí
-        # "Filas visibles" (o "todas") → scrollea la PÁGINA, no la tabla.
-        _df_show = display_df.head(int(rows_to_show)).reset_index(drop=True)
+        st.caption(f"{total_rows} filas · scrolleá DENTRO de la tabla para verlas todas.")
         _styled_show = _style_display_df(
-            _df_show, it.exit_threshold_pct, getattr(it, "exit_metric", "total"),
+            display_df, it.exit_threshold_pct, getattr(it, "exit_metric", "total"),
             getattr(it, "stop_loss_pct", 1.0), it=it,
         )
-        table_height = 38 + 35 * max(min(int(rows_to_show), total_rows), 1) + 5
-        # SELECCIÓN de filas (casillas a la izquierda) = "Ver Gráfico": al marcar un minuto
-        # se dibuja el gráfico de esa zona abajo, a la temporalidad elegida.
-        _mev = st.dataframe(_styled_show, use_container_width=True, height=table_height,
+        # Alto FIJO (~16 filas) → la tabla muestra TODAS las filas con su propio scroll
+        # vertical (la rueda DENTRO de la tabla mueve la tabla; afuera, scrollea la página).
+        # SELECCIÓN de filas (casillas a la izquierda) = "Ver Gráfico".
+        _mev = st.dataframe(_styled_show, use_container_width=True, height=600,
                             on_select="rerun", selection_mode="multi-row",
                             key=f"mtable_{_key_suffix}")
         # "Temporalidad del gráfico": DEBAJO de la tabla, justo encima del gráfico.
@@ -2837,7 +2821,7 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                  "el gráfico de esa zona (mismo ticker/fecha) a esta temporalidad.")
         _msel = sorted(_mev.selection.rows) if (_mev and _mev.selection) else []
         for _ri in _msel[:4]:   # hasta 4 gráficos a la vez (evita recargar de más)
-            _hora = str(_df_show.iloc[_ri]["Minuto"])
+            _hora = str(display_df.iloc[_ri]["Minuto"])
             st.markdown(f"**📈 Ver Gráfico — {ticker} · {date} · {_hora} · {_tf}**")
             _render_lwc_chart(get_downloader(api_key), ticker, date, _hora, _tf,
                               f"{_key_suffix}_{_ri}")
