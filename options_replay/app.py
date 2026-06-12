@@ -2681,13 +2681,32 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
     mc[4].metric("Combined % exit", f"{it.pnl_pct_combined:+.1%}")
     mc[5].metric("Capital acumulado", f"${it.invest_total + it.gain_total:,.2f}")
 
-    with st.expander("📑 Operaciones (contratos · comisión · ROI neto)", expanded=False):
+    # Detalle de la iteración en PESTAÑAS: el render va DENTRO del expander de la iteración
+    # y Streamlit no soporta expanders ANIDADOS (daban un scroll cortado que no dejaba ver
+    # la tabla minuto a minuto). Las pestañas no anidan → se ve todo bien.
+    _key_suffix = f"{date}_{it.iteration}"
+    display_df = _build_display_df(it)
+    styled_df = _style_display_df(
+        display_df, it.exit_threshold_pct, getattr(it, "exit_metric", "total"),
+        getattr(it, "stop_loss_pct", 1.0), it=it,
+    )
+    _step_min = 1
+    if getattr(it, "df", None) is not None and len(it.df) > 1:
+        _d = it.df["timestamp"].diff().dropna().dt.total_seconds().div(60).round()
+        if len(_d):
+            _step_min = int(_d.median())
+    _tbl_title = ("📋 Tabla minuto a minuto" if _step_min <= 1
+                  else f"📋 Tabla (paso {_step_min} min)")
+    _tab_ops, _tab_chain, _tab_chart, _tab_tbl = st.tabs([
+        "📑 Operaciones",
+        f"Strikes ({len(it.call_probes)}C · {len(it.put_probes)}P)",
+        "📈 Gráfico",
+        _tbl_title,
+    ])
+    with _tab_ops:
         render_ops_report(it)
 
-    with st.expander(
-        f"Strikes probados (CALL: {len(it.call_probes)} · PUT: {len(it.put_probes)})",
-        expanded=False,
-    ):
+    with _tab_chain:
         # Cadena de opciones estilo thinkorswim: CALLS (izq) · Strike (centro) · PUTS
         # (der). Orden: Last, Bid, Ask, Spread | Strike | Bid, Ask, Spread, Last.
         # Spread = Ask - Bid. Strikes ascendentes; fila azul = el contrato elegido.
@@ -2783,33 +2802,10 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                 unsafe_allow_html=True,
             )
 
-    # Key único por (fecha, iteración) — en range mode todos los días tienen
-    # iteration=1, así que necesitamos la fecha para evitar colisiones.
-    _key_suffix = f"{date}_{it.iteration}"
-    with st.expander("📈 Gráfico", expanded=False):
+    with _tab_chart:
         st.plotly_chart(build_chart(it), use_container_width=True, key=f"chart_iter_{_key_suffix}")
 
-    display_df = _build_display_df(it)
-    styled_df = _style_display_df(
-        display_df,
-        it.exit_threshold_pct,
-        getattr(it, "exit_metric", "total"),
-        getattr(it, "stop_loss_pct", 1.0),
-        it=it,
-    )
-
-    # Paso real entre filas (en minutos), derivado de los timestamps. Con
-    # "Sell verification (min)" > 1 la tabla avanza de a N minutos.
-    _step_min = 1
-    if getattr(it, "df", None) is not None and len(it.df) > 1:
-        _d = it.df["timestamp"].diff().dropna().dt.total_seconds().div(60).round()
-        if len(_d):
-            _step_min = int(_d.median())
-    _tbl_title = (
-        "📋 Tabla minuto a minuto" if _step_min <= 1
-        else f"📋 Tabla (paso {_step_min} min)"
-    )
-    with st.expander(_tbl_title, expanded=False):
+    with _tab_tbl:
         total_rows = len(display_df)
         row_options = sorted(set([n for n in [15, 30, 60, 120, 240, 390] if n < total_rows] + [total_rows]))
         if len(row_options) > 1:
