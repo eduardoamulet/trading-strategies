@@ -90,9 +90,9 @@ def _form_defaults(loaded):
         "fecha": _f,
         "ticker": (loaded or {}).get("ticker", ""),
         "rango_precio": (loaded or {}).get("rango_precio", ""),
-        "fed": cl.get("fed", "—"), "earning": cl.get("earning", "—"),
-        "bollinger": cl.get("bollinger", "—"), "pm_notas": cl.get("pm_notas", ""),
-        "rupturas": cl.get("rupturas", "—"), "gap": cl.get("gap", "—"),
+        "fed": cl.get("fed", "❌ No se cumple"), "earning": cl.get("earning", "❌ No se cumple"),
+        "bollinger": cl.get("bollinger", "❌ No se cumple"), "pm_notas": cl.get("pm_notas", ""),
+        "rupturas": cl.get("rupturas", "❌ No se cumple"), "gap": cl.get("gap", "❌ No se cumple"),
         "bid": float(cl.get("bid") or 0.0), "ask": float(cl.get("ask") or 0.0),
         "grid_df": grid_df, "trades_df": trades_df,
         "notas": (loaded or {}).get("notas", ""),
@@ -133,17 +133,19 @@ with st.container(border=True):
         _rc[3].metric("Rango extendido Max (USD)", _money(_ranges["ext_max"]))
 
     st.markdown("**Requisitos**")
+    st.caption("Por defecto cada requisito está en **❌ No se cumple**; cambiá a "
+               "**✅ Se cumple** los que apliquen.")
     c1, c2 = st.columns(2)
-    fed = c1.radio("1. Reunión FED (cada 45 días)", SI_NO, index=_idx(_d["fed"]),
-                   horizontal=True, key=_k("fed"))
-    earning = c2.radio("2. Earning (cada 3 meses)", SI_NO, index=_idx(_d["earning"]),
-                       horizontal=True, key=_k("earning"))
-    bollinger = c1.radio("3. Bollinger (15/Hora/Diario · punto medio)", SI_NO,
-                         index=_idx(_d["bollinger"]), horizontal=True, key=_k("boll"))
-    rupturas = c2.radio("5. Ruptura de líneas de tendencia", SI_NO,
-                        index=_idx(_d["rupturas"]), horizontal=True, key=_k("rupt"))
-    gap = c1.radio("6. Salto al alza / a la baja (GAP)", SI_NO, index=_idx(_d["gap"]),
-                   horizontal=True, key=_k("gap"))
+    fed = c1.selectbox("1. Reunión FED (cada 45 días)", SI_NO, index=_idx(_d["fed"]),
+                       key=_k("fed"))
+    earning = c2.selectbox("2. Earning (cada 3 meses)", SI_NO, index=_idx(_d["earning"]),
+                           key=_k("earning"))
+    bollinger = c1.selectbox("3. Bollinger (15/Hora/Diario · punto medio)", SI_NO,
+                             index=_idx(_d["bollinger"]), key=_k("boll"))
+    rupturas = c2.selectbox("5. Ruptura de líneas de tendencia", SI_NO,
+                            index=_idx(_d["rupturas"]), key=_k("rupt"))
+    gap = c1.selectbox("6. Salto al alza / a la baja (GAP)", SI_NO, index=_idx(_d["gap"]),
+                       key=_k("gap"))
     pm_notas = st.text_area("4. Promedios móviles (techos/pisos · analizar hora/día)",
                             value=_d["pm_notas"], key=_k("pm"), height=70)
 
