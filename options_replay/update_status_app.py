@@ -22,6 +22,20 @@ STATUS_PATH = HERE / "data" / "update_status.json"
 LOG_PATH = ROOT / "_update_all.log"
 TASK_NAME = "SignalForge Update Data"
 
+# Feriados de mercado US (espejo de _US_MARKET_HOLIDAYS en app.py). Se usa para "Huecos":
+# días de trading dentro del rango que NO están cacheados, SIN contar feriados (en feriado
+# el mercado no abre → es correcto que falte el dato).
+_US_MARKET_HOLIDAYS = frozenset({
+    "2024-01-01", "2024-01-15", "2024-02-19", "2024-03-29", "2024-05-27",
+    "2024-06-19", "2024-07-04", "2024-09-02", "2024-11-28", "2024-12-25",
+    "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18", "2025-05-26",
+    "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27", "2025-12-25",
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25",
+    "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+    "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31",
+    "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
+})
+
 try:
     st.set_page_config(page_title="Datos", layout="wide")
 except Exception:
@@ -128,9 +142,11 @@ st.divider()
 
 # ── Cobertura de datos locales por ticker ────────────────────────────────────
 st.subheader("📦 Datos locales por ticker")
-st.caption("Por ticker: rango de fechas con **subyacente** cacheado (Desde/Hasta/Días) y "
-           "días con **opciones** cacheadas. **Atraso** = días hábiles detrás del día más "
-           "reciente global (0 = al día). Clic en un encabezado para ordenar.")
+st.caption("Por ticker: rango con **subyacente** cacheado (Desde/Hasta/Días) y días con "
+           "**opciones**. **Huecos** = días de trading del rango que faltan (sin contar "
+           "feriados); 0 = rango completo. **Atraso** = días hábiles detrás del día más "
+           "reciente global. Ojo: Desde/Hasta son solo mín/máx — puede haber agujeros en "
+           "el medio (por eso Huecos). Clic en un encabezado para ordenar.")
 
 
 @st.cache_data(ttl=60, show_spinner="Escaneando cache local…")
@@ -181,13 +197,23 @@ else:
     _cov["Atraso"] = _cov["Hasta"].apply(_lag_bdays)
     _cov["Estado"] = _cov["Atraso"].apply(lambda n: "✅ al día" if n == 0 else "⚠️ atrasado")
 
+    def _huecos(desde: str, hasta: str, n_cached: int) -> int:
+        """Días de trading (hábiles, sin feriados) dentro de [desde, hasta] que NO están
+        cacheados. 0 = rango completo; >0 = el backfill tiene agujeros en el medio."""
+        n_trading = sum(1 for b in pd.bdate_range(desde, hasta)
+                        if b.strftime("%Y-%m-%d") not in _US_MARKET_HOLIDAYS)
+        return max(0, n_trading - int(n_cached))
+
+    _cov["Huecos"] = _cov.apply(lambda r: _huecos(r["Desde"], r["Hasta"], r["Días"]), axis=1)
+
     _nstale = int((_cov["Atraso"] > 0).sum())
     _mc = st.columns(4)
     _mc[0].metric("Tickers", len(_cov))
     _mc[1].metric("Día más reciente", _gmax)
     _mc[2].metric("⚠️ Atrasados", _nstale)
-    _mc[3].metric("Con opciones", int((_cov["Opc. días"] > 0).sum()))
+    _mc[3].metric("◧ Con huecos", int((_cov["Huecos"] > 0).sum()))
     st.caption(f"Rango global: **{_cov['Desde'].min()} → {_gmax}**  ·  "
+               f"tickers con opciones: **{int((_cov['Opc. días'] > 0).sum())}**  ·  "
                f"archivos subyacente: **{int(_cov['Días'].sum())}**.")
 
     _fc1, _fc2 = st.columns([3, 2])
@@ -203,12 +229,16 @@ else:
     _show = _show.sort_values(["Días", "Ticker"], ascending=[False, True]).reset_index(drop=True)
     st.dataframe(
         _show, use_container_width=True, hide_index=True,
+        column_order=["Ticker", "Desde", "Hasta", "Días", "Huecos", "Opc. días", "Atraso", "Estado"],
         column_config={
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Desde": st.column_config.TextColumn("Desde"),
             "Hasta": st.column_config.TextColumn("Hasta"),
             "Días": st.column_config.NumberColumn("Días", format="%d",
                                                   help="Días con subyacente cacheado"),
+            "Huecos": st.column_config.NumberColumn("Huecos", format="%d",
+                                                    help="Días de trading del rango sin cachear, sin contar "
+                                                         "feriados (0 = rango completo)"),
             "Opc. días": st.column_config.NumberColumn("Opc. días", format="%d",
                                                        help="Días distintos con opciones cacheadas"),
             "Atraso": st.column_config.NumberColumn("Atraso", format="%d",
