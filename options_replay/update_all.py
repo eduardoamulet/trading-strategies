@@ -22,7 +22,7 @@ import argparse
 import json
 import sys
 import time as _t
-from datetime import date as _date, datetime, timedelta
+from datetime import date as _date, datetime, time as _time, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -53,20 +53,59 @@ def _weekdays(start: _date, end: _date) -> list[str]:
     return days
 
 
+def _last_complete_session() -> _date:
+    """Último día con sesión COMPLETA, para NO cachear un 'hoy' parcial. Si ahora (ET) es
+    después de ~16:15 (post-cierre), hoy cuenta; si no, el día hábil anterior. Los feriados
+    no se filtran finos: si cae uno, Polygon devuelve vacío y simplemente no se cachea."""
+    now_et = pd.Timestamp.now(tz="America/New_York")
+    d = now_et.date()
+    if now_et.time() < _time(16, 15):
+        d = d - timedelta(days=1)
+    while d.weekday() >= 5:   # retroceder sáb/dom
+        d = d - timedelta(days=1)
+    return d
+
+
+def _is_incomplete_session(dl: Downloader, ticker: str, date_str: str) -> bool:
+    """True si el subyacente cacheado de ese día quedó INCOMPLETO (típico cuando la tarea
+    lo bajó de madrugada y solo trae barras pre-market). Heurística robusta: la última barra
+    es ANTERIOR a las 10:00 ET → seguro incompleto (una sesión real siempre tiene barras de
+    RTH bien pasadas las 10:00). Si no hay cache, NO es 'incompleto' (se baja normal). Se usa
+    para auto-sanar parciales: re-bajar ese día con force=True."""
+    path = dl.data_dir / "underlying" / f"{ticker}_{date_str}.parquet"
+    if not path.exists():
+        return False
+    try:
+        df = pd.read_parquet(path, columns=["timestamp"])
+    except Exception:  # noqa: BLE001 — parquet ilegible/corrupto → re-bajar
+        return True
+    if df.empty:
+        return True
+    last = pd.to_datetime(df["timestamp"]).max()
+    return last.time() < _time(10, 0)   # timestamp es tz-aware ET → hora de pared ET
+
+
 def update_ticker(dl: Downloader, ticker: str, days: list[str], strikes_window: int,
-                  underlying_only: bool) -> tuple[int, int]:
-    """Actualiza un ticker en la ventana. Devuelve (días con datos, llamadas a opciones)."""
-    n_days, n_opt = 0, 0
+                  underlying_only: bool) -> tuple[int, int, int]:
+    """Actualiza un ticker en la ventana. Devuelve (días con datos, llamadas a opciones,
+    días sanados). 'Sanado' = el día estaba cacheado incompleto (parcial) y se re-bajó con
+    force para completarlo."""
+    n_days, n_opt, n_healed = 0, 0, 0
     n = 2 * strikes_window + 1
     for date_str in days:
-        under = dl.underlying(ticker, date_str)
+        # Si el día ya estaba cacheado pero parcial (p.ej. lo bajó la tarea pre-apertura),
+        # se re-baja con force para completarlo. Días completos o faltantes → flujo normal.
+        force = _is_incomplete_session(dl, ticker, date_str)
+        if force:
+            n_healed += 1
+        under = dl.underlying(ticker, date_str, force=force)
         if under.empty:
             continue
         n_days += 1
         if underlying_only:
             continue
         spot_open = float(under.iloc[0]["open"])
-        chain = dl.chain(ticker, date_str)
+        chain = dl.chain(ticker, date_str, force=force)
         if chain.empty:
             continue
         calls = chain[chain["contract_type"].str.lower() == "call"]
@@ -76,9 +115,9 @@ def update_ticker(dl: Downloader, ticker: str, days: list[str], strikes_window: 
         for _, row in pd.concat([cs, ps]).iterrows():
             ct = "C" if str(row["contract_type"]).lower() == "call" else "P"
             occ = row.get("ticker") or PolygonAdapter.build_occ(ticker, date_str, ct, row["strike_price"])
-            dl.option(occ, date_str)
+            dl.option(occ, date_str, force=force)
             n_opt += 1
-    return n_days, n_opt
+    return n_days, n_opt, n_healed
 
 
 def main() -> int:
@@ -97,7 +136,7 @@ def main() -> int:
     if _skipped:
         _log(f"(salteados por acceso/plan: {', '.join(_skipped)})")
 
-    end = _date.today()
+    end = _last_complete_session()   # NO cachear 'hoy' parcial (la tarea corre pre-apertura)
     start = end - timedelta(days=args.days + 4)   # +4 para cubrir fin de semana
     days = _weekdays(start, end)
 
@@ -109,19 +148,21 @@ def main() -> int:
     _started = datetime.now()
     t0 = _t.time()
     tot_opt = 0
+    tot_healed = 0
     results = []
     for i, tk in enumerate(tickers, 1):
         try:
-            n_days, n_opt = update_ticker(dl, tk, days, args.strikes, args.underlying_only)
+            n_days, n_opt, n_healed = update_ticker(dl, tk, days, args.strikes, args.underlying_only)
             tot_opt += n_opt
-            results.append({"ticker": tk, "days": n_days, "opt": n_opt, "error": None})
-            _log(f"[{i:3d}/{len(tickers)}] {tk:6s} ok · {n_days} día(s) · {n_opt} opt · "
-                 f"{(_t.time() - t0) / 60:.1f}min")
+            tot_healed += n_healed
+            results.append({"ticker": tk, "days": n_days, "opt": n_opt, "healed": n_healed, "error": None})
+            _log(f"[{i:3d}/{len(tickers)}] {tk:6s} ok · {n_days} día(s) · {n_opt} opt"
+                 f"{f' · {n_healed} sanado(s)' if n_healed else ''} · {(_t.time() - t0) / 60:.1f}min")
         except Exception as e:  # noqa: BLE001 — un ticker que falla no debe frenar al resto
-            results.append({"ticker": tk, "days": 0, "opt": 0, "error": str(e)})
+            results.append({"ticker": tk, "days": 0, "opt": 0, "healed": 0, "error": str(e)})
             _log(f"[{i:3d}/{len(tickers)}] {tk:6s} ERROR: {e}")
     _dur = (_t.time() - t0) / 60
-    _log(f"== listo en {_dur:.1f} min · {tot_opt} llamadas a opciones ==")
+    _log(f"== listo en {_dur:.1f} min · {tot_opt} llamadas a opciones · {tot_healed} día(s) sanado(s) ==")
     # Reporte estructurado para la página de estado (Herramientas → Datos).
     try:
         status = {
@@ -130,7 +171,7 @@ def main() -> int:
             "duration_min": round(_dur, 1),
             "window_start": str(start), "window_end": str(end),
             "mode": "underlying-only" if args.underlying_only else f"full (±{args.strikes})",
-            "n_tickers": len(tickers), "total_opt_calls": tot_opt,
+            "n_tickers": len(tickers), "total_opt_calls": tot_opt, "total_healed": tot_healed,
             "n_errors": sum(1 for r in results if r["error"]),
             "tickers": results,
         }

@@ -113,6 +113,7 @@ else:
     m[3].metric("Errores", _st.get("n_errors", 0))
     st.caption(f"Ventana: **{_st.get('window_start')} → {_st.get('window_end')}**  ·  "
                f"Modo: **{_st.get('mode')}**  ·  Llamadas a opciones: **{_st.get('total_opt_calls', 0)}**  ·  "
+               f"Días sanados: **{_st.get('total_healed', 0)}**  ·  "
                f"Fin: {_fmt_iso(_st.get('finished'))}")
     _rows = _st.get("tickers") or []
     if _rows:
