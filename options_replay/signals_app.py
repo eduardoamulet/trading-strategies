@@ -79,7 +79,7 @@ d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) els
 d_hasta = g2.date_input("Hasta", value=(_fechas.max().date() if len(_fechas) else datetime.now().date()))
 pmin = g3.slider("% Cumplimiento mínimo", 0, 100, 0, step=5,
                  help="Muestra solo señales con % de cumplimiento ≥ este valor (0 = todas).")
-_page = g4.selectbox("Filas por página", [10, 25, 50, 100, "Todas"], index=1)
+g4.caption("")  # (el historial ahora se navega por fecha, abajo)
 
 fdf = df.copy()
 if sel_estr != "(todas)": fdf = fdf[fdf["estrategia"] == sel_estr]
@@ -206,21 +206,34 @@ if st.session_state.get("_sig_sort_prev") != _sort_opt:
     st.session_state["_sig_sort_prev"] = _sort_opt
     st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
 
-# ── Paginación ───────────────────────────────────────────────────────────────
-# 'view' = la PÁGINA actual de fdf que se muestra en la tabla. La selección de filas y los
-# botones (Ver/Eliminar/Backtest) operan sobre 'view' (posiciones dentro de la página).
-_psize = len(fdf) if (_page == "Todas" or not len(fdf)) else int(_page)
-_psize = max(1, _psize)
-_total = len(fdf)
-_npages = max(1, (_total + _psize - 1) // _psize)
-_cur = min(max(1, int(st.session_state.get("sig_page", 1))), _npages)
-# Al cambiar de página reseteamos la selección (bump de key) → no queda apuntando a filas
-# de otra página.
-if st.session_state.get("_sig_page_prev") != _cur:
-    st.session_state["_sig_page_prev"] = _cur
+# ── Navegación por FECHA ──────────────────────────────────────────────────────
+# El historial se mueve POR FECHA: se elige un día (dropdown o ◀/▶) y la tabla muestra
+# TODAS las alertas de ese día. 'view' = alertas del día elegido; la selección y los
+# botones (Ver/Eliminar/Backtest) operan sobre 'view'.
+_dates = sorted(fdf["fecha"].astype(str).unique().tolist(), reverse=True)   # recientes primero
+_ndays = len(_dates)
+_didx = min(max(0, int(st.session_state.get("sig_date_idx", 0))), _ndays - 1)
+_cur_date = _dates[_didx]
+if st.session_state.get("_sig_date_prev") != _cur_date:   # al cambiar de fecha → limpiar selección
+    st.session_state["_sig_date_prev"] = _cur_date
     st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
-_start = (_cur - 1) * _psize
-view = fdf.iloc[_start:_start + _psize].reset_index(drop=True)
+view = fdf[fdf["fecha"].astype(str) == _cur_date].reset_index(drop=True)
+
+_dn1, _dn2, _dn3, _dn4 = st.columns([0.5, 2.5, 0.5, 4], vertical_alignment="center")
+if _dn1.button("◀", disabled=_didx >= _ndays - 1, use_container_width=True,
+               key="sig_date_older", help="Día anterior (más antiguo)"):
+    st.session_state["sig_date_idx"] = _didx + 1
+    st.rerun()
+_pick = _dn2.selectbox("Fecha", _dates, index=_didx, key="sig_date_pick",
+                       label_visibility="collapsed")
+if _pick != _cur_date:
+    st.session_state["sig_date_idx"] = _dates.index(_pick)
+    st.rerun()
+if _dn3.button("▶", disabled=_didx <= 0, use_container_width=True,
+               key="sig_date_newer", help="Día siguiente (más reciente)"):
+    st.session_state["sig_date_idx"] = _didx - 1
+    st.rerun()
+_dn4.markdown(f"**{len(view)}** alerta(s) el **{_cur_date}**  ·  día {_didx + 1} de {_ndays}")
 
 # Tabla SOLO LECTURA con selección multi-fila NATIVA: NO lleva casillas; la selección
 # (shift+click = rango) la maneja Streamlit. Sólo columnas de datos + bandas por fecha.
@@ -273,26 +286,6 @@ _event = st.dataframe(
 st.caption("Tocá una fila para seleccionarla · **shift+click** en otra marca el **rango** · "
            "**Ctrl/Cmd+click** suma sueltas. Con filas seleccionadas aparecen **Ver/Eliminar** "
            "arriba y **Backtestear/Operar** abajo.")
-
-# Barra de paginación (debajo de la tabla). Solo si hay más de una página.
-if _npages > 1:
-    _pg = st.columns([1, 1.4, 3, 1.4, 1], vertical_alignment="center")
-    if _pg[0].button("⏮", disabled=_cur <= 1, use_container_width=True, key="sig_pg_first"):
-        st.session_state["sig_page"] = 1
-        st.rerun()
-    if _pg[1].button("◀ Anterior", disabled=_cur <= 1, use_container_width=True, key="sig_pg_prev"):
-        st.session_state["sig_page"] = _cur - 1
-        st.rerun()
-    _pg[2].markdown(
-        f"<div style='text-align:center'>Página <b>{_cur}</b> de <b>{_npages}</b>  ·  "
-        f"{_total} señal(es)  ·  filas {_start + 1}–{min(_start + _psize, _total)}</div>",
-        unsafe_allow_html=True)
-    if _pg[3].button("Siguiente ▶", disabled=_cur >= _npages, use_container_width=True, key="sig_pg_next"):
-        st.session_state["sig_page"] = _cur + 1
-        st.rerun()
-    if _pg[4].button("⏭", disabled=_cur >= _npages, use_container_width=True, key="sig_pg_last"):
-        st.session_state["sig_page"] = _npages
-        st.rerun()
 
 # Posiciones seleccionadas (en el orden actual) → ids.
 _sel_rows = sorted(_event.selection.rows) if (_event and _event.selection) else []
