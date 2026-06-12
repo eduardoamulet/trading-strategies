@@ -122,7 +122,7 @@ def _render_detalle(r):
             f"**{r.get('symbol', '')} · {r.get('tipo', '')} · "
             f"{r.get('fecha', '')} {r.get('hora', '')}**"
         )
-        st.markdown(f"**estrategia:** — {r.get('estrategia', '')}")
+        st.markdown(f"**Estrategia:** — {r.get('estrategia', '')}")
         st.markdown("**Criterios de la estrategia:**")
         try:
             crits = json.loads(r["criterios_json"]) if r.get("criterios_json") else []
