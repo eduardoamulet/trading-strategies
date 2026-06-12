@@ -30,6 +30,16 @@ st.caption("Alertas de investepacademyia (Trend Reversal) — importadas a tu ap
 
 _now = lambda: datetime.now().isoformat(timespec="seconds")
 
+_CHAIN_DIR = HERE / "data" / "chain"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _es_0dte(ticker: str, fecha: str) -> bool:
+    """¿La señal cayó en un día con 0DTE para ese ticker? El downloader solo cachea chains
+    NO vacías → si existe data/chain/{ticker}_{fecha}.parquet, ese día tuvo 0DTE."""
+    t, f = str(ticker or "").strip(), str(fecha or "").strip()
+    return bool(t and f and (_CHAIN_DIR / f"{t}_{f}.parquet").exists())
+
 # ── Importar ─────────────────────────────────────────────────────────────────
 with st.expander("📥 Importar señales", expanded=False):
     t_eml, t_mail = st.tabs(["Subir email (.eml)", "Revisar correo (auto)"])
@@ -79,7 +89,10 @@ d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) els
 d_hasta = g2.date_input("Hasta", value=(_fechas.max().date() if len(_fechas) else datetime.now().date()))
 pmin = g3.slider("% Cumplimiento mínimo", 0, 100, 0, step=5,
                  help="Muestra solo señales con % de cumplimiento ≥ este valor (0 = todas).")
-g4.caption("")  # (el historial ahora se navega por fecha, abajo)
+g4.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)  # alinea con los date_input
+_solo_0dte = g4.checkbox("Sólo 0 DTE", value=False, key="sig_solo_0dte",
+                         help="Muestra solo señales cuyo ticker tenía opción 0DTE ese día "
+                              "(según la cache de cadenas en data/chain/).")
 
 fdf = df.copy()
 if sel_estr != "(todas)": fdf = fdf[fdf["estrategia"] == sel_estr]
@@ -88,6 +101,8 @@ if sel_est != "(todos)": fdf = fdf[fdf["estado"] == sel_est]
 if sel_tipo != "(todos)": fdf = fdf[fdf["tipo"] == sel_tipo]
 if pmin > 0: fdf = fdf[pd.to_numeric(fdf["probabilidad"], errors="coerce") >= pmin]
 fdf = fdf[(fdf["fecha"] >= d_desde.isoformat()) & (fdf["fecha"] <= d_hasta.isoformat())]
+if _solo_0dte and not fdf.empty:
+    fdf = fdf[[_es_0dte(s, f) for s, f in zip(fdf["symbol"].astype(str), fdf["fecha"].astype(str))]]
 
 # ── Métricas ─────────────────────────────────────────────────────────────────
 m1, m2, m3, m4 = st.columns(4)
@@ -250,6 +265,8 @@ _show = pd.DataFrame({
     "Tipo": [("📈 CALL" if str(t).upper() == "CALL"
               else "📉 PUT" if str(t).upper() == "PUT" else str(t))
              for t in view["tipo"].values],
+    "0 DTE": ["✅" if _es_0dte(s, f) else "❌"
+              for s, f in zip(view["symbol"].astype(str), view["fecha"].astype(str))],
     "Criterios": view["criterios"].values,
 })
 
@@ -286,6 +303,8 @@ _event = st.dataframe(
         "Estrategia": st.column_config.TextColumn("Estrategia", width="large"),
         "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%", width="small"),
         "Tipo": st.column_config.TextColumn("Tipo", width="small"),
+        "0 DTE": st.column_config.TextColumn("0 DTE", width="small",
+                                             help="✅ = el ticker tenía opción 0DTE ese día"),
         "Criterios": st.column_config.TextColumn("Criterios", width="small"),
     },
 )
