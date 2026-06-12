@@ -231,28 +231,39 @@ if st.session_state.get("_sig_sort_prev") != _sort_opt:
 # botones (Ver/Eliminar/Backtest) operan sobre 'view'.
 _dates = sorted(fdf["fecha"].astype(str).unique().tolist(), reverse=True)   # recientes primero
 _ndays = len(_dates)
-_didx = min(max(0, int(st.session_state.get("sig_date_idx", 0))), _ndays - 1)
-_cur_date = _dates[_didx]
-if st.session_state.get("_sig_date_prev") != _cur_date:   # al cambiar de fecha → limpiar selección
-    st.session_state["_sig_date_prev"] = _cur_date
+_TODAS = "(todas las fechas)"
+_opts = [_TODAS] + _dates
+st.session_state["_sig_dates"] = _dates   # para los callbacks de ◀/▶
+# Selección del dropdown; default = fecha más reciente. Si quedó inválida (cambió un filtro)
+# se resetea. "(todas las fechas)" → la tabla muestra TODAS las alertas (de todos los días).
+if st.session_state.get("sig_date_pick") not in _opts:
+    st.session_state["sig_date_pick"] = _dates[0] if _dates else _TODAS
+_cur = st.session_state["sig_date_pick"]
+_is_todas = (_cur == _TODAS)
+_didx = _dates.index(_cur) if not _is_todas else -1
+if st.session_state.get("_sig_date_prev") != _cur:   # cambió fecha/modo → limpiar selección
+    st.session_state["_sig_date_prev"] = _cur
     st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
-view = fdf[fdf["fecha"].astype(str) == _cur_date].reset_index(drop=True)
+view = (fdf if _is_todas else fdf[fdf["fecha"].astype(str) == _cur]).reset_index(drop=True)
+
+
+def _step_date(_delta):   # ◀ = día más antiguo (+1) · ▶ = día más reciente (-1)
+    _ds = st.session_state.get("_sig_dates", [])
+    _p = st.session_state.get("sig_date_pick")
+    if _p in _ds and 0 <= _ds.index(_p) + _delta < len(_ds):
+        st.session_state["sig_date_pick"] = _ds[_ds.index(_p) + _delta]
+
 
 _dn1, _dn2, _dn3, _dn4 = st.columns([0.5, 2.5, 0.5, 4], vertical_alignment="center")
-if _dn1.button("◀", disabled=_didx >= _ndays - 1, use_container_width=True,
-               key="sig_date_older", help="Día anterior (más antiguo)"):
-    st.session_state["sig_date_idx"] = _didx + 1
-    st.rerun()
-_pick = _dn2.selectbox("Fecha", _dates, index=_didx, key="sig_date_pick",
-                       label_visibility="collapsed")
-if _pick != _cur_date:
-    st.session_state["sig_date_idx"] = _dates.index(_pick)
-    st.rerun()
-if _dn3.button("▶", disabled=_didx <= 0, use_container_width=True,
-               key="sig_date_newer", help="Día siguiente (más reciente)"):
-    st.session_state["sig_date_idx"] = _didx - 1
-    st.rerun()
-_dn4.markdown(f"**{len(view)}** alerta(s) el **{_cur_date}**  ·  día {_didx + 1} de {_ndays}")
+_dn1.button("◀", disabled=(_is_todas or _didx >= _ndays - 1), use_container_width=True,
+            key="sig_date_older", help="Día anterior (más antiguo)", on_click=_step_date, args=(1,))
+_dn2.selectbox("Fecha", _opts, key="sig_date_pick", label_visibility="collapsed")
+_dn3.button("▶", disabled=(_is_todas or _didx <= 0), use_container_width=True,
+            key="sig_date_newer", help="Día siguiente (más reciente)", on_click=_step_date, args=(-1,))
+if _is_todas:
+    _dn4.markdown(f"**{len(view)}** alerta(s) · **todas** las fechas ({_ndays} día(s))")
+else:
+    _dn4.markdown(f"**{len(view)}** alerta(s) el **{_cur}**  ·  día {_didx + 1} de {_ndays}")
 
 # Tabla SOLO LECTURA con selección multi-fila NATIVA: NO lleva casillas; la selección
 # (shift+click = rango) la maneja Streamlit. Sólo columnas de datos + bandas por fecha.
