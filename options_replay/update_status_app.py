@@ -127,28 +127,40 @@ st.divider()
 
 # ── Cobertura de datos locales por ticker ────────────────────────────────────
 st.subheader("📦 Datos locales por ticker")
-st.caption("Rango de fechas con barras 1-min del **subyacente** cacheadas (Parquet) desde "
-           "Polygon, por ticker. **Días** = cantidad de días hábiles efectivamente guardados "
-           "en ese rango. Clic en un encabezado para ordenar.")
+st.caption("Por ticker: rango de fechas con **subyacente** cacheado (Desde/Hasta/Días) y "
+           "días con **opciones** cacheadas. **Atraso** = días hábiles detrás del día más "
+           "reciente global (0 = al día). Clic en un encabezado para ordenar.")
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner="Escaneando cache local…")
 def _local_coverage() -> pd.DataFrame:
-    """Escanea data/underlying/*.parquet (nombre = TICKER_YYYY-MM-DD.parquet) y arma,
-    por ticker, el rango de fechas cacheado (mín/máx) y la cantidad de días. Solo lee
-    NOMBRES de archivo (no abre los parquet) → rápido aun con miles de archivos."""
-    udir = HERE / "data" / "underlying"
-    pat = re.compile(r"^(.+)_(\d{4}-\d{2}-\d{2})\.parquet$")
-    by: dict[str, list[str]] = {}
+    """Escanea data/underlying/ y data/options/ (solo NOMBRES, no abre los parquet) y
+    arma, por ticker: rango de fechas del subyacente (mín/máx + cantidad de días) y la
+    cantidad de días DISTINTOS con barras de opciones cacheadas. Rápido aun con ~100k
+    archivos. Nombres:  underlying TICKER_YYYY-MM-DD.parquet ;
+    opciones  O_TICKER{YYMMDD}{C/P}{strike}_YYYY-MM-DD.parquet."""
+    data = HERE / "data"
+    u_pat = re.compile(r"^(.+)_(\d{4}-\d{2}-\d{2})\.parquet$")
+    o_pat = re.compile(r"^O_([A-Za-z]+)\d{6}[CP]\d+_(\d{4}-\d{2}-\d{2})\.parquet$")
+    under: dict[str, list[str]] = {}
+    udir = data / "underlying"
     if udir.exists():
         for p in udir.glob("*.parquet"):
-            m = pat.match(p.name)
+            m = u_pat.match(p.name)
             if m:
-                by.setdefault(m.group(1), []).append(m.group(2))
+                under.setdefault(m.group(1), []).append(m.group(2))
+    opt_days: dict[str, set] = {}
+    odir = data / "options"
+    if odir.exists():
+        for p in odir.glob("*.parquet"):
+            m = o_pat.match(p.name)
+            if m:
+                opt_days.setdefault(m.group(1).upper(), set()).add(m.group(2))
     rows = []
-    for tk, ds in by.items():
+    for tk, ds in under.items():
         ds.sort()
-        rows.append({"Ticker": tk, "Desde": ds[0], "Hasta": ds[-1], "Días": len(ds)})
+        rows.append({"Ticker": tk, "Desde": ds[0], "Hasta": ds[-1], "Días": len(ds),
+                     "Opc. días": len(opt_days.get(tk.upper(), ()))})
     return pd.DataFrame(rows)
 
 
@@ -156,13 +168,37 @@ _cov = _local_coverage()
 if _cov.empty:
     st.info("Todavía no hay datos de subyacente cacheados en `data/underlying/`.")
 else:
+    _cov = _cov.copy()
+    _gmax = _cov["Hasta"].max()
+
+    def _lag_bdays(h: str) -> int:
+        """Días hábiles entre el último día cacheado del ticker y el más reciente global."""
+        if h >= _gmax:
+            return 0
+        return max(0, len(pd.bdate_range(h, _gmax)) - 1)
+
+    _cov["Atraso"] = _cov["Hasta"].apply(_lag_bdays)
+    _cov["Estado"] = _cov["Atraso"].apply(lambda n: "✅ al día" if n == 0 else "⚠️ atrasado")
+
+    _nstale = int((_cov["Atraso"] > 0).sum())
     _mc = st.columns(4)
     _mc[0].metric("Tickers", len(_cov))
-    _mc[1].metric("Día más antiguo", _cov["Desde"].min())
-    _mc[2].metric("Día más reciente", _cov["Hasta"].max())
-    _mc[3].metric("Archivos (días·ticker)", int(_cov["Días"].sum()))
-    _q = st.text_input("Filtrar por ticker", "", placeholder="Ej.: QQQ").strip().upper()
-    _show = _cov[_cov["Ticker"].str.contains(_q, regex=False)] if _q else _cov
+    _mc[1].metric("Día más reciente", _gmax)
+    _mc[2].metric("⚠️ Atrasados", _nstale)
+    _mc[3].metric("Con opciones", int((_cov["Opc. días"] > 0).sum()))
+    st.caption(f"Rango global: **{_cov['Desde'].min()} → {_gmax}**  ·  "
+               f"archivos subyacente: **{int(_cov['Días'].sum())}**.")
+
+    _fc1, _fc2 = st.columns([3, 2])
+    _q = _fc1.text_input("Filtrar por ticker", "", placeholder="Ej.: QQQ").strip().upper()
+    _only_stale = _fc2.checkbox("⚠️ Solo atrasados", value=False,
+                                help="Tickers cuyo último día cacheado es anterior al "
+                                     "día más reciente global.")
+    _show = _cov
+    if _q:
+        _show = _show[_show["Ticker"].str.contains(_q, regex=False)]
+    if _only_stale:
+        _show = _show[_show["Atraso"] > 0]
     _show = _show.sort_values(["Días", "Ticker"], ascending=[False, True]).reset_index(drop=True)
     st.dataframe(
         _show, use_container_width=True, hide_index=True,
@@ -171,11 +207,16 @@ else:
             "Desde": st.column_config.TextColumn("Desde"),
             "Hasta": st.column_config.TextColumn("Hasta"),
             "Días": st.column_config.NumberColumn("Días", format="%d",
-                                                  help="Días hábiles cacheados en el rango"),
+                                                  help="Días con subyacente cacheado"),
+            "Opc. días": st.column_config.NumberColumn("Opc. días", format="%d",
+                                                       help="Días distintos con opciones cacheadas"),
+            "Atraso": st.column_config.NumberColumn("Atraso", format="%d",
+                                                    help="Días hábiles detrás del más reciente (0 = al día)"),
+            "Estado": st.column_config.TextColumn("Estado"),
         },
     )
-    if _q and _show.empty:
-        st.caption(f"Ningún ticker contiene «{_q}».")
+    if _show.empty:
+        st.caption("Ningún ticker cumple el filtro.")
 
 st.divider()
 
