@@ -797,7 +797,7 @@ def _render_iters_panel(_iters_seed):
     _sp1, _sp2, _sp3, _sp4 = st.columns(4)
     _sig_inv = float(_sp1.number_input("Inversión ($)", min_value=1.0, value=1000.0,
                                        step=100.0, key="sig_inv"))
-    _sig_umb = float(_sp2.number_input("Umbral ROI (%)", value=1000.0, step=50.0, key="sig_umb"))
+    _sig_umb = float(_sp2.number_input("Umbral ROI (%)", value=10.0, step=5.0, key="sig_umb"))
     _sig_stop = float(_sp3.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
     _sig_spmax = float(_sp4.number_input("Spread máx ($) — 0=auto", min_value=0.0, value=0.0,
                                          step=0.01, format="%.2f", key="sig_spmax"))
