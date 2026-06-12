@@ -272,13 +272,13 @@ _show = pd.DataFrame({
     "Hora": view["hora"].values,
     "Fecha": view["fecha"].values,
     "Estrategia": view["estrategia"].values,
+    "Criterios": view["criterios"].values,
     "% Cumpl.": pd.to_numeric(view["probabilidad"], errors="coerce").values,
     "Tipo": [("📈 CALL" if str(t).upper() == "CALL"
               else "📉 PUT" if str(t).upper() == "PUT" else str(t))
              for t in view["tipo"].values],
     "0 DTE": ["✅" if _es_0dte(s, f) else "❌"
               for s, f in zip(view["symbol"].astype(str), view["fecha"].astype(str))],
-    "Criterios": view["criterios"].values,
 })
 
 # Bandas por fecha: filas de la MISMA fecha en VERDE CLARO / BLANCO, alternando el color
