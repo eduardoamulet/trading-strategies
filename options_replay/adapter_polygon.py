@@ -60,14 +60,17 @@ class PolygonAdapter:
                     if attempt < max_retries - 1:
                         time.sleep(min(_wait, 30.0))
                         continue
-                    r.raise_for_status()
+                    raise last_exc
                 if r.status_code >= 500:
                     last_exc = requests.HTTPError(f"server {r.status_code} on {url}")
                     if attempt < max_retries - 1:
                         time.sleep(2 ** attempt)
                         continue
-                    r.raise_for_status()
-                r.raise_for_status()
+                    raise last_exc
+                if r.status_code >= 400:
+                    # 4xx (403/404/...): mensaje SIN la query string. NO usar
+                    # raise_for_status(): incluye r.url completo → filtraría el apiKey.
+                    raise requests.HTTPError(f"{r.status_code} {r.reason} on {url}")
                 return r.json()
             except (requests.Timeout, requests.ConnectionError) as e:
                 last_exc = e
