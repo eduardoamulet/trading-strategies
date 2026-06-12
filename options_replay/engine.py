@@ -297,7 +297,7 @@ def _probe_premium_range(
     ext_max: Optional[float] = None,
     spot: Optional[float] = None,
     spread_cfg: Optional[dict] = None,
-    selection_criterion: str = "itm",   # "itm" (cercano a ITM) | "spread" (menor spread) | "value" (prima ≈ value_target, IGNORA spread)
+    selection_criterion: str = "itm",   # "itm" (cercano a ITM) | "spread" (menor spread) | "value" (prima ≈ value_target, IGNORA spread) | "itm_first" (1-ITM más cercano, IGNORA spread y rango)
     value_target: float = 2.0,          # objetivo de prima ($) para selection_criterion="value"
 ) -> tuple[Optional[StrikeProbe], list[StrikeProbe], str]:
     """Selector de contrato: filtro de spread (compuerta dura) + Óptimo/Extendido.
@@ -381,39 +381,43 @@ def _probe_premium_range(
 
     def _select(cands: list[StrikeProbe]) -> StrikeProbe:
         # Acá se decide CUÁL contrato se elige entre los candidatos:
-        #   "spread" (opción 1): el de MENOR spread (desempate: cercano a ITM, volumen).
-        #   "value"  (opción 2): IGNORA el spread; el de prima de entrada MÁS CERCANA a
-        #            value_target ($2 default), igual para CALL y PUT. Desempate: ITM.
-        #   "itm"    (legado): de los 2 de menor spread, el más cercano a ITM.
+        #   "spread"    (opción 1): el de MENOR spread (desempate: cercano a ITM, volumen).
+        #   "value"     (opción 2 vieja): IGNORA el spread; el de prima de entrada MÁS
+        #               CERCANA a value_target ($2 default), igual CALL y PUT. Desempate: ITM.
+        #   "itm_first" (opción 2): IGNORA el spread; el MÁS CERCANO a ITM (menor itm_depth
+        #               ≥ 0 = el "1-ITM", primer strike dentro del dinero). Único criterio.
+        #   "itm"       (legado): de los 2 de menor spread, el más cercano a ITM.
         if selection_criterion == "spread":
             return min(cands, key=lambda p: (_sp(p), _itm_rank(p), -(p.volume or 0.0)))
         if selection_criterion == "value":
             return min(cands, key=lambda p: (round(abs((p.opening_premium or 0.0) - value_target), 4),
                                              _itm_rank(p)))
+        if selection_criterion == "itm_first":
+            return min(cands, key=_itm_rank)
         top2 = sorted(cands, key=lambda p: (_sp(p), _itm_rank(p)))[:2]
         return min(top2, key=lambda p: (_itm_rank(p), _sp(p)))
 
     def _passes_spread(p: StrikeProbe) -> bool:
-        # Opción 2 ("value") NO considera el spread → la compuerta no aplica.
-        if selection_criterion == "value":
+        # "value" e "itm_first" (opción 2) NO consideran el spread → la compuerta no aplica.
+        if selection_criterion in ("value", "itm_first"):
             return True
         if not spread_enabled:
             return True
         return p.spread_ok
 
-    # Opción 2/3 ("value"): IGNORA el rango óptimo/extendido Y el spread. Elige, entre
-    # TODOS los strikes con prima válida, el más cercano al "Valor objetivo del
-    # contrato" (value_target); desempata por cercanía a ITM. El rango óptimo/extendido
-    # NO aplica a este criterio (no se filtra por prima mínima/máxima).
-    if selection_criterion == "value":
+    # Opción 2 ("itm_first") y la vieja "value": IGNORAN el rango óptimo/extendido Y el
+    # spread. Eligen entre TODOS los strikes con prima válida según el criterio:
+    #   · "value"     → prima de entrada más cercana a value_target (desempate por ITM).
+    #   · "itm_first" → el más cercano a ITM (1-ITM); la cercanía a ITM es el ÚNICO criterio.
+    # El rango óptimo/extendido y la compuerta de spread NO aplican a estos criterios.
+    if selection_criterion in ("value", "itm_first"):
         pick = _select(valid)
-        # Traer el NBBO del contrato ELEGIDO para el display (su prima suele caer
-        # fuera del rango de fetch óptimo/extendido, así que aún no se pidió). No
-        # afecta la selección (el spread se ignora), solo completa la tabla.
+        # Traer el NBBO del contrato ELEGIDO solo para el display (su prima puede caer
+        # fuera del rango de fetch, así que aún no se pidió). NO afecta la selección.
         if spread_enabled and pick.spread is None and pick.occ:
             q = downloader.option_quote(pick.occ, date, start_ts)
             pick.bid, pick.ask, pick.spread = q.get("bid"), q.get("ask"), q.get("spread")
-        return pick, probes, "value"
+        return pick, probes, selection_criterion
 
     # a. Óptimo + pasa spread
     cand_opt = [p for p in valid if p.in_range and _passes_spread(p)]

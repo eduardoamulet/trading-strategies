@@ -58,8 +58,10 @@ _TIPO_MODE = {
 def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.0,
             stop_pct: float = -100.0, spread_cfg=None, iteration_idx: int = 1,
             entry_at_ask: bool = False, exit_at_bid: bool = False,
-            auto_dte: bool = False) -> dict:
+            auto_dte: bool = False, selection_criterion: str = "spread") -> dict:
     """Corre 1 iteración. `spec` admite 'ticker' o 'symbol', más 'fecha', 'hora', 'tipo'.
+    `selection_criterion` = criterio de selección de contrato ('spread' = Opción 1 menor
+    spread; 'itm_first' = Opción 2 primer contrato cerca de ITM, ignora spread y rango).
     NO usa st.* → seguro en hilos. Devuelve dict con status/iteration/error + datos base."""
     ticker = str(spec.get("ticker") or spec.get("symbol") or "").upper().strip()
     fecha = str(spec.get("fecha") or "").strip()
@@ -104,7 +106,7 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             it = run_overnight_1dte(
                 dl, ticker, fecha, lo, hi, inv_call, inv_put, order_ts,
                 iteration_idx=int(iteration_idx), mode=mode, ext_min=lo, ext_max=hi,
-                selection_criterion="spread", spread_cfg=spread_cfg, sell_date=_ovn_sell,
+                selection_criterion=selection_criterion, spread_cfg=spread_cfg, sell_date=_ovn_sell,
                 exit_time=_time(16, 0), entry_at_ask=entry_at_ask, exit_at_bid=exit_at_bid)
         else:
             validate_0dte_session(dl, ticker, fecha)
@@ -116,7 +118,7 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
                 dl, ticker, fecha, lo, hi, inv_call, inv_put, order_ts, day_end_ts,
                 exit_threshold_pct=_umb, exit_metric="total", stop_loss_pct=_stp,
                 iteration_idx=int(iteration_idx), mode=mode,
-                ext_min=lo, ext_max=hi, selection_criterion="spread", dte=0, spread_cfg=spread_cfg,
+                ext_min=lo, ext_max=hi, selection_criterion=selection_criterion, dte=0, spread_cfg=spread_cfg,
                 entry_at_ask=entry_at_ask, exit_at_bid=exit_at_bid,
                 call_exit_threshold_pct=_umb, call_stop_loss_pct=_stp,
                 put_exit_threshold_pct=_umb, put_stop_loss_pct=_stp,

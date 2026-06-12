@@ -743,8 +743,9 @@ def _has_0dte_on(dl, ticker: str, date: str) -> bool:
 def _render_iters_panel(_iters_seed):
     st.caption(
         "Cada fila = 1 iteración. **Tipo** = modo (CALL/PUT una pierna · CALL y PUT · "
-        "CALL o PUT + variantes 'plus'; los de dos piernas reparten 50/50) · **Opción 1 "
-        "(menor spread)** · mismo día (sale 16:00). Editá, agregá o borrá filas. Las señales "
+        "CALL o PUT + variantes 'plus'; los de dos piernas reparten 50/50) · **Criterio** = "
+        "selección de contrato por fila (Opción 1 menor spread · Opción 2 primer contrato "
+        "cerca de ITM) · mismo día (sale 16:00). Editá, agregá o borrá filas. Las señales "
         "de **Alertas** llegan acá."
     )
     _seed_df = pd.DataFrame(_iters_seed)
@@ -762,6 +763,15 @@ def _render_iters_panel(_iters_seed):
         lambda v: str(v).strip() if str(v).strip() in _TIPO_OPTS
         else {"SÓLO CALL": "CALL", "SOLO CALL": "CALL",
               "SÓLO PUT": "PUT", "SOLO PUT": "PUT"}.get(str(v).strip().upper(), "CALL"))
+    # Criterio de selección de contrato POR FILA: Opción 1 (menor spread, default) /
+    # Opción 2 (primer contrato cerca de ITM = 1-ITM; ignora spread y rango de prima).
+    _CRIT_OPTS = ["Opción 1 — Menor spread", "Opción 2 — Primer contrato cerca de ITM"]
+    _CRIT_KEY = {"Opción 1 — Menor spread": "spread",
+                 "Opción 2 — Primer contrato cerca de ITM": "itm_first"}
+    if "Criterio" not in _seed_df.columns:
+        _seed_df["Criterio"] = _CRIT_OPTS[0]
+    _seed_df["Criterio"] = _seed_df["Criterio"].apply(
+        lambda v: str(v).strip() if str(v).strip() in _CRIT_OPTS else _CRIT_OPTS[0])
     # Columna ✓ (1ª, a la izquierda) para elegir qué filas backtestear. Por defecto TODAS
     # marcadas; los botones marcan/desmarcan todas (re-siembran el editor).
     _bsa, _bsn, _ = st.columns([1.7, 1.7, 5])
@@ -778,7 +788,7 @@ def _render_iters_panel(_iters_seed):
     # Centrar los VALORES (text-align en celdas vía Styler; los headers no se pueden
     # centrar — limitación del grid de Glide, igual que en la tabla de resultados).
     _ed = st.data_editor(
-        _seed_df[["✓", "Ticker", "Fecha", "Hora", "Tipo", "% Cumpl."]].style.set_properties(
+        _seed_df[["✓", "Ticker", "Fecha", "Hora", "Tipo", "Criterio", "% Cumpl."]].style.set_properties(
             **{"text-align": "center"}),
         num_rows="dynamic",
         use_container_width=True, hide_index=True, key="bt_iters_editor",
@@ -790,6 +800,11 @@ def _render_iters_panel(_iters_seed):
             "Fecha": st.column_config.TextColumn("Fecha (YYYY-MM-DD)"),
             "Hora": st.column_config.TextColumn("Hora (HH:MM)"),
             "Tipo": st.column_config.SelectboxColumn("Tipo", options=_TIPO_OPTS, required=True),
+            "Criterio": st.column_config.SelectboxColumn(
+                "Criterio", options=_CRIT_OPTS, required=True, width="medium",
+                help="Cómo se elige el contrato. Opción 1: menor spread en el rango (con "
+                     "compuerta de spread). Opción 2: el primer contrato dentro del dinero "
+                     "(1-ITM), ignorando spread y rango de prima."),
             "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%",
                                                       help="Probabilidad de la señal (informativo)."),
         },
@@ -830,7 +845,8 @@ def _render_iters_panel(_iters_seed):
             continue
         _specs.append({"ticker": _tk, "fecha": str(_r.get("Fecha") or "").strip(),
                        "hora": str(_r.get("Hora") or "").strip(),
-                       "tipo": str(_r.get("Tipo") or "").upper().strip()})
+                       "tipo": str(_r.get("Tipo") or "").upper().strip(),
+                       "criterio": _CRIT_KEY.get(str(_r.get("Criterio") or "").strip(), "spread")})
 
     if st.button(f"▶ Correr backtest de {len(_specs)} iteración(es)", type="primary",
                  disabled=not _specs, key="sig_run"):
@@ -857,7 +873,7 @@ def _render_iters_panel(_iters_seed):
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
             _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, _scfg, _i,
-                                _sig_entry_ask, _sig_exit_bid, _sig_auto_dte)
+                                _sig_entry_ask, _sig_exit_bid, _sig_auto_dte, s.get("criterio", "spread"))
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):
@@ -1355,23 +1371,26 @@ with st.sidebar.expander("Parámetros de sesión", expanded=True):
     # Verificación de venta: siempre cada minuto (se quitó el selector dedicado).
     sell_check_min = 1
 
-    # Criterio de selección de contrato — sólo Opción 1 (menor spread en Rango óptimo).
+    # Criterio de selección de contrato: Opción 1 (menor spread en Rango óptimo) u
+    # Opción 2 (primer contrato cerca de ITM = 1-ITM; ignora spread y rango de prima).
     st.markdown(
         "<p style='font-weight:normal; margin: 0.5rem 0 0.2rem 0;'>Criterio de selección de contrato</p>",
         unsafe_allow_html=True,
     )
-    _crit_options = ["Opción 1 — Menor spread (en Rango óptimo)"]
-    # Migración: si quedó guardada una etiqueta vieja (Opción 2/3 removidas), resetear.
+    _crit_options = ["Opción 1 — Menor spread (en Rango óptimo)",
+                     "Opción 2 — Primer contrato cerca de ITM"]
+    # Migración: si quedó guardada una etiqueta vieja (Opción 3 removida), resetear.
     if st.session_state.get("selection_criterion_label") not in _crit_options:
         st.session_state.pop("selection_criterion_label", None)
-    st.selectbox(
+    _crit_label = st.selectbox(
         "Criterio de selección de contrato",
         options=_crit_options, index=0,
         key="selection_criterion_label", label_visibility="collapsed",
-        help=("Compuerta de spread + el contrato de menor bid-ask en el Rango óptimo "
-              "(con cascada a extendido si hace falta)."),
+        help=("Opción 1: compuerta de spread + el contrato de menor bid-ask en el Rango "
+              "óptimo (cascada a extendido). Opción 2: el primer contrato dentro del dinero "
+              "(1-ITM), ignorando spread y rango — la cercanía a ITM es el único criterio."),
     )
-    selection_criterion = "spread"
+    selection_criterion = "itm_first" if str(_crit_label).startswith("Opción 2") else "spread"
 
     # Filtro de spread (compuerta): el usuario lo puede DESACTIVAR o fijar un máximo
     # plano. Resuelve el caso "el único contrato en rango tiene spread 1¢ por encima
@@ -2663,6 +2682,7 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
             "extended": "<span style='color:#e65100'>extendido</span>",
             "fallback": "<span style='color:#b71c1c'>fallback</span>",
             "value": "<span style='color:#1565c0'>valor</span>",
+            "itm_first": "<span style='color:#1565c0'>1-ITM</span>",
         }.get(tier, tier or "")
         return (f"<b>{label}:</b> bid ${bid:.2f} / ask ${ask:.2f} · "
                 f"spread <b>${spread:.2f}</b> · {_tier_badge}")
