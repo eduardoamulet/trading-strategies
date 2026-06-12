@@ -106,7 +106,10 @@ if _alerts_ho:
             _estado = ("✅ lista" if p.status == "ok"
                        else ("⚠ " + "; ".join(p.reasons)) if p.status == "blocked"
                        else ("✗ " + "; ".join(p.reasons)))
-            _pv.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"),
+            _pv.append({"Acción": a.get("symbol"),
+                        "Tipo": ("📈 CALL" if str(a.get("tipo")).upper() == "CALL"
+                                 else "📉 PUT" if str(a.get("tipo")).upper() == "PUT"
+                                 else a.get("tipo")),
                         "Contrato": p.occ or "—",
                         "Strike": (f"{p.strike:g}" if p.strike else "—"),
                         "Bid": (f"${p.bid:.2f}" if p.bid else "—"),

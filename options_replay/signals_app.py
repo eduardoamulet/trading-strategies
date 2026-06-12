@@ -243,7 +243,9 @@ _show = pd.DataFrame({
     "Fecha": view["fecha"].values,
     "Estrategia": view["estrategia"].values,
     "% Cumpl.": pd.to_numeric(view["probabilidad"], errors="coerce").values,
-    "Tipo": view["tipo"].values,
+    "Tipo": [("📈 CALL" if str(t).upper() == "CALL"
+              else "📉 PUT" if str(t).upper() == "PUT" else str(t))
+             for t in view["tipo"].values],
     "Criterios": view["criterios"].values,
 })
 
@@ -260,8 +262,8 @@ for _i, _d in enumerate(_fechas):
 _center_cols = [c for c in _show.columns if c != "Estrategia"]
 _styled = (_show.style
            .apply(lambda _r: [_rowbg[_r.name]] * len(_r), axis=1)
-           .map(lambda _v: "color:#16a34a; font-weight:700" if _v == "CALL"
-                else ("color:#ef4444; font-weight:700" if _v == "PUT" else ""),
+           .map(lambda _v: "color:#16a34a; font-weight:700" if "CALL" in str(_v)
+                else ("color:#ef4444; font-weight:700" if "PUT" in str(_v) else ""),
                 subset=["Tipo"])
            .set_properties(subset=_center_cols, **{"text-align": "center"}))
 
