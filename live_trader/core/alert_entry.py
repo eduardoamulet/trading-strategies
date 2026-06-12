@@ -46,6 +46,7 @@ class AlertPreview:
     occ: str = ""
     strike: float = 0.0
     expiry: str = ""
+    bid: float = 0.0
     ask: float = 0.0
     spread: float = 0.0
     open_interest: int = 0
@@ -110,7 +111,7 @@ def preview_from_alert(broker: BrokerAdapter, store: Store, selector: ContractSe
     return AlertPreview(
         status="blocked" if reasons else "ok",
         underlying=e.underlying, side=side, occ=contract.occ, strike=contract.strike,
-        expiry=expiry, ask=contract.ask, spread=contract.spread,
+        expiry=expiry, bid=contract.bid, ask=contract.ask, spread=contract.spread,
         open_interest=contract.open_interest, qty=qty,
         cost=contract.ask * qty * 100.0, reasons=reasons)
 

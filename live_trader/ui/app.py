@@ -106,6 +106,7 @@ if _alerts_ho:
             _pv.append({"Acción": a.get("symbol"), "Tipo": a.get("tipo"),
                         "Contrato": p.occ or "—",
                         "Strike": (f"{p.strike:g}" if p.strike else "—"),
+                        "Bid": (f"${p.bid:.2f}" if p.bid else "—"),
                         "Ask": (f"${p.ask:.2f}" if p.ask else "—"),
                         "Spread": (f"${p.spread:.2f}" if p.occ else "—"),
                         "OI": int(p.open_interest or 0), "Cant.": int(p.qty or 0),
