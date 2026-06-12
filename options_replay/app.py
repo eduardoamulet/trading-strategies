@@ -726,6 +726,20 @@ if _handoff:
 
 _iters_seed = st.session_state.get("bt_iters")   # None / [] si no hay iteraciones cargadas
 _iters_open = bool(st.session_state.pop("bt_iters_open", False)) or bool(st.session_state.get("sig_bt"))
+
+
+def _has_0dte_on(dl, ticker: str, date: str) -> bool:
+    """¿El ticker tiene opción 0DTE (chain que vence ESE día)? El downloader solo cachea
+    chains NO vacías → si el archivo existe, hubo 0DTE. Si no está cacheado, consulta (y
+    cachea). Ante error, NO saltea (deja que el motor decida)."""
+    try:
+        if (dl.data_dir / "chain" / f"{ticker}_{date}.parquet").exists():
+            return True
+        return not dl.chain(ticker, date).empty
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _render_iters_panel(_iters_seed):
     st.caption(
         "Cada fila = 1 iteración. **Tipo** = modo (CALL/PUT una pierna · CALL y PUT · "
@@ -817,8 +831,16 @@ def _render_iters_panel(_iters_seed):
         _scfg = ({"enable_spread_filter": True, "_max_spread_override": _sig_spmax}
                  if _sig_spmax > 0 else None)
         _dl = get_downloader(api_key)
+        # Opción 1: con Auto-DTE APAGADO, saltear las señales SIN 0DTE ese día (no se
+        # intentan → no ensucian los resultados con avisos "No 0 DTE option").
+        _skipped = []
+        if not _sig_auto_dte:
+            _keep = []
+            for _s in _specs:
+                (_keep if _has_0dte_on(_dl, _s["ticker"], _s["fecha"]) else _skipped).append(_s)
+            _specs = _keep
         _n = len(_specs)
-        _wk = max(1, min(8, _n))
+        _wk = max(1, min(8, _n)) if _n else 1
         _pr = st.progress(0.0, text="Corriendo iteraciones…")
         _lv = st.empty()
         _t0 = time.perf_counter()
@@ -845,7 +867,7 @@ def _render_iters_panel(_iters_seed):
         # Guardar como el "replay" actual (modo señales) → se renderiza RICO más abajo,
         # igual que un backtest manual (Totales + detalle por iteración con render_iteration).
         st.session_state["replay"] = {
-            "mode": "signals", "sig_results": _res,
+            "mode": "signals", "sig_results": _res, "sig_skipped": _skipped,
             "sig_elapsed": time.perf_counter() - _t0, "sig_workers": _wk,
         }
         st.rerun()
@@ -2907,6 +2929,13 @@ def _render_signals_session(rs):
     if rs.get("sig_elapsed") is not None:
         st.caption(f"⏱️ Completado en {rs['sig_elapsed']:0.1f}s · "
                    f"{rs.get('sig_workers', 1)} en paralelo")
+    _skipped = rs.get("sig_skipped") or []
+    if _skipped:
+        _sk = ", ".join(f"{s.get('ticker')} {s.get('fecha')}" for s in _skipped[:12])
+        if len(_skipped) > 12:
+            _sk += f" … (+{len(_skipped) - 12})"
+        st.caption(f"⏭️ {len(_skipped)} señal(es) salteada(s) por no tener **0DTE** ese día "
+                   f"(activá *Auto-DTE* arriba para operarlas al vencimiento más cercano): {_sk}")
     st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
     for r in sorted(oks, key=lambda x: (x.get("fecha") or "", x.get("hora") or "",
                                         x.get("ticker") or "")):
