@@ -281,19 +281,11 @@ _show = pd.DataFrame({
               for s, f in zip(view["symbol"].astype(str), view["fecha"].astype(str))],
 })
 
-# Bandas por fecha: filas de la MISMA fecha en VERDE CLARO / BLANCO, alternando el color
-# al cambiar la fecha (según el orden actual). El Styler pinta el fondo.
-_fechas = _show["Fecha"].tolist()
-_grp, _rowbg = 0, []
-for _i, _d in enumerate(_fechas):
-    if _i > 0 and _d != _fechas[_i - 1]:
-        _grp += 1
-    _rowbg.append("background-color: #ecfdf3" if _grp % 2 == 0 else "")
-# Centrar el CONTENIDO de todas las columnas menos "Estrategia". st.dataframe respeta
-# text-align de las CELDAS vía Styler (los headers no se pueden centrar: limitación del grid).
+# Filas TODAS blancas (sin bandas por fecha). Solo se colorea el texto de Tipo y se centra
+# el contenido de las columnas (menos "Estrategia"). st.dataframe respeta text-align de las
+# CELDAS vía Styler (los headers no se pueden centrar: limitación del grid).
 _center_cols = [c for c in _show.columns if c != "Estrategia"]
 _styled = (_show.style
-           .apply(lambda _r: [_rowbg[_r.name]] * len(_r), axis=1)
            .map(lambda _v: "color:#16a34a; font-weight:700" if "CALL" in str(_v)
                 else ("color:#ef4444; font-weight:700" if "PUT" in str(_v) else ""),
                 subset=["Tipo"])
