@@ -121,6 +121,13 @@ def update_ticker(dl: Downloader, ticker: str, days: list[str], strikes_window: 
 
 
 def main() -> int:
+    # Escribir el log SIEMPRE en UTF-8 (la consola de Windows usa cp1252 por defecto →
+    # mojibake en '·', 'í', etc. al redirigir a archivo). reconfigure existe en Python 3.7+.
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
     ap = argparse.ArgumentParser(description="Actualiza la cache de todos los tickers hasta hoy.")
     ap.add_argument("--days", type=int, default=5, help="Días hábiles hacia atrás a revisar (default 5).")
     ap.add_argument("--strikes", type=int, default=10, help="Strikes ATM por lado (default 10).")

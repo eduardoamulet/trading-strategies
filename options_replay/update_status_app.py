@@ -72,6 +72,15 @@ def _fmt_iso(s) -> str:
     return s.replace("T", " ")[:16] if s and s != "—" else "—"
 
 
+def _decode_log_line(b: bytes) -> str:
+    """El log puede mezclar UTF-8 (runs manuales) y cp1252 (tarea programada de Windows).
+    Decodifica por línea: UTF-8 y, si falla, cp1252 → evita los '�' en '·', 'í', etc."""
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("cp1252", errors="replace")
+
+
 # ── Tarea programada ─────────────────────────────────────────────────────────
 with st.expander("🗓️ Tarea programada", expanded=True):
     _rc, _out, _err = _ps(f"Get-ScheduledTaskInfo -TaskName '{TASK_NAME}' | "
@@ -106,7 +115,7 @@ with st.expander("🗓️ Tarea programada", expanded=True):
 
 
 # ── Reporte del último run ───────────────────────────────────────────────────
-with st.expander("📊 Último run (qué actualizó)", expanded=True):
+with st.expander("📊 Último run (qué actualizó)", expanded=False):
     if STATUS_PATH.exists():
         try:
             _st = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
@@ -139,7 +148,7 @@ with st.expander("📊 Último run (qué actualizó)", expanded=True):
 
 
 # ── Cobertura de datos locales por ticker ────────────────────────────────────
-with st.expander("📦 Datos locales por ticker", expanded=True):
+with st.expander("📦 Datos locales por ticker", expanded=False):
     st.caption("Por ticker: rango con **subyacente** cacheado (Desde/Hasta/Días) y días con "
                "**opciones**. **Huecos** = días de trading del rango que faltan (sin contar "
                "feriados); 0 = rango completo. **Atraso** = días hábiles detrás del día más "
@@ -215,13 +224,14 @@ with st.expander("📦 Datos locales por ticker", expanded=True):
                    f"archivos subyacente: **{int(_cov['Días'].sum())}**.")
 
         _fc1, _fc2 = st.columns([3, 2])
-        _q = _fc1.text_input("Filtrar por ticker", "", placeholder="Ej.: QQQ").strip().upper()
+        _q = _fc1.multiselect("Filtrar por ticker", sorted(_cov["Ticker"].tolist()),
+                              placeholder="(todos)")
         _only_stale = _fc2.checkbox("⚠️ Solo atrasados", value=False,
                                     help="Tickers cuyo último día cacheado es anterior al "
                                          "día más reciente global.")
         _show = _cov
         if _q:
-            _show = _show[_show["Ticker"].str.contains(_q, regex=False)]
+            _show = _show[_show["Ticker"].isin(_q)]
         if _only_stale:
             _show = _show[_show["Atraso"] > 0]
         _show = _show.sort_values(["Días", "Ticker"], ascending=[False, True]).reset_index(drop=True)
@@ -249,10 +259,10 @@ with st.expander("📦 Datos locales por ticker", expanded=True):
 
 
 # ── Log ──────────────────────────────────────────────────────────────────────
-with st.expander("📜 Log", expanded=True):
+with st.expander("📜 Log", expanded=False):
     if LOG_PATH.exists():
         try:
-            _raw = LOG_PATH.read_text(encoding="utf-8", errors="replace")
+            _raw = "\n".join(_decode_log_line(_ln) for _ln in LOG_PATH.read_bytes().splitlines())
         except Exception as e:  # noqa: BLE001
             _raw = f"(no pude leer el log: {e})"
         _tail = "\n".join(_raw.splitlines()[-80:])
