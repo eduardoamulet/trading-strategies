@@ -814,6 +814,12 @@ def _render_iters_panel(_iters_seed):
         help="Si la señal cae en un día SIN 0DTE (tickers de vencimiento semanal en día "
              "no-viernes), usa el vencimiento más cercano: compra ese día y vende a ese "
              "vencimiento (estilo DTE=1, exit=overnight_1dte). Evita el error 'No 0 DTE'.")
+    _sig_aplicar_spread = st.checkbox(
+        "Aplicar filtro de spread", value=True, key="sig_aplicar_spread",
+        help="Si lo DESACTIVÁS se compra aunque el spread sea ancho (típico en 0DTE al "
+             "OPEN, donde el spread es grande y la compuerta rechaza casi todo). Conviene "
+             "combinarlo con 'Entrar al ASK / Salir al BID' para que el costo real del "
+             "spread igual se modele en el resultado.")
 
     _specs = []
     for _, _r in _ed.iterrows():
@@ -828,8 +834,12 @@ def _render_iters_panel(_iters_seed):
 
     if st.button(f"▶ Correr backtest de {len(_specs)} iteración(es)", type="primary",
                  disabled=not _specs, key="sig_run"):
-        _scfg = ({"enable_spread_filter": True, "_max_spread_override": _sig_spmax}
-                 if _sig_spmax > 0 else None)
+        if not _sig_aplicar_spread:
+            _scfg = {"enable_spread_filter": False}
+        elif _sig_spmax > 0:
+            _scfg = {"enable_spread_filter": True, "_max_spread_override": _sig_spmax}
+        else:
+            _scfg = None
         _dl = get_downloader(api_key)
         # Opción 1: con Auto-DTE APAGADO, saltear las señales SIN 0DTE ese día (no se
         # intentan → no ensucian los resultados con avisos "No 0 DTE option").
