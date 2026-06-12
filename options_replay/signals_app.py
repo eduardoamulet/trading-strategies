@@ -79,7 +79,7 @@ d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) els
 d_hasta = g2.date_input("Hasta", value=(_fechas.max().date() if len(_fechas) else datetime.now().date()))
 pmin = g3.slider("% Cumplimiento mínimo", 0, 100, 0, step=5,
                  help="Muestra solo señales con % de cumplimiento ≥ este valor (0 = todas).")
-_page = g4.selectbox("Filas por página", [10, 25, 50, 100, "Todas"], index=4)
+_page = g4.selectbox("Filas por página", [10, 25, 50, 100, "Todas"], index=1)
 
 fdf = df.copy()
 if sel_estr != "(todas)": fdf = fdf[fdf["estrategia"] == sel_estr]
@@ -88,7 +88,6 @@ if sel_est != "(todos)": fdf = fdf[fdf["estado"] == sel_est]
 if sel_tipo != "(todos)": fdf = fdf[fdf["tipo"] == sel_tipo]
 if pmin > 0: fdf = fdf[pd.to_numeric(fdf["probabilidad"], errors="coerce") >= pmin]
 fdf = fdf[(fdf["fecha"] >= d_desde.isoformat()) & (fdf["fecha"] <= d_hasta.isoformat())]
-if _page != "Todas": fdf = fdf.head(int(_page))
 
 # ── Métricas ─────────────────────────────────────────────────────────────────
 m1, m2, m3, m4 = st.columns(4)
@@ -207,16 +206,32 @@ if st.session_state.get("_sig_sort_prev") != _sort_opt:
     st.session_state["_sig_sort_prev"] = _sort_opt
     st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
 
+# ── Paginación ───────────────────────────────────────────────────────────────
+# 'view' = la PÁGINA actual de fdf que se muestra en la tabla. La selección de filas y los
+# botones (Ver/Eliminar/Backtest) operan sobre 'view' (posiciones dentro de la página).
+_psize = len(fdf) if (_page == "Todas" or not len(fdf)) else int(_page)
+_psize = max(1, _psize)
+_total = len(fdf)
+_npages = max(1, (_total + _psize - 1) // _psize)
+_cur = min(max(1, int(st.session_state.get("sig_page", 1))), _npages)
+# Al cambiar de página reseteamos la selección (bump de key) → no queda apuntando a filas
+# de otra página.
+if st.session_state.get("_sig_page_prev") != _cur:
+    st.session_state["_sig_page_prev"] = _cur
+    st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+_start = (_cur - 1) * _psize
+view = fdf.iloc[_start:_start + _psize].reset_index(drop=True)
+
 # Tabla SOLO LECTURA con selección multi-fila NATIVA: NO lleva casillas; la selección
 # (shift+click = rango) la maneja Streamlit. Sólo columnas de datos + bandas por fecha.
 _show = pd.DataFrame({
-    "Acción": fdf["symbol"].values,
-    "Hora": fdf["hora"].values,
-    "Fecha": fdf["fecha"].values,
-    "Estrategia": fdf["estrategia"].values,
-    "% Cumpl.": pd.to_numeric(fdf["probabilidad"], errors="coerce").values,
-    "Tipo": fdf["tipo"].values,
-    "Criterios": fdf["criterios"].values,
+    "Acción": view["symbol"].values,
+    "Hora": view["hora"].values,
+    "Fecha": view["fecha"].values,
+    "Estrategia": view["estrategia"].values,
+    "% Cumpl.": pd.to_numeric(view["probabilidad"], errors="coerce").values,
+    "Tipo": view["tipo"].values,
+    "Criterios": view["criterios"].values,
 })
 
 # Bandas por fecha: filas de la MISMA fecha en VERDE CLARO / BLANCO, alternando el color
@@ -259,9 +274,29 @@ st.caption("Tocá una fila para seleccionarla · **shift+click** en otra marca e
            "**Ctrl/Cmd+click** suma sueltas. Con filas seleccionadas aparecen **Ver/Eliminar** "
            "arriba y **Backtestear/Operar** abajo.")
 
+# Barra de paginación (debajo de la tabla). Solo si hay más de una página.
+if _npages > 1:
+    _pg = st.columns([1, 1.4, 3, 1.4, 1], vertical_alignment="center")
+    if _pg[0].button("⏮", disabled=_cur <= 1, use_container_width=True, key="sig_pg_first"):
+        st.session_state["sig_page"] = 1
+        st.rerun()
+    if _pg[1].button("◀ Anterior", disabled=_cur <= 1, use_container_width=True, key="sig_pg_prev"):
+        st.session_state["sig_page"] = _cur - 1
+        st.rerun()
+    _pg[2].markdown(
+        f"<div style='text-align:center'>Página <b>{_cur}</b> de <b>{_npages}</b>  ·  "
+        f"{_total} señal(es)  ·  filas {_start + 1}–{min(_start + _psize, _total)}</div>",
+        unsafe_allow_html=True)
+    if _pg[3].button("Siguiente ▶", disabled=_cur >= _npages, use_container_width=True, key="sig_pg_next"):
+        st.session_state["sig_page"] = _cur + 1
+        st.rerun()
+    if _pg[4].button("⏭", disabled=_cur >= _npages, use_container_width=True, key="sig_pg_last"):
+        st.session_state["sig_page"] = _npages
+        st.rerun()
+
 # Posiciones seleccionadas (en el orden actual) → ids.
 _sel_rows = sorted(_event.selection.rows) if (_event and _event.selection) else []
-_sel_ids = [str(fdf.iloc[i]["id"]) for i in _sel_rows]
+_sel_ids = [str(view.iloc[i]["id"]) for i in _sel_rows]
 st.session_state["bt_selected_ids"] = set(_sel_ids)
 
 # Acciones de ARRIBA (a la derecha del filtro de orden): Ver (sólo con 1 fila) · Eliminar
@@ -276,7 +311,7 @@ with _acts_ph:
         if len(_sel_rows) == 1:
             if _bv.button("🔍 Ver", use_container_width=True, key="sig_ver_top",
                           help="Ver el detalle de la fila seleccionada."):
-                _render_detalle(fdf.iloc[_sel_rows[0]])
+                _render_detalle(view.iloc[_sel_rows[0]])
 
 # ── Backtest / operar las filas SELECCIONADAS ────────────────────────────────
 st.divider()
@@ -285,7 +320,7 @@ if not _sel_rows:
     st.info("Seleccioná una o más alertas en la tabla de arriba "
             "(click · **shift+click** para un rango · **Ctrl/Cmd+click** para sueltas).")
 else:
-    _sel_df = fdf.iloc[_sel_rows]
+    _sel_df = view.iloc[_sel_rows]
     st.markdown(f"🧺 **{len(_sel_rows)} seleccionada(s):**  " + "  ·  ".join(
         f"{r['symbol']} {r['tipo']} ({r['fecha']} {r['hora']})" for _, r in _sel_df.iterrows()))
     _b1, _b2, _b3 = st.columns([2, 2, 1])
