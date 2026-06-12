@@ -6,6 +6,9 @@ Correr:
 """
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -254,9 +257,42 @@ st.caption("El monitoreo de ROI y el auto take-profit corren en el **daemon** "
            "(`py -m daemon.runner`), no en esta UI. Acá solo controlás y visualizás.")
 
 
+def _daemon_pid(_hb):
+    try:
+        return int(json.loads((_hb or {}).get("value") or "{}").get("pid"))
+    except Exception:
+        return None
+
+
+def _start_daemon():
+    """Lanza el daemon como proceso INDEPENDIENTE (sobrevive a reruns/cierre de la UI)."""
+    _flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if os.name == "nt" else 0
+    _log = open(HERE / "_daemon_out.log", "a", encoding="utf-8")
+    subprocess.Popen([sys.executable, "-m", "daemon.runner"], cwd=str(HERE),
+                     stdout=_log, stderr=subprocess.STDOUT, creationflags=_flags, close_fds=True)
+
+
+def _stop_daemon(_hb):
+    """Apaga el daemon: lo mata por PID + marca el latido como 'apagado' (feedback inmediato)."""
+    _pid = _daemon_pid(_hb)
+    try:
+        store.push_command("stop")
+    except Exception:
+        pass
+    if _pid:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(_pid)], capture_output=True)
+        else:
+            try:
+                os.kill(_pid, 15)
+            except Exception:
+                pass
+    store.set_meta("daemon_heartbeat", json.dumps({"stopped": True}))
+
+
 @st.fragment(run_every=2.0)
 def _positions_panel():
-    # --- Estado del daemon (latido) ---
+    # --- Estado del daemon (latido) + control ON/OFF ---
     _hb = store.get_meta("daemon_heartbeat")
     _age = None
     if _hb and _hb.get("ts"):
@@ -264,12 +300,22 @@ def _positions_panel():
             _age = (datetime.utcnow() - datetime.fromisoformat(_hb["ts"])).total_seconds()
         except Exception:
             _age = None
-    if _age is not None and _age < max(10.0, settings.POLL_INTERVAL_SEC * 4):
-        st.success(f"🟢 Daemon activo · último latido hace {_age:.0f}s · monitoreo y auto-sell ON")
+    _alive = (_age is not None and _age < max(10.0, settings.POLL_INTERVAL_SEC * 4)
+              and _daemon_pid(_hb) is not None)
+    _dc1, _dc2 = st.columns([5, 1.4], vertical_alignment="center")
+    if _alive:
+        _dc1.success(f"🟢 Daemon activo · último latido hace {_age:.0f}s · monitoreo y auto-sell ON")
+        if _dc2.button("⏹ Apagar", use_container_width=True, key="daemon_off"):
+            _stop_daemon(_hb)
+            st.toast("⏹ Daemon apagado.")
+            st.rerun()
     else:
         _txt = f"último latido hace {_age:.0f}s" if _age is not None else "nunca latió"
-        st.error(f"🔴 Daemon NO detectado ({_txt}) — el monitoreo y la venta automática NO corren. "
-                 "Arrancalo en otra terminal: `cd live_trader && py -m daemon.runner`")
+        _dc1.error(f"🔴 Daemon NO detectado ({_txt}) — el monitoreo y la venta automática NO corren.")
+        if _dc2.button("▶ Encender", type="primary", use_container_width=True, key="daemon_on"):
+            _start_daemon()
+            st.toast("▶ Daemon arrancando… (unos segundos)")
+            st.rerun()
 
     open_pos = store.open_positions()
     if not open_pos:
