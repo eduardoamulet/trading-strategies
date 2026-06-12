@@ -108,9 +108,11 @@ def _render_detalle(r):
     st.markdown(
         "<style>"
         "div[role='dialog']{max-width:1040px !important;}"   # modal más chico/ajustado
-        "div[role='dialog'] [data-testid='stImage']{width:100% !important; margin-top:-2.6rem !important;}"
+        # margin-top negativo grande → sube la imagen hacia el título; height:auto → la
+        # imagen toma su alto natural (sin barra/espacio en blanco debajo).
+        "div[role='dialog'] [data-testid='stImage']{width:100% !important; margin-top:-5.5rem !important;}"
         "div[role='dialog'] [data-testid='stImage'] img{"
-        "height:78vh !important; width:100% !important; object-fit:contain;}"
+        "height:auto !important; width:100% !important; object-fit:contain;}"
         "</style>",
         unsafe_allow_html=True,
     )
