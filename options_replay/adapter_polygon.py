@@ -1,6 +1,7 @@
 """Polygon.io HTTP client for options + underlying minute bars."""
 from __future__ import annotations
 
+import threading
 import time
 from typing import Optional
 
@@ -30,6 +31,9 @@ class PolygonAdapter:
         self._min_interval = 60.0 / max(rate_limit_per_min, 1)
         self._timeout = timeout
         self._last_call = 0.0
+        # Pacing thread-safe: el backtest de rango y los backfills llaman a _get desde
+        # varios hilos. El lock serializa SOLO la reserva del 'slot' de rate-limit.
+        self._rate_lock = threading.Lock()
 
     def _get(self, path_or_url: str, params: Optional[dict] = None, max_retries: int = 4) -> dict:
         params = dict(params or {})
@@ -38,12 +42,25 @@ class PolygonAdapter:
 
         last_exc: Optional[Exception] = None
         for attempt in range(max_retries):
-            elapsed = time.time() - self._last_call
-            if elapsed < self._min_interval:
-                time.sleep(self._min_interval - elapsed)
+            # Reserva del 'slot' de rate-limit (thread-safe): espacia los ARRANQUES de
+            # llamada _min_interval entre sí. La llamada HTTP va FUERA del lock → varios
+            # hilos pueden tener requests en vuelo a la vez (se solapa la latencia).
+            with self._rate_lock:
+                elapsed = time.time() - self._last_call
+                if elapsed < self._min_interval:
+                    time.sleep(self._min_interval - elapsed)
+                self._last_call = time.time()
             try:
                 r = self._session.get(url, params=params, timeout=self._timeout)
-                self._last_call = time.time()
+                if r.status_code == 429:
+                    # Rate limit del server: respetar Retry-After si viene, sino backoff.
+                    _ra = r.headers.get("Retry-After", "")
+                    _wait = float(_ra) if _ra.replace(".", "", 1).isdigit() else float(2 ** attempt)
+                    last_exc = requests.HTTPError(f"429 rate limited on {url}")
+                    if attempt < max_retries - 1:
+                        time.sleep(min(_wait, 30.0))
+                        continue
+                    r.raise_for_status()
                 if r.status_code >= 500:
                     last_exc = requests.HTTPError(f"server {r.status_code} on {url}")
                     if attempt < max_retries - 1:
@@ -53,7 +70,6 @@ class PolygonAdapter:
                 r.raise_for_status()
                 return r.json()
             except (requests.Timeout, requests.ConnectionError) as e:
-                self._last_call = time.time()
                 last_exc = e
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)  # 1s, 2s, 4s, 8s
