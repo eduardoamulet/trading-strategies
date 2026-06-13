@@ -40,6 +40,18 @@ def _es_0dte(ticker: str, fecha: str) -> bool:
     t, f = str(ticker or "").strip(), str(fecha or "").strip()
     return bool(t and f and (_CHAIN_DIR / f"{t}_{f}.parquet").exists())
 
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _ticker_universe() -> list[str]:
+    """Universo completo de activos = las MISMAS claves que la página Activos
+    (ticker_info.json). Se usa para poblar el dropdown 'Acción' aunque un ticker
+    todavía no tenga señales."""
+    try:
+        _ti = json.loads((HERE / "ticker_info.json").read_text(encoding="utf-8"))
+        return sorted(_ti.keys())
+    except Exception:  # noqa: BLE001
+        return []
+
 # ── Importar ─────────────────────────────────────────────────────────────────
 with st.expander("📥 Importar señales", expanded=False):
     t_eml, t_mail = st.tabs(["Subir email (.eml)", "Revisar correo (auto)"])
@@ -79,8 +91,11 @@ if df.empty:
 # ── Filtros ──────────────────────────────────────────────────────────────────
 f1, f2, f3, f4 = st.columns(4)
 sel_estr = f1.selectbox("Estrategia", ["(todas)"] + sorted(df["estrategia"].dropna().unique().tolist()))
-sel_sym = f2.multiselect("Acción", sorted(df["symbol"].dropna().unique().tolist()),
-                         placeholder="(todas)")
+# Opciones del dropdown "Acción" = universo completo de activos (página Activos) ∪ los
+# símbolos que ya tienen señales (por si alguno no está en ticker_info). Así META/NVDA/
+# GOOG aparecen aunque todavía no tengan señales importadas.
+_sym_opts = sorted(set(_ticker_universe()) | set(df["symbol"].dropna().astype(str).tolist()))
+sel_sym = f2.multiselect("Acción", _sym_opts, placeholder="(todas)")
 sel_est = f3.selectbox("Estado", ["(todos)"] + xs.ESTADOS)
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
 _fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
