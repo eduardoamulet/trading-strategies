@@ -187,13 +187,14 @@
     "indice": "NASD",
     "bloque_sector": "SEMICONDUCTORS",
     "sectores": "Technology | Semiconductors",
-    "rango_optimo_text": "$70 - $140",
-    "rango_optimo_lo": 70.0,
-    "rango_optimo_hi": 140.0,
-    "min_max_text": "MIN $ 65 MAX $145",
-    "min": 65.0,
-    "max": 145.0,
-    "fecha_analisis": "5/19/2026"
+    "rango_optimo_text": "$200 - $350",
+    "rango_optimo_lo": 200.0,
+    "rango_optimo_hi": 350.0,
+    "min_max_text": "MIN $200 MAX $450",
+    "min": 200.0,
+    "max": 450.0,
+    "fecha_analisis": "5/19/2026",
+    "max_spread_bt": 0.35
   },
   "SOXL": {
     "ticker": "SOXL",
@@ -445,7 +446,8 @@
     "min_max_text": "MIN $55 MAX $175",
     "min": 55.0,
     "max": 175.0,
-    "fecha_analisis": "5/19/2026"
+    "fecha_analisis": "5/19/2026",
+    "max_spread_bt": 0.5
   },
   "BABA": {
     "ticker": "BABA",
@@ -543,7 +545,8 @@
     "min_max_text": "MIN $45 MAX $90",
     "min": 45.0,
     "max": 90.0,
-    "fecha_analisis": "5/19/2026"
+    "fecha_analisis": "5/19/2026",
+    "max_spread_bt": 0.2
   },
   "COIN": {
     "ticker": "COIN",
@@ -627,7 +630,8 @@
     "min_max_text": "MIN $50 MAX $180",
     "min": 50.0,
     "max": 180.0,
-    "fecha_analisis": "5/19/2026"
+    "fecha_analisis": "5/19/2026",
+    "max_spread_bt": 0.2
   },
   "URA": {
     "ticker": "URA",
