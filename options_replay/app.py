@@ -22,6 +22,7 @@ from downloader import Downloader  # noqa: E402
 from engine import (  # noqa: E402
     IterationResult,
     NoMatchError,
+    _robust_quote,
     run_next_iteration,
     validate_0dte_session,
 )
@@ -2802,18 +2803,55 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         _show_call = _it_mode != "put_only"
         _show_put = _it_mode != "call_only"
 
+        # Por defecto el motor solo cotiza (bid/ask) los strikes cuya prima cae en el
+        # rango de prima; el resto queda en "—". Con esta opción se pide el NBBO de TODOS
+        # los strikes probados (más llamadas a Polygon, pero se cachean). SOLO afecta a
+        # esta tabla, no al backtest. Los quotes ya pedidos en el backtest no se re-piden.
+        _quote_all = st.checkbox(
+            "Cotizar toda la cadena (bid/ask de todos los strikes · más llamadas a la API)",
+            value=True, key=f"chain_qall_{_key_suffix}",
+            help="Pide el bid/ask de TODOS los strikes probados, no solo los del rango de "
+                 "prima. La 1ª vez tarda unos segundos (después se cachea); solo toca esta tabla.")
+        _extra_q: dict = {}
+        if _quote_all:
+            _probes_all = ((list(it.call_probes) if _show_call else [])
+                           + (list(it.put_probes) if _show_put else []))
+            _need = [p for p in _probes_all
+                     if getattr(p, "bid", None) is None and getattr(p, "occ", "")]
+            if _need:
+                _dlq = get_downloader(api_key)
+
+                def _q1(p):
+                    try:
+                        q = _robust_quote(_dlq, p.occ, date, it.start_dt,
+                                          ref_premium=p.opening_premium)
+                        return p.occ, q.get("bid"), q.get("ask")
+                    except Exception:  # noqa: BLE001
+                        return p.occ, None, None
+                with st.spinner(f"Cotizando {len(_need)} strikes…"):
+                    with ThreadPoolExecutor(max_workers=8) as _exq:
+                        for _occ, _b, _a in _exq.map(_q1, _need):
+                            _extra_q[_occ] = (_b, _a)
+
         def _leg_df(probes, s):
-            def _sp(p):
+            def _ba(p):
+                # bid/ask del probe (rango) o, si falta, el cotizado on-demand (_extra_q).
                 b, a = getattr(p, "bid", None), getattr(p, "ask", None)
+                if b is None and getattr(p, "occ", "") in _extra_q:
+                    b, a = _extra_q[p.occ]
+                return b, a
+            rows = []
+            for p in probes:
+                b, a = _ba(p)
                 # Spread = |Ask - Bid| × 100 (costo del spread por contrato, en $).
-                return abs(a - b) * 100.0 if (b is not None and a is not None) else None
-            rows = [{
-                "Strike": p.strike,
-                f"{s} Last": p.opening_premium,
-                f"{s} Bid": getattr(p, "bid", None),
-                f"{s} Ask": getattr(p, "ask", None),
-                f"{s} Spread": _sp(p),
-            } for p in probes]
+                _spv = abs(a - b) * 100.0 if (b is not None and a is not None) else None
+                rows.append({
+                    "Strike": p.strike,
+                    f"{s} Last": p.opening_premium,
+                    f"{s} Bid": b,
+                    f"{s} Ask": a,
+                    f"{s} Spread": _spv,
+                })
             return pd.DataFrame(rows).set_index("Strike") if rows else pd.DataFrame()
 
         _cdf = _leg_df(it.call_probes, "C") if _show_call else pd.DataFrame()
