@@ -93,6 +93,26 @@ def _max_spread_for_price(spot: float, cfg: dict) -> float:
         spot, buckets=cfg.get("buckets", []), override=cfg.get("_max_spread_override"))
 
 
+# Opción 1 ("menor spread"): rango [min, max] de spread permitido según el STRIKE (regla
+# del usuario). Sus valores son POR CONTRATO (×100); acá en $ de prima por ACCIÓN (÷100).
+# Rechaza tanto lo más ancho que el máx como lo más angosto que el mín. None = strike
+# fuera de los buckets definidos → cae a la compuerta por precio del subyacente.
+_STRIKE_SPREAD_RANGE = (
+    (100.0, 300.0, 0.01, 0.05),    # strike $100–300  → spread $1–5  por contrato
+    (300.0, 600.0, 0.05, 0.10),    # strike $300–600  → spread $5–10
+    (600.0, 1200.0, 0.10, 0.25),   # strike $600–1200 → spread $10–25
+)
+
+
+def _strike_spread_range(strike: float):
+    """(min, max) de spread por acción permitido para ese strike, o None si está fuera
+    de los buckets definidos."""
+    for _lo, _hi, _smin, _smax in _STRIKE_SPREAD_RANGE:
+        if _lo <= strike < _hi:
+            return (_smin, _smax)
+    return None
+
+
 def _quote_is_sane(q: dict, ref_premium: Optional[float] = None) -> bool:
     """¿El NBBO es usable, o es basura de la subasta de apertura (09:30:00)? Rechaza
     quote vacío, invertido/cruzado (bid≥ask), sin oferta (ask≤0) o cuyo mid se aleja
@@ -365,6 +385,11 @@ def _probe_premium_range(
 
     spread_enabled = bool(spread_cfg.get("enable_spread_filter", True))
     max_spread = _max_spread_for_price(spot, spread_cfg) if spot is not None else float("inf")
+    # Opción 1 ("spread"): el spread debe caer en el RANGO [min, max] por STRIKE
+    # (_strike_spread_range), no solo bajo un máximo. Aplica salvo que el usuario haya
+    # fijado un override explícito ('Spread máx' o ceiling por ticker) → ese manda.
+    _use_strike_range = (selection_criterion == "spread"
+                         and spread_cfg.get("_max_spread_override") is None)
     # Rango de fetch de quotes = unión de óptimo y extendido (eficiencia: solo
     # pedimos NBBO de candidatos con premium plausible).
     fetch_lo = min(premium_min, ext_min)
@@ -397,7 +422,13 @@ def _probe_premium_range(
         if spread_enabled and (fetch_lo <= opening <= fetch_hi):
             q = _robust_quote(downloader, occ, date, start_ts, ref_premium=opening)
             bid, ask, spread = q.get("bid"), q.get("ask"), q.get("spread")
-            spread_ok = (spread is not None) and (spread <= max_spread)
+            _rng = _strike_spread_range(strike) if _use_strike_range else None
+            if _rng is not None:
+                # Opción 1: el spread debe estar DENTRO de [min, max] del bucket de strike
+                # (rechaza tanto los más anchos como los más angostos que el rango).
+                spread_ok = (spread is not None) and (_rng[0] <= spread <= _rng[1])
+            else:
+                spread_ok = (spread is not None) and (spread <= max_spread)
 
         probes.append(StrikeProbe(
             strike=strike, opening_premium=opening, occ=occ,
