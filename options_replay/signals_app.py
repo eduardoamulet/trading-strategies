@@ -349,7 +349,8 @@ else:
                   use_container_width=True):
         st.session_state["bt_signals_handoff"] = [
             {"symbol": str(r["symbol"]), "fecha": str(r["fecha"]), "hora": str(r["hora"]),
-             "tipo": str(r["tipo"]), "prob": r.get("probabilidad")} for _, r in _sel_df.iterrows()]
+             "tipo": str(r["tipo"]), "prob": r.get("probabilidad"),
+             "estrategia": str(r.get("estrategia") or "")} for _, r in _sel_df.iterrows()]
         st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
         st.switch_page("options_replay/app.py")
     if _b2.button(f"🟢 Operar {len(_sel_rows)} (paper)  →  Live", use_container_width=True,

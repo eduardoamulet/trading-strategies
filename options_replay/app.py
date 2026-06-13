@@ -719,7 +719,8 @@ if _handoff:
         {"Ticker": str(s.get("symbol") or s.get("ticker") or "").upper(),
          "Fecha": str(s.get("fecha") or ""), "Hora": _norm_hora(s.get("hora")),
          "Tipo": str(s.get("tipo") or "").upper(),
-         "% Cumpl.": s.get("prob")} for s in _handoff]
+         "% Cumpl.": s.get("prob"),
+         "Estrategia": str(s.get("estrategia") or "")} for s in _handoff]
     st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del data_editor
     st.session_state["_iters_sel_seed"] = True       # nuevo handoff → todas seleccionadas
     st.session_state["bt_iters_open"] = True
@@ -749,7 +750,7 @@ def _render_iters_panel(_iters_seed):
         "de **Alertas** llegan acá."
     )
     _seed_df = pd.DataFrame(_iters_seed)
-    for _c in ("Ticker", "Fecha", "Hora", "Tipo"):
+    for _c in ("Ticker", "Fecha", "Hora", "Tipo", "Estrategia"):
         if _c not in _seed_df.columns:
             _seed_df[_c] = ""
     if "% Cumpl." not in _seed_df.columns:
@@ -788,11 +789,11 @@ def _render_iters_panel(_iters_seed):
     # Centrar los VALORES (text-align en celdas vía Styler; los headers no se pueden
     # centrar — limitación del grid de Glide, igual que en la tabla de resultados).
     _ed = st.data_editor(
-        _seed_df[["✓", "Ticker", "Fecha", "Hora", "Tipo", "Criterio", "% Cumpl."]].style.set_properties(
+        _seed_df[["✓", "Ticker", "Fecha", "Hora", "Tipo", "Criterio", "% Cumpl.", "Estrategia"]].style.set_properties(
             **{"text-align": "center"}),
         num_rows="dynamic",
         use_container_width=True, hide_index=True, key="bt_iters_editor",
-        disabled=["% Cumpl."],
+        disabled=["% Cumpl.", "Estrategia"],
         column_config={
             "✓": st.column_config.CheckboxColumn(
                 "✓", default=True, help="Marcá las filas a backtestear (todas por defecto)."),
@@ -807,6 +808,9 @@ def _render_iters_panel(_iters_seed):
                      "(1-ITM), ignorando spread y rango de prima."),
             "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%",
                                                       help="Probabilidad de la señal (informativo)."),
+            "Estrategia": st.column_config.TextColumn(
+                "Estrategia", width="large",
+                help="Estrategia que generó la señal (informativo; llega desde Alertas)."),
         },
     )
     _sp1, _sp2, _sp3, _sp4 = st.columns(4)
