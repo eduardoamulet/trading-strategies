@@ -31,6 +31,10 @@ import strategy_core  # noqa: E402
 DEFAULT_TIME_START = time(9, 30)
 DEFAULT_TIME_END = time(16, 0)
 MAX_STRIKES_TO_PROBE = 25  # per side; safety cap
+# Opción 1 filtra el rango de prima por el ASK del NBBO (no por el open del bar). El ASK
+# puede diferir del open, así que se ensancha el rango de fetch de quotes por este margen
+# (en $ de prima) para no perder candidatos cuyo ASK caiga en rango aunque el open no.
+_ASK_MARGIN = 0.5
 
 
 @dataclass
@@ -385,13 +389,14 @@ def _probe_premium_range(
 
     spread_enabled = bool(spread_cfg.get("enable_spread_filter", True))
     max_spread = _max_spread_for_price(spot, spread_cfg) if spot is not None else float("inf")
-    # Opción 1 ("spread"): el spread debe caer en el RANGO [min, max] por STRIKE
-    # (_strike_spread_range), no solo bajo un máximo. Aplica salvo que el usuario haya
-    # fijado un override explícito ('Spread máx' o ceiling por ticker) → ese manda.
-    _use_strike_range = (selection_criterion == "spread"
-                         and spread_cfg.get("_max_spread_override") is None)
-    # Rango de fetch de quotes = unión de óptimo y extendido (eficiencia: solo
-    # pedimos NBBO de candidatos con premium plausible).
+    # Opción 1 = criterio "spread": (Paso 2) filtra el rango de prima por el ASK del NBBO,
+    # no por el open del bar; (Paso 3) compuerta de spread SOLO-MÁXIMO por bucket de STRIKE
+    # (_strike_spread_range[1]). Un 'Spread máx'/ceiling explícito (override) manda sobre el
+    # bucket. Los demás criterios mantienen el flujo previo (rango por open, máx por precio).
+    _opt1 = (selection_criterion == "spread")
+    _override = spread_cfg.get("_max_spread_override")
+    # Rango de fetch de quotes = unión de óptimo y extendido. En Opción 1 se ensancha
+    # ±_ASK_MARGIN porque el filtro es por ASK y el ASK puede diferir del open del bar.
     fetch_lo = min(premium_min, ext_min)
     fetch_hi = max(premium_max, ext_max)
 
@@ -410,25 +415,40 @@ def _probe_premium_range(
             continue
         opening = float(bars_in.iloc[0]["open"])
         volume = float(bars_in.iloc[0].get("volume", 0) or 0)
-        in_opt = premium_min <= opening <= premium_max
-        in_ext = ext_min <= opening <= ext_max
         itm_depth = (spot - strike) if (spot is not None and right == "C") else \
                     ((strike - spot) if (spot is not None and right == "P") else 0.0)
 
         bid = ask = spread = None
         spread_ok = True
-        # Solo pedimos quote si el premium está en el rango de fetch (óptimo∪ext)
-        # y el filtro de spread está activo.
-        if spread_enabled and (fetch_lo <= opening <= fetch_hi):
+        # NBBO: en Opción 1 (filtro on) cotizamos para FILTRAR POR ASK y medir el spread
+        # (rango ensanchado ±_ASK_MARGIN, porque el ASK puede diferir del open). En los demás
+        # criterios, solo si el open cae en el rango de fetch (comportamiento previo).
+        _want_q = ((_opt1 and spread_enabled
+                    and (fetch_lo - _ASK_MARGIN) <= opening <= (fetch_hi + _ASK_MARGIN))
+                   or ((not _opt1) and spread_enabled and fetch_lo <= opening <= fetch_hi))
+        if _want_q:
             q = _robust_quote(downloader, occ, date, start_ts, ref_premium=opening)
             bid, ask, spread = q.get("bid"), q.get("ask"), q.get("spread")
-            _rng = _strike_spread_range(strike) if _use_strike_range else None
-            if _rng is not None:
-                # Opción 1: el spread debe estar DENTRO de [min, max] del bucket de strike
-                # (rechaza tanto los más anchos como los más angostos que el rango).
-                spread_ok = (spread is not None) and (_rng[0] <= spread <= _rng[1])
+
+        # Paso 2 — rango de prima: Opción 1 filtra por el ASK; el resto, por el open del bar.
+        if _opt1 and spread_enabled:
+            in_opt = (ask is not None) and (premium_min <= ask <= premium_max)
+            in_ext = (ask is not None) and (ext_min <= ask <= ext_max)
+        else:
+            in_opt = premium_min <= opening <= premium_max
+            in_ext = ext_min <= opening <= ext_max
+
+        # Paso 3 — compuerta de spread: Opción 1 = SOLO MÁXIMO por bucket de STRIKE (o el
+        # override si el usuario lo fijó). Los demás criterios usan el máximo por precio.
+        if spread_enabled and spread is not None:
+            if _opt1:
+                if _override is not None:
+                    spread_ok = spread <= float(_override)
+                else:
+                    _r = _strike_spread_range(strike)
+                    spread_ok = (spread <= _r[1]) if _r is not None else (spread <= max_spread)
             else:
-                spread_ok = (spread is not None) and (spread <= max_spread)
+                spread_ok = spread <= max_spread
 
         probes.append(StrikeProbe(
             strike=strike, opening_premium=opening, occ=occ,
@@ -449,14 +469,15 @@ def _probe_premium_range(
 
     def _select(cands: list[StrikeProbe]) -> StrikeProbe:
         # Acá se decide CUÁL contrato se elige entre los candidatos:
-        #   "spread"    (opción 1): el de MENOR spread (desempate: cercano a ITM, volumen).
+        #   "spread"    (opción 1): el de MENOR spread (desempate: cercano a ITM, mayor ASK).
         #   "value"     (opción 2 vieja): IGNORA el spread; el de prima de entrada MÁS
         #               CERCANA a value_target ($2 default), igual CALL y PUT. Desempate: ITM.
         #   "itm_first" (opción 2): IGNORA el spread; el MÁS CERCANO a ITM (menor itm_depth
         #               ≥ 0 = el "1-ITM", primer strike dentro del dinero). Único criterio.
         #   "itm"       (legado): de los 2 de menor spread, el más cercano a ITM.
         if selection_criterion == "spread":
-            return min(cands, key=lambda p: (_sp(p), _itm_rank(p), -(p.volume or 0.0)))
+            # Paso 4: menor spread → desempate por cercanía a ITM → desempate por MAYOR ask.
+            return min(cands, key=lambda p: (_sp(p), _itm_rank(p), -(p.ask or 0.0)))
         if selection_criterion == "value":
             return min(cands, key=lambda p: (round(abs((p.opening_premium or 0.0) - value_target), 4),
                                              _itm_rank(p)))
