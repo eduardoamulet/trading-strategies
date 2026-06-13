@@ -253,10 +253,10 @@ _ndays = len(_dates)
 _TODAS = "(todas las fechas)"
 _opts = [_TODAS] + _dates
 st.session_state["_sig_dates"] = _dates   # para los callbacks de ◀/▶
-# Selección del dropdown; default = fecha más reciente. Si quedó inválida (cambió un filtro)
-# se resetea. "(todas las fechas)" → la tabla muestra TODAS las alertas (de todos los días).
+# Selección del dropdown; default = "(todas las fechas)" → la tabla muestra TODAS las
+# alertas (de todos los días). Si quedó inválida (cambió un filtro), se resetea a ese valor.
 if st.session_state.get("sig_date_pick") not in _opts:
-    st.session_state["sig_date_pick"] = _dates[0] if _dates else _TODAS
+    st.session_state["sig_date_pick"] = _TODAS
 _cur = st.session_state["sig_date_pick"]
 _is_todas = (_cur == _TODAS)
 _didx = _dates.index(_cur) if not _is_todas else -1
