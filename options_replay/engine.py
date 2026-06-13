@@ -93,6 +93,43 @@ def _max_spread_for_price(spot: float, cfg: dict) -> float:
         spot, buckets=cfg.get("buckets", []), override=cfg.get("_max_spread_override"))
 
 
+def _quote_is_sane(q: dict, ref_premium: Optional[float] = None) -> bool:
+    """¿El NBBO es usable, o es basura de la subasta de apertura (09:30:00)? Rechaza
+    quote vacío, invertido/cruzado (bid≥ask), sin oferta (ask≤0) o cuyo mid se aleja
+    >2x del precio de REFERENCIA (el open del bar = un trade real). El snapshot del
+    primer segundo suele venir bid/ask ~10x fuera de rango (ej. 16.80/20.06 en una
+    opción que vale 1.80)."""
+    bid, ask = q.get("bid"), q.get("ask")
+    if bid is None or ask is None or ask <= 0 or bid > ask:
+        return False
+    if ref_premium and ref_premium > 0:
+        mid = (bid + ask) / 2.0
+        if mid < 0.5 * ref_premium or mid > 2.0 * ref_premium:
+            return False
+    return True
+
+
+def _robust_quote(downloader, occ: str, date: str, ts: pd.Timestamp,
+                  ref_premium: Optional[float] = None, max_step_min: int = 2) -> dict:
+    """NBBO de entrada robusto al quote-basura de las 09:30:00 (subasta de apertura).
+
+    Pide el quote en `ts`; si NO es sano (_quote_is_sane), reintenta en ts+1min y
+    ts+2min y devuelve el PRIMERO sano. Si ninguno lo es, devuelve el último (degrada
+    al comportamiento previo). `ref_premium` = open del bar de entrada. Verificado: a
+    las 09:30:00 los spreads son 3–4$ y a las 09:31 colapsan a 1–4¢."""
+    last = {"bid": None, "ask": None, "spread": None}
+    for step in range(max_step_min + 1):
+        qts = ts if step == 0 else ts + pd.Timedelta(minutes=step)
+        try:
+            q = downloader.option_quote(occ, date, qts)
+        except Exception:
+            q = {"bid": None, "ask": None, "spread": None}
+        last = q
+        if _quote_is_sane(q, ref_premium):
+            return q
+    return last
+
+
 @dataclass
 class IterationResult:
     iteration: int
@@ -358,7 +395,7 @@ def _probe_premium_range(
         # Solo pedimos quote si el premium está en el rango de fetch (óptimo∪ext)
         # y el filtro de spread está activo.
         if spread_enabled and (fetch_lo <= opening <= fetch_hi):
-            q = downloader.option_quote(occ, date, start_ts)
+            q = _robust_quote(downloader, occ, date, start_ts, ref_premium=opening)
             bid, ask, spread = q.get("bid"), q.get("ask"), q.get("spread")
             spread_ok = (spread is not None) and (spread <= max_spread)
 
@@ -415,7 +452,7 @@ def _probe_premium_range(
         # Traer el NBBO del contrato ELEGIDO solo para el display (su prima puede caer
         # fuera del rango de fetch, así que aún no se pidió). NO afecta la selección.
         if spread_enabled and pick.spread is None and pick.occ:
-            q = downloader.option_quote(pick.occ, date, start_ts)
+            q = _robust_quote(downloader, pick.occ, date, start_ts, ref_premium=pick.opening_premium)
             pick.bid, pick.ask, pick.spread = q.get("bid"), q.get("ask"), q.get("spread")
         return pick, probes, selection_criterion
 
@@ -895,7 +932,8 @@ def run_overnight_1dte(
             ask = pick.ask
             if ask is None and pick.occ:
                 try:
-                    ask = downloader.option_quote(pick.occ, date, buy_ts).get("ask")
+                    ask = _robust_quote(downloader, pick.occ, date, buy_ts,
+                                        ref_premium=pick.opening_premium).get("ask")
                 except Exception:
                     ask = None
             if ask and ask > 0:
@@ -1112,7 +1150,8 @@ def _run_one_iteration(
             ask = pick.ask
             if ask is None and pick.occ:
                 try:
-                    ask = downloader.option_quote(pick.occ, date, start_ts).get("ask")
+                    ask = _robust_quote(downloader, pick.occ, date, start_ts,
+                                        ref_premium=pick.opening_premium).get("ask")
                 except Exception:
                     ask = None
             if ask and ask > 0:
