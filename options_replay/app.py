@@ -3011,8 +3011,11 @@ def _render_signals_session(rs):
             _icon, _gp = ":green[▲]", f":green[**${it.gain_total:+,.2f}**]"
         else:
             _icon, _gp = ":red[▼]", f":red[**${it.gain_total:+,.2f}**]"
+        _roi_pct = (it.gain_total / it.invest_total) if it.invest_total else 0.0
+        _pct_part = (f":green[▲ {abs(_roi_pct):.1%}]" if it.gain_total >= 0
+                     else f":red[▼ {abs(_roi_pct):.1%}]")
         _title = (f"{_icon} {r['ticker']} {r['tipo']}  ·  {r['fecha']} {r['hora']}  ·  "
-                  f"{_reason}  ·  Ganancia: {_gp}")
+                  f"{_reason}  ·  Ganancia: {_gp} ({_pct_part})")
         with st.expander(_title, expanded=(len(oks) == 1)):
             st.markdown(f"**{r['ticker']} — {r['fecha']}  ·  0 DTE  ·  Ventana 09:30–16:00**")
             render_iteration(it, r["ticker"], r["fecha"])
@@ -3352,10 +3355,13 @@ if _mode == "range":
                 _icon, _gain_part = ":green[▲]", f":green[**${it.gain_total:+,.2f}**]"
             else:
                 _icon, _gain_part = ":red[▼]", f":red[**${it.gain_total:+,.2f}**]"
+            _roi_pct = (it.gain_total / it.invest_total) if it.invest_total else 0.0
+            _pct_part = (f":green[▲ {abs(_roi_pct):.1%}]" if it.gain_total >= 0
+                         else f":red[▼ {abs(_roi_pct):.1%}]")
             _fb_tag = "  ·  ⚠ fallback" if (it.call_fallback or it.put_fallback) else ""
             _exp_title = (
                 f"{_icon} {sel_fecha}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M}  ·  "
-                f"{_reason}  ·  Ganancia: {_gain_part}{_fb_tag}"
+                f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}"
             )
             with st.expander(_exp_title, expanded=False):
                 render_iteration(it, ticker_str, sel_run["date"])
@@ -3424,12 +3430,15 @@ for it in iterations:
     else:
         _icon = ":red[▼]"
         _gain_part = f":red[**${it.gain_total:+,.2f}**]"
+    _roi_pct = (it.gain_total / it.invest_total) if it.invest_total else 0.0
+    _pct_part = (f":green[▲ {abs(_roi_pct):.1%}]" if it.gain_total >= 0
+                 else f":red[▼ {abs(_roi_pct):.1%}]")
     _fb_tag = ""
     if getattr(it, "call_fallback", False) or getattr(it, "put_fallback", False):
         _fb_tag = "  ·  ⚠ fallback"
     _exp_title = (
         f"{_icon} Iteración {it.iteration}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M}  ·  "
-        f"{_reason}  ·  Ganancia: {_gain_part}{_fb_tag}"
+        f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}"
     )
     with st.expander(_exp_title, expanded=False):
         render_iteration(it, ticker_str, date_str)
