@@ -95,17 +95,21 @@ sel_estr = f1.selectbox("Estrategia", ["(todas)"] + sorted(df["estrategia"].drop
 # símbolos que ya tienen señales (por si alguno no está en ticker_info). Así META/NVDA/
 # GOOG aparecen aunque todavía no tengan señales importadas.
 _sym_opts = sorted(set(_ticker_universe()) | set(df["symbol"].dropna().astype(str).tolist()))
-sel_sym = f2.multiselect("Acción", _sym_opts, placeholder="(todas)")
+# Preselección por defecto = los líquidos (los que verificamos que operan limpio).
+_DEFAULT_SYMS = ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META", "MSFT", "GOOG", "AAPL"]
+sel_sym = f2.multiselect("Acción", _sym_opts,
+                         default=[s for s in _DEFAULT_SYMS if s in _sym_opts],
+                         placeholder="(todas)")
 sel_est = f3.selectbox("Estado", ["(todos)"] + xs.ESTADOS)
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
 _fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
 g1, g2, g3, g4 = st.columns(4)
 d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) else datetime.now().date()))
 d_hasta = g2.date_input("Hasta", value=(_fechas.max().date() if len(_fechas) else datetime.now().date()))
-pmin = g3.slider("% Cumplimiento mínimo", 0, 100, 0, step=5,
+pmin = g3.slider("% Cumplimiento mínimo", 0, 100, 90, step=5,
                  help="Muestra solo señales con % de cumplimiento ≥ este valor (0 = todas).")
 g4.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)  # alinea con los date_input
-_solo_0dte = g4.checkbox("Sólo 0 DTE", value=False, key="sig_solo_0dte",
+_solo_0dte = g4.checkbox("Sólo 0 DTE", value=True, key="sig_solo_0dte",
                          help="Muestra solo señales cuyo ticker tenía opción 0DTE ese día "
                               "(según la cache de cadenas en data/chain/).")
 
