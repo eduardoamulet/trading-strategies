@@ -2420,6 +2420,39 @@ METRIC_COLUMN = {
 }
 
 DARK_GREEN_STYLE = "background-color: #2e7d32; color: white; font-weight: bold"
+# Azul para la fila del ROI MÁXIMO alcanzado (tabla de detalle por iteración).
+BLUE_MAX_STYLE = "background-color: #1565c0; color: white; font-weight: bold"
+
+
+def _highlight_max_roi(display_df: pd.DataFrame) -> pd.DataFrame:
+    """Resalta en azul las celdas ROI (%) y ROI ($) en la fila del MÁXIMO alcanzado.
+    Ambas comparten fila (ROI (%) = ROI ($)/inversión, constante). Se aplica AL FINAL
+    del Styler para que el azul tape el color de signo/umbral en esa celda."""
+    styles = pd.DataFrame("", index=display_df.index, columns=display_df.columns)
+    _col = "ROI ($)"
+    if _col in display_df.columns and display_df[_col].notna().any():
+        _imax = display_df[_col].idxmax()
+        for _c in ("ROI (%)", "ROI ($)"):
+            if _c in styles.columns:
+                styles.loc[_imax, _c] = BLUE_MAX_STYLE
+    return styles
+
+
+def _max_roi_of_iteration(it) -> tuple[float, float]:
+    """Pico de ROI alcanzado durante la iteración → (max_roi_pct, max_roi_dol). Se
+    calcula igual que la columna ROI ($) del detalle (ponderado por inversión por pierna
+    sobre it.df), así coincide con la celda azul del máximo en la tabla de detalle."""
+    df = getattr(it, "df", None)
+    if df is None or df.empty:
+        return 0.0, 0.0
+    roi = pd.Series(0.0, index=df.index)
+    if it.call_entry_premium and "call_px" in df.columns:
+        roi = roi + it.invest_call * (df["call_px"] / it.call_entry_premium - 1.0)
+    if it.put_entry_premium and "put_px" in df.columns:
+        roi = roi + it.invest_put * (df["put_px"] / it.put_entry_premium - 1.0)
+    max_dol = float(roi.max()) if len(roi) else 0.0
+    max_pct = (max_dol / it.invest_total) if it.invest_total else 0.0
+    return max_pct, max_dol
 
 
 def _style_display_df(display_df: pd.DataFrame, threshold: float, exit_metric: str, stop_loss: float, it=None):
@@ -2451,6 +2484,7 @@ def _style_display_df(display_df: pd.DataFrame, threshold: float, exit_metric: s
             .map(_color_leg_pct, subset=["ROI ($) CALL", "ROI ($) PUT", "ROI ($)"])
             .apply(_make_total_pct_styler(threshold, stop_loss=stop_loss, is_metric=False),
                    subset=["ROI (%)"])
+            .apply(_highlight_max_roi, axis=None)
             .format(fmt)
         )
         return styler.set_properties(**{"text-align": "center"})
@@ -2461,6 +2495,7 @@ def _style_display_df(display_df: pd.DataFrame, threshold: float, exit_metric: s
             .map(_color_leg_pct, subset=["ROI (%) CALL", "ROI (%) PUT",
                                           "ROI ($) CALL", "ROI ($) PUT", "ROI ($)"])
             .apply(total_styler, subset=["ROI (%)"])
+            .apply(_highlight_max_roi, axis=None)
             .format(fmt)
         )
     else:
@@ -2471,6 +2506,7 @@ def _style_display_df(display_df: pd.DataFrame, threshold: float, exit_metric: s
             .map(_color_leg_pct, subset=_leg_pct_cols + ["ROI ($) CALL", "ROI ($) PUT", "ROI ($)"])
             .apply(_make_total_pct_styler(threshold, stop_loss=None, is_metric=True), subset=[metric_col])
             .apply(total_styler, subset=["ROI (%)"])
+            .apply(_highlight_max_roi, axis=None)
             .format(fmt)
         )
     # Centrar las CELDAS. st.dataframe respeta text-align de las celdas vía
@@ -3057,6 +3093,7 @@ if _mode == "range":
             for r in successful:
                 it = r["iteration"]
                 day_roi = (it.gain_total / it.invest_total) if it.invest_total else 0.0
+                _max_roi_pct, _max_roi_dol = _max_roi_of_iteration(it)
                 cum_gain += it.gain_total
                 # Texto completo del fallback (se usa como contenido de la celda
                 # para que Streamlit muestre el detalle al hacer hover sobre ⚠).
@@ -3135,6 +3172,8 @@ if _mode == "range":
                     # ROI (%), ROI ($), ROI ($) acumulado.
                     "ROI (%)": day_roi,
                     "ROI ($)": it.gain_total,
+                    "Max ROI (%)": _max_roi_pct,
+                    "Max ROI ($)": _max_roi_dol,
                     "ROI ($) acumulado": cum_gain,
                     "Fallback": _fb_text,
                 })
@@ -3190,11 +3229,16 @@ if _mode == "range":
                 styled_editor = (
                     editor_df.style
                     .map(_color_ganancia, subset=["ROI (%)", "ROI ($)"])
+                    # Tinte celeste en las columnas de pico (eco del azul del máximo en el detalle).
+                    .set_properties(subset=["Max ROI (%)", "Max ROI ($)"],
+                                    **{"background-color": "#e3f2fd"})
                     .format({
                         "Spot @ entrada": "${:,.2f}",
                         "Inversión": "${:,.2f}",
                         "ROI (%)": "{:+.1%}",
                         "ROI ($)": "${:+,.2f}",
+                        "Max ROI (%)": "{:+.1%}",
+                        "Max ROI ($)": "${:+,.2f}",
                         "ROI ($) acumulado": "${:+,.2f}",
                         "Strike Call": "{:g}",
                         "Strike Put": "{:g}",
