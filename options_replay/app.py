@@ -1793,12 +1793,12 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
     # Defaults de params por pierna ("CALL o PUT") y del umbral de salida ("plus").
     for _k, _v in (("call_roi_pct", 10.0), ("call_stop_pct", -100.0),
                    ("put_roi_pct", 10.0), ("put_stop_pct", -100.0),
-                   ("exit_plus_pct", 50.0)):
+                   ("exit_plus_pct", 5.0)):
         if _k not in st.session_state:
             st.session_state[_k] = _v
     # El cierre por umbral siempre se evalúa sobre el ROI (%) total.
     exit_metric = "total"
-    exit_plus_threshold_pct = 0.50  # default; solo en "CALL o PUT (plus)"
+    exit_plus_threshold_pct = 0.05  # default; solo en "CALL o PUT (plus)"
     exit_plus_time = None           # default; solo en "CALL o PUT (plus)"
 
     if is_call_or_put:
