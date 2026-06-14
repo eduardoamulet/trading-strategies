@@ -84,16 +84,6 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
         inv_call, inv_put = 0.0, float(inversion)
     else:
         inv_call = inv_put = float(inversion) / 2.0
-    # Ceiling de spread por ticker (subyacentes ILÍQUIDOS, ej. USO/AVGO/BA/V) — SOLO
-    # backtest, NO toca el live ni a los líquidos. Solo aplica en modo automático
-    # (spread_cfg=None): si el usuario fijó un 'Spread máx' o desactivó la compuerta,
-    # manda su elección. Para estos tickers se fuerza ASK/BID, así el costo real del
-    # spread ancho se descuenta del resultado (sino mostraría ganancias infladas).
-    _tk_ceiling = (TICKER_INFO.get(ticker, {}) or {}).get("max_spread_bt")
-    if spread_cfg is None and _tk_ceiling is not None:
-        spread_cfg = {"enable_spread_filter": True, "_max_spread_override": float(_tk_ceiling)}
-        entry_at_ask = True
-        exit_at_bid = True
     lo, hi = premium_range(ticker)
     order_ts = to_ts(fecha, entry)
     day_end_ts = to_ts(fecha, _time(16, 0)) - pd.Timedelta(minutes=1)

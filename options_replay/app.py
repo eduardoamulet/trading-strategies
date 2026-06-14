@@ -814,32 +814,11 @@ def _render_iters_panel(_iters_seed):
                 help="Estrategia que generó la señal (informativo; llega desde Alertas)."),
         },
     )
-    _sp1, _sp2, _sp3, _sp4 = st.columns(4)
+    _sp1, _sp2, _sp3 = st.columns(3)
     _sig_inv = float(_sp1.number_input("Inversión ($)", min_value=1.0, value=1000.0,
                                        step=100.0, key="sig_inv"))
     _sig_umb = float(_sp2.number_input("Umbral ROI (%)", value=10.0, step=5.0, key="sig_umb"))
     _sig_stop = float(_sp3.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
-    _sig_spmax = float(_sp4.number_input("Spread máx ($) — 0=auto", min_value=0.0, value=0.0,
-                                         step=0.01, format="%.2f", key="sig_spmax"))
-    _sig_entry_ask = st.checkbox(
-        "Entrar al ASK (fill realista)", value=False, key="sig_entry_ask",
-        help="Entra al ASK del NBBO (lo que pagás de verdad) en vez del 'open' del último "
-             "trade. Más realista en 0DTE barato; no cambia el strike, solo el costo de entrada.")
-    _sig_exit_bid = st.checkbox(
-        "Salir al BID (fill realista)", value=False, key="sig_exit_bid",
-        help="Cierra al BID del NBBO (lo que REALMENTE cobrás). Con 'Entrar al ASK' = costo "
-             "round-trip completo del spread.")
-    _sig_auto_dte = st.checkbox(
-        "Auto-DTE (semanales → vencimiento más cercano)", value=False, key="sig_auto_dte",
-        help="Si la señal cae en un día SIN 0DTE (tickers de vencimiento semanal en día "
-             "no-viernes), usa el vencimiento más cercano: compra ese día y vende a ese "
-             "vencimiento (estilo DTE=1, exit=overnight_1dte). Evita el error 'No 0 DTE'.")
-    _sig_aplicar_spread = st.checkbox(
-        "Aplicar filtro de spread", value=True, key="sig_aplicar_spread",
-        help="Si lo DESACTIVÁS se compra aunque el spread sea ancho (típico en 0DTE al "
-             "OPEN, donde el spread es grande y la compuerta rechaza casi todo). Conviene "
-             "combinarlo con 'Entrar al ASK / Salir al BID' para que el costo real del "
-             "spread igual se modele en el resultado.")
 
     _specs = []
     for _, _r in _ed.iterrows():
@@ -855,21 +834,14 @@ def _render_iters_panel(_iters_seed):
 
     if st.button(f"▶ Correr backtest de {len(_specs)} iteración(es)", type="primary",
                  disabled=not _specs, key="sig_run"):
-        if not _sig_aplicar_spread:
-            _scfg = {"enable_spread_filter": False}
-        elif _sig_spmax > 0:
-            _scfg = {"enable_spread_filter": True, "_max_spread_override": _sig_spmax}
-        else:
-            _scfg = None
         _dl = get_downloader(api_key)
-        # Opción 1: con Auto-DTE APAGADO, saltear las señales SIN 0DTE ese día (no se
-        # intentan → no ensucian los resultados con avisos "No 0 DTE option").
+        # Solo 0DTE: salteamos las señales SIN 0DTE ese día (no se intentan → no ensucian
+        # los resultados con avisos "No 0 DTE option").
         _skipped = []
-        if not _sig_auto_dte:
-            _keep = []
-            for _s in _specs:
-                (_keep if _has_0dte_on(_dl, _s["ticker"], _s["fecha"]) else _skipped).append(_s)
-            _specs = _keep
+        _keep = []
+        for _s in _specs:
+            (_keep if _has_0dte_on(_dl, _s["ticker"], _s["fecha"]) else _skipped).append(_s)
+        _specs = _keep
         _n = len(_specs)
         _wk = max(1, min(8, _n)) if _n else 1
         _pr = st.progress(0.0, text="Corriendo iteraciones…")
@@ -877,8 +849,8 @@ def _render_iters_panel(_iters_seed):
         _t0 = time.perf_counter()
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
-            _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, _scfg, _i,
-                                _sig_entry_ask, _sig_exit_bid, _sig_auto_dte, s.get("criterio", "spread"))
+            _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
+                                False, False, False, s.get("criterio", "spread"))
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):
@@ -1397,50 +1369,12 @@ with st.sidebar.expander("Parámetros de sesión", expanded=True):
     )
     selection_criterion = "itm_first" if str(_crit_label).startswith("Opción 2") else "spread"
 
-    # Filtro de spread (compuerta): el usuario lo puede DESACTIVAR o fijar un máximo
-    # plano. Resuelve el caso "el único contrato en rango tiene spread 1¢ por encima
-    # del límite del bucket y no se compra nada".
-    st.markdown(
-        "<p style='font-weight:normal; margin: 0.5rem 0 0.2rem 0;'>Filtro de spread</p>",
-        unsafe_allow_html=True,
-    )
-    aplicar_spread = st.checkbox(
-        "Aplicar filtro de spread", value=True, key="aplicar_spread",
-        help=("Si está activo, descarta contratos cuyo spread (ask−bid) supere el "
-              "máximo. Por defecto el máximo depende del precio del subyacente "
-              "(spread_config.json: $100–300 → 0.05, $300–600 → 0.10, etc.)."),
-    )
-    spread_max_override = 0.0
-    if aplicar_spread:
-        spread_max_override = float(st.number_input(
-            "Spread máximo ($) — 0 = usar config por precio",
-            min_value=0.0, value=0.0, step=0.01, format="%.2f", key="spread_max_override",
-            help=("Override PLANO del spread máximo en dólares. 0 = usar los buckets por "
-                  "precio. Ej.: 0.08 permite spreads de hasta 8¢ (útil en 0DTE de "
-                  "IWM/QQQ, donde el límite de 5¢ suele ser muy estricto)."),
-        ))
-    # spread_cfg que se pasa al motor: None = buckets por precio (default);
-    # {filtro off} o {override plano} según la UI.
-    if not aplicar_spread:
-        _spread_cfg = {"enable_spread_filter": False}
-    elif spread_max_override > 0:
-        _spread_cfg = {"enable_spread_filter": True,
-                       "_max_spread_override": spread_max_override}
-    else:
-        _spread_cfg = None
-
-    # Fill realista: entrar al ASK (lo que pagás de verdad) en vez del 'open' del bar.
-    entry_at_ask = st.checkbox(
-        "Entrar al ASK (fill realista)", value=False, key="entry_at_ask_param",
-        help=("El backtest entra al ASK del NBBO al minuto de entrada (lo que pagás de "
-              "verdad) en vez del 'open' del último trade. Más conservador/realista, "
-              "sobre todo en 0DTE barato. NO cambia el strike elegido, solo el costo de "
-              "entrada → el ROI baja ~medio spread."))
-    exit_at_bid = st.checkbox(
-        "Salir al BID (fill realista)", value=False, key="exit_at_bid_param",
-        help=("El backtest cierra al BID del NBBO al minuto de salida (lo que REALMENTE "
-              "cobrás) en vez del precio del bar. Junto con 'Entrar al ASK' da el costo "
-              "round-trip COMPLETO del spread."))
+    # Selección de contrato = SOLO la lógica del criterio elegido (Opción 1 / Opción 2).
+    # La compuerta de spread va INCLUIDA en Opción 1 (máximo por bucket de strike); no hay
+    # toggle/override de spread ni fills al ASK/BID — entrada y salida al precio del bar.
+    _spread_cfg = None
+    entry_at_ask = False
+    exit_at_bid = False
 
     # Info del modo overnight (DTE=1).
     if _is_dte1:
