@@ -2240,6 +2240,88 @@ elif btn_proxima:
             _schedule_hora_orden_sync(replay_state, t_start, t_end)
             st.rerun()
 
+# ── Markov 2.0 — Régimen de mercado (Hedge Fund Method, corrected) ────────────
+def _markov_html(R: dict) -> str:
+    """Cuadro estilo 'matriz + TODAY + SIGNAL': % stride (honesto) con el % overlapping
+    (legacy) entre paréntesis; diagonal y estado actual resaltados; veredicto coloreado."""
+    nm = ["BEAR", "SIDEWAYS", "BULL"]
+    _ix = {"BEAR": 2, "SIDEWAYS": 0, "BULL": 1}
+    cur = R["state_name"]
+    Po, Ps = R["P_over"], R["P_stride"]
+    vcode, vmsg = R["verdict"]
+    vcol = {"NO EDGE": "#616161", "BULLISH": "#2e7d32", "BEARISH": "#c62828"}.get(vcode, "#616161")
+    scol = {"BULL": "#2e7d32", "BEAR": "#c62828", "SIDEWAYS": "#8d6e00"}.get(cur, "#444")
+
+    def _p(x):
+        return "&mdash;" if x != x else f"{x * 100:.0f}%"
+
+    def _cell(i, j):
+        bg = "background:#fff8e1;" if i == j else ""
+        return (f'<td style="padding:8px 12px;text-align:center;border-bottom:1px solid #eee;{bg}">'
+                f'<span style="font-weight:500;font-size:15px;color:#222">{_p(Ps[i, j])}</span> '
+                f'<span style="color:#9e9e9e;font-size:12px">({_p(Po[i, j])})</span></td>')
+
+    head = ('<tr><th style="padding:8px 12px;text-align:left;font-size:12px;color:#888;'
+            'font-weight:500;border-bottom:1px solid #ddd">Desde \\ Hacia</th>'
+            + "".join(f'<th style="padding:8px 12px;text-align:center;font-size:13px;'
+                      f'font-weight:600;border-bottom:1px solid #ddd">{c}</th>' for c in nm) + '</tr>')
+    body = ""
+    for r in nm:
+        i = _ix[r]
+        hl = (r == cur)
+        lbl = (f'<td style="padding:8px 12px;font-weight:600;font-size:13px;border-bottom:1px solid #eee;'
+               f'{("color:" + scol) if hl else "color:#555"}">{r}{" &larr;" if hl else ""}</td>')
+        body += "<tr>" + lbl + "".join(_cell(i, _ix[c]) for c in nm) + "</tr>"
+    today = (f'<tr><td style="padding:8px 12px;font-size:12px;color:#888;font-weight:500;'
+             f'background:#fafafa">TODAY</td><td colspan="3" style="padding:8px 12px;background:#fafafa">'
+             f'<span style="font-weight:600;color:{scol}">{cur}</span> '
+             f'<span style="color:#777">({R["ret_window"] * 100:+.1f}% / {R["window"]} barras)</span></td></tr>')
+    sig = (f'<tr><td style="padding:8px 12px;font-size:12px;color:#888;font-weight:500;'
+           f'background:#fafafa">SIGNAL</td><td colspan="3" style="padding:8px 12px;background:#fafafa">'
+           f'bull&minus;bear = <span style="font-weight:600">{R["signal"] * 100:+.1f}%</span> &rarr; '
+           f'<span style="font-weight:600;color:{vcol}">{vcode}</span> '
+           f'<span style="color:#777">&mdash; {vmsg}</span></td></tr>')
+    return (f'<div style="border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;max-width:560px">'
+            f'<table style="width:100%;border-collapse:collapse;font-family:sans-serif">'
+            f'{head}{body}{today}{sig}</table></div>'
+            f'<div style="font-size:11px;color:#9e9e9e;margin:6px 2px;max-width:560px">'
+            f'% honesto (stride, ventanas no solapadas) &middot; entre paréntesis el % legacy '
+            f'(overlapping, infla la persistencia) &middot; {R["ticker"]} al {R["asof"]} &middot; '
+            f'{R["n_bars"]} barras &middot; estado actual marcado con &larr;</div>')
+
+
+with st.expander("🔮 Markov 2.0 — Régimen de mercado (Hedge Fund Method, corrected)", expanded=False):
+    st.caption("Régimen BULL/BEAR/SIDEWAYS por retorno de 20 barras + matriz de transición "
+               "**corregida** (stride honesto · overlapping legacy entre paréntesis), entrenada "
+               "SOLO con datos hasta la fecha. La señal sale de la fila del estado actual.")
+    _mk1, _mk2, _mk3, _mk4 = st.columns([1.2, 1, 1, 1.1])
+    _mk_d = _mk1.date_input("Fecha", value=default_date, format="YYYY-MM-DD", key="mk_date",
+                            help="Evalúa el régimen al cierre de esta fecha (sin datos del futuro).")
+    _mk_t = _mk2.time_input("Hora", value=time_cls(16, 0), key="mk_time",
+                            help="Contexto horario. El régimen es DIARIO — no cambia intradía.")
+    _mk_thr = _mk3.number_input("Umbral edge (%)", value=10.0, min_value=0.0, max_value=50.0,
+                                step=1.0, key="mk_thr",
+                                help="|señal| mínima para declarar dirección; debajo → NO EDGE.")
+    _mk4.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+    if _mk4.button("Evaluar régimen", key="mk_go", use_container_width=True, type="primary"):
+        try:
+            import markov_regime
+            with st.spinner(f"Evaluando régimen de {ticker} al {_mk_d}…"):
+                st.session_state["mk_result"] = (
+                    ticker, f"{_mk_d:%Y-%m-%d}", _mk_t.strftime("%H:%M"),
+                    markov_regime.evaluate(ticker, _mk_d, edge_thr=float(_mk_thr) / 100.0))
+        except Exception as _mke:  # noqa: BLE001
+            st.session_state["mk_result"] = (ticker, f"{_mk_d:%Y-%m-%d}", "",
+                                             {"ok": False, "error": str(_mke)})
+    _mk_saved = st.session_state.get("mk_result")
+    if _mk_saved:
+        _tk0, _d0, _t0, _R0 = _mk_saved
+        if _R0.get("ok"):
+            st.markdown(f"**{_tk0} · {_d0}{(' ' + _t0) if _t0 else ''}**")
+            st.markdown(_markov_html(_R0), unsafe_allow_html=True)
+        else:
+            st.warning(f"No se pudo evaluar: {_R0.get('error', 'sin resultado')}")
+
 replay_state = st.session_state.get("replay")
 if replay_state is None:
     st.info("Configurá los parámetros en la barra lateral y pulsá **Iniciar nueva simulación**.")
