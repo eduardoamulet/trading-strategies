@@ -108,24 +108,24 @@ if barstate.islast
     action  = na(sig) ? "" : (isEdge ? (sig > 0 ? "lean long" : "lean short") : "stay flat")
     vcol    = na(sig) ? color.gray : (isEdge ? (sig > 0 ? color.green : color.red) : color.gray)
 
-    // TODAY
+    // TODAY  (una sola línea, fusionando columnas 1..3 — como en la imagen)
+    todayTxt = cur < 0 ? "—" : f_name(cur) + " (" + (na(ret) ? "—" : f_signed(ret * 100) + "%") + " / " + str.tostring(winLen) + " barras)"
     table.cell(tb, 0, 4, "TODAY", text_color=color.gray, text_size=sz, bgcolor=cHd, text_halign=text.align_left)
-    table.cell(tb, 1, 4, cur < 0 ? "—" : f_name(cur), text_color=cur == 2 ? color.green : cur == 0 ? color.red : color.orange, text_size=sz, bgcolor=cHd)
-    table.cell(tb, 2, 4, na(ret) ? "—" : f_signed(ret * 100) + "%", text_color=cTx, text_size=sz, bgcolor=cHd)
-    table.cell(tb, 3, 4, "/" + str.tostring(winLen) + " barras", text_color=color.gray, text_size=sz, bgcolor=cHd)
+    table.cell(tb, 1, 4, todayTxt, text_color=cur == 2 ? color.green : cur == 0 ? color.red : color.orange, text_size=sz, bgcolor=cHd, text_halign=text.align_left)
+    table.merge_cells(tb, 1, 4, 3, 4)
 
-    // SIGNAL  (bull−bear → veredicto → acción)
+    // SIGNAL  (una sola línea: bull−bear = X% → VEREDICTO — acción)
+    sigTxt = na(sig) ? "bull−bear = —" : "bull−bear = " + f_signed(sig * 100) + "% → " + verdict + (action == "" ? "" : " — " + action)
     table.cell(tb, 0, 5, "SIGNAL", text_color=color.gray, text_size=sz, bgcolor=cHd, text_halign=text.align_left)
-    table.cell(tb, 1, 5, na(sig) ? "—" : f_signed(sig * 100) + "%", text_color=vcol, text_size=sz, bgcolor=cHd)
-    table.cell(tb, 2, 5, verdict, text_color=vcol, text_size=sz, bgcolor=cHd)
-    table.cell(tb, 3, 5, action, text_color=color.gray, text_size=sz, bgcolor=cHd)
+    table.cell(tb, 1, 5, sigTxt, text_color=vcol, text_size=sz, bgcolor=cHd, text_halign=text.align_left)
+    table.merge_cells(tb, 1, 5, 3, 5)
 
-    // TENDENCIA 0-100  (0 = lo más BEAR · 100 = lo más BULL)
+    // TENDENCIA 0-100  (una sola línea · 0 = lo más BEAR · 100 = lo más BULL)
     tcol = na(tendencia) ? color.gray : color.from_gradient(tendencia, 0.0, 100.0, color.red, color.green)
+    tendTxt = na(tendencia) ? "—" : str.tostring(tendencia, "#") + " / 100   (0 = BEAR · 100 = BULL)"
     table.cell(tb, 0, 6, "TENDENCIA", text_color=color.gray, text_size=sz, bgcolor=cHd, text_halign=text.align_left)
-    table.cell(tb, 1, 6, na(tendencia) ? "—" : str.tostring(tendencia, "#") + "/100", text_color=tcol, text_size=sz, bgcolor=cHd)
-    table.cell(tb, 2, 6, "0=BEAR", text_color=color.new(color.red, 20), text_size=sz, bgcolor=cHd)
-    table.cell(tb, 3, 6, "100=BULL", text_color=color.new(color.green, 20), text_size=sz, bgcolor=cHd)
+    table.cell(tb, 1, 6, tendTxt, text_color=tcol, text_size=sz, bgcolor=cHd, text_halign=text.align_left)
+    table.merge_cells(tb, 1, 6, 3, 6)
 
 // ─────────────────────────── Alertas ───────────────────────────
 alertcondition(ta.change(state) != 0, "Cambio de régimen", "Markov 2.0: el régimen cambió de estado (BEAR/SIDEWAYS/BULL).")
