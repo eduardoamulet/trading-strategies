@@ -2706,6 +2706,20 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         unsafe_allow_html=True,
     )
 
+    # Banner PROMINENTE de refuerzos (martingala): cuántos y a qué hora. Solo si hubo ≥1.
+    if getattr(it, "refuerzo", None) and it.refuerzo.get("n"):
+        _rtimes = [pd.Timestamp(it.df.iloc[_ri]["timestamp"]).strftime("%H:%M")
+                   for _ri in it.refuerzo.get("idxs", []) if 0 <= _ri < len(it.df)]
+        st.markdown(
+            f"<div style='padding:8px 12px; background:#fff3cd; border:1px solid #ffe08a; "
+            f"border-radius:6px; display:inline-block; margin-bottom:8px;'>"
+            f"➕ <b>{it.refuerzo['n']} refuerzo(s)</b> (martingala) — capital total "
+            f"<b>${it.invest_total:,.0f}</b>. Comprados a las: <b>{', '.join(_rtimes) or '—'}</b> "
+            f"<span style='color:#7a6000'>· también marcados con ➕ en la tabla minuto a minuto.</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
     # Bid/Ask/Spread + tier de rango por pierna (si hay NBBO disponible).
     def _leg_quote_line(label, bid, ask, spread, tier):
         if bid is None or ask is None:
