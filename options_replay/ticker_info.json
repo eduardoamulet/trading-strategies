@@ -193,8 +193,7 @@
     "min_max_text": "MIN $200 MAX $450",
     "min": 200.0,
     "max": 450.0,
-    "fecha_analisis": "5/19/2026",
-    "max_spread_bt": 0.35
+    "fecha_analisis": "5/19/2026"
   },
   "SOXL": {
     "ticker": "SOXL",
@@ -446,8 +445,7 @@
     "min_max_text": "MIN $55 MAX $175",
     "min": 55.0,
     "max": 175.0,
-    "fecha_analisis": "5/19/2026",
-    "max_spread_bt": 0.5
+    "fecha_analisis": "5/19/2026"
   },
   "BABA": {
     "ticker": "BABA",
@@ -545,8 +543,7 @@
     "min_max_text": "MIN $45 MAX $90",
     "min": 45.0,
     "max": 90.0,
-    "fecha_analisis": "5/19/2026",
-    "max_spread_bt": 0.2
+    "fecha_analisis": "5/19/2026"
   },
   "COIN": {
     "ticker": "COIN",
@@ -630,8 +627,7 @@
     "min_max_text": "MIN $50 MAX $180",
     "min": 50.0,
     "max": 180.0,
-    "fecha_analisis": "5/19/2026",
-    "max_spread_bt": 0.2
+    "fecha_analisis": "5/19/2026"
   },
   "URA": {
     "ticker": "URA",
