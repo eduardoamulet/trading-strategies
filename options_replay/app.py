@@ -1409,6 +1409,11 @@ _mode_map = {"call_only": "Sólo CALL", "put_only": "Sólo PUT", "both": "CALL y
 # para derivar los parámetros del día y auto-aplicarlos antes de esos widgets. En
 # "Rango de fechas" no aplica → tendencia neutral (50%) y sin widget.
 if not is_range:
+    # Tendencia sugerida por el panel Markov 2.0: aplicarla ANTES de crear el slider
+    # (read-early) para que 'manual_prob' tome el valor del régimen/HMM sin chocar con
+    # el widget ya instanciado.
+    if "mk_pending_tendencia" in st.session_state:
+        st.session_state["manual_prob"] = int(st.session_state.pop("mk_pending_tendencia"))
     st.session_state.setdefault("manual_prob", 50)
     manual_prob = int(st.session_state.get("manual_prob", 50))
 else:
@@ -2290,6 +2295,36 @@ def _markov_html(R: dict) -> str:
             f'{R["n_bars"]} barras &middot; estado actual marcado con &larr;</div>')
 
 
+def _markov_hmm_html(H: dict) -> str:
+    """Render de la auditoría HMM: % de acuerdo + matriz de confusión (umbral vs HMM)."""
+    ag = H["agreement"] * 100.0
+    agcol = "#2e7d32" if ag >= 70 else ("#8d6e00" if ag >= 55 else "#c62828")
+    luz = "🟢 luz verde" if ag >= 70 else ("🟡 mixto" if ag >= 55 else "🔴 dudoso")
+    disp = ["BEAR", "SIDEWAYS", "BULL"]
+    conf = H["confusion"]
+    head = ('<tr><th style="padding:6px 10px;text-align:left;font-size:11px;color:#888;'
+            'font-weight:500;border-bottom:1px solid #ddd">umbral \\ HMM</th>'
+            + "".join(f'<th style="padding:6px 10px;text-align:center;font-size:12px;'
+                      f'font-weight:600;border-bottom:1px solid #ddd">{c}</th>' for c in disp) + '</tr>')
+    rows = ""
+    for i, rn in enumerate(disp):
+        cells = "".join(f'<td style="padding:6px 10px;text-align:center;border-bottom:1px solid #eee;'
+                        f'{"background:#fff8e1;" if i == j else ""}">{int(conf[i][j])}</td>' for j in range(3))
+        rows += (f'<tr><td style="padding:6px 10px;font-weight:600;font-size:12px;color:#555;'
+                 f'border-bottom:1px solid #eee">{rn}</td>{cells}</tr>')
+    mn, po = H["means_pct"], H["post"]
+    return (f'<div style="margin:2px 0 8px;font-size:14px">Acuerdo HMM vs umbral: '
+            f'<span style="font-weight:700;color:{agcol}">{ag:.1f}%</span> '
+            f'<span style="color:#888">· {luz}</span></div>'
+            f'<div style="border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;max-width:420px">'
+            f'<table style="width:100%;border-collapse:collapse;font-family:sans-serif">{head}{rows}</table></div>'
+            f'<div style="font-size:11px;color:#9e9e9e;margin:6px 2px;max-width:480px">'
+            f'medias que el HMM descubrió solo (BEAR/SIDE/BULL): {mn[0]}% / {mn[1]}% / {mn[2]}% &middot; '
+            f'diagonal = coinciden &middot; HMM hoy: <b>{H["hmm_state"]}</b> '
+            f'(post. BULL {po["BULL"] * 100:.0f}% · SIDE {po["SIDEWAYS"] * 100:.0f}% · '
+            f'BEAR {po["BEAR"] * 100:.0f}%)</div>')
+
+
 with st.expander("🔮 Markov 2.0 — Régimen de mercado (Hedge Fund Method, corrected)", expanded=False):
     st.caption("Régimen BULL/BEAR/SIDEWAYS por retorno de 20 barras + matriz de transición "
                "**corregida** (stride honesto · overlapping legacy entre paréntesis), entrenada "
@@ -2310,6 +2345,7 @@ with st.expander("🔮 Markov 2.0 — Régimen de mercado (Hedge Fund Method, co
                 st.session_state["mk_result"] = (
                     ticker, f"{_mk_d:%Y-%m-%d}", _mk_t.strftime("%H:%M"),
                     markov_regime.evaluate(ticker, _mk_d, edge_thr=float(_mk_thr) / 100.0))
+                st.session_state.pop("mk_hmm", None)   # invalida la auditoría HMM previa
         except Exception as _mke:  # noqa: BLE001
             st.session_state["mk_result"] = (ticker, f"{_mk_d:%Y-%m-%d}", "",
                                              {"ok": False, "error": str(_mke)})
@@ -2319,6 +2355,38 @@ with st.expander("🔮 Markov 2.0 — Régimen de mercado (Hedge Fund Method, co
         if _R0.get("ok"):
             st.markdown(f"**{_tk0} · {_d0}{(' ' + _t0) if _t0 else ''}**")
             st.markdown(_markov_html(_R0), unsafe_allow_html=True)
+            # Tendencia 0-100 (0=BEAR · 50=SIDEWAYS · 100=BULL) → aplicar al slider.
+            _tend = int(round(_R0.get("tendencia", 50.0) / 5.0) * 5)
+            _ta, _tb = st.columns([2, 1.5], vertical_alignment="center")
+            _ta.markdown(f"**Tendencia del régimen: {_tend}%** "
+                         f"<span style='color:#888;font-size:12px'>(0=BEAR · 50=SIDEWAYS · 100=BULL · "
+                         f"del retorno de {_R0['window']} barras)</span>", unsafe_allow_html=True)
+            if _tb.button(f"➡ Aplicar {_tend}% a «Tendencia del mercado»", key="mk_apply",
+                          use_container_width=True, disabled=is_range):
+                st.session_state["mk_pending_tendencia"] = _tend
+                st.rerun()
+            if is_range:
+                _ta.caption("El slider «Tendencia del mercado» solo existe en modo «Fecha fija».")
+            # ── Auditoría HMM: ¿los estados existen de verdad o son un invento del umbral? ──
+            st.divider()
+            if st.button("🔬 Auditar con HMM — ¿los estados son reales?", key="mk_hmm_go"):
+                try:
+                    import markov_regime as _mkr
+                    with st.spinner("Ajustando HMM gaussiano de 3 estados (sin etiquetas)…"):
+                        st.session_state["mk_hmm"] = _mkr.hmm_audit_asof(_tk0, _d0)
+                except Exception as _hmme:  # noqa: BLE001
+                    st.session_state["mk_hmm"] = {"ok": False, "error": str(_hmme)}
+            _H = st.session_state.get("mk_hmm")
+            if _H:
+                if _H.get("ok"):
+                    st.markdown(_markov_hmm_html(_H), unsafe_allow_html=True)
+                    _ht = int(round(_H.get("hmm_tendencia", 50.0) / 5.0) * 5)
+                    if st.button(f"➡ Aplicar {_ht}% (HMM) a «Tendencia del mercado»",
+                                 key="mk_apply_hmm", disabled=is_range):
+                        st.session_state["mk_pending_tendencia"] = _ht
+                        st.rerun()
+                else:
+                    st.warning(f"HMM: {_H.get('error', 'sin resultado')}")
         else:
             st.warning(f"No se pudo evaluar: {_R0.get('error', 'sin resultado')}")
 
