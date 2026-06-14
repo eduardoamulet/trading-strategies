@@ -2126,16 +2126,31 @@ if btn_iniciar:
                                         "Ganancia": None, "ROI %": None,
                                         "Razón": _r.get("error") or "error",
                                     })
+                            _ldf = pd.DataFrame(_live_rows)
+                            # "Ganancia acumulada" = suma corrida de la Ganancia (los días
+                            # sin resultado suman 0). Va a la derecha de ROI %.
+                            _ldf["Ganancia acumulada"] = _ldf["Ganancia"].fillna(0.0).cumsum()
+                            _ldf = _ldf[["Fecha", "Hora", "Ganancia", "ROI %",
+                                         "Ganancia acumulada", "Razón"]]
+
+                            def _live_row_color(_row):
+                                # Colorea la FILA por el signo de la Ganancia: verde claro
+                                # = ganó · rojo claro = perdió · sin color = 0 / sin resultado.
+                                _g = _row.get("Ganancia")
+                                if pd.isna(_g) or _g == 0:
+                                    return [""] * len(_row)
+                                _bg = ("background-color: #c8e6c9" if _g > 0
+                                       else "background-color: #ffcdd2")
+                                return [_bg] * len(_row)
+                            _styled_live = (_ldf.style
+                                            .apply(_live_row_color, axis=1)
+                                            .format({"Ganancia": "${:+,.0f}", "ROI %": "{:+.1f}%",
+                                                     "Ganancia acumulada": "${:+,.0f}"}, na_rep="—"))
                             with live_ph.container():
                                 st.markdown("##### 📋 Resumen por día (en vivo)")
                                 st.dataframe(
-                                    pd.DataFrame(_live_rows), use_container_width=True,
-                                    hide_index=True,
-                                    height=min(420, 38 + 35 * max(1, len(_live_rows))),
-                                    column_config={
-                                        "Ganancia": st.column_config.NumberColumn("Ganancia", format="$%.0f"),
-                                        "ROI %": st.column_config.NumberColumn("ROI %", format="%.1f%%"),
-                                    },
+                                    _styled_live, use_container_width=True, hide_index=True,
+                                    height=min(420, 38 + 35 * max(1, len(_ldf))),
                                 )
 
             _elapsed_total = time.perf_counter() - _t0
