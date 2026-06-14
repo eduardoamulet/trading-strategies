@@ -2810,8 +2810,8 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                 })
             return pd.DataFrame(rows).set_index("Strike") if rows else pd.DataFrame()
 
-        _cdf = _leg_df(it.call_probes, "C") if _show_call else pd.DataFrame()
-        _pdf = _leg_df(it.put_probes, "P") if _show_put else pd.DataFrame()
+        _cdf = _leg_df(it.call_probes, "CALL") if _show_call else pd.DataFrame()
+        _pdf = _leg_df(it.put_probes, "PUT") if _show_put else pd.DataFrame()
         if not _cdf.empty and not _pdf.empty:
             _chain = _cdf.join(_pdf, how="outer")
         elif not _cdf.empty:
@@ -2823,8 +2823,8 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
             st.caption("Sin contratos probados.")
         else:
             _chain = _chain.sort_index().reset_index()
-            _cc = ["C Last", "C Bid", "C Ask", "C Spread"]
-            _pc = ["P Bid", "P Ask", "P Spread", "P Last"]
+            _cc = ["CALL Last", "CALL Bid", "CALL Ask", "CALL Spread"]
+            _pc = ["PUT Bid", "PUT Ask", "PUT Spread", "PUT Last"]
             _order = ([c for c in _cc if c in _chain.columns] + ["Strike"]
                       + [c for c in _pc if c in _chain.columns])
             _chain = _chain[_order]
@@ -2842,11 +2842,11 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                 out = []
                 for col in row.index:
                     style = ""
-                    if col.startswith("C ") and _spot is not None:
+                    if col.startswith("CALL ") and _spot is not None:
                         style = _ITM if k < _spot else _OTM      # CALL ITM: strike < spot
                         if _ic:
                             style += "; font-weight: bold"
-                    elif col.startswith("P ") and _spot is not None:
+                    elif col.startswith("PUT ") and _spot is not None:
                         style = _ITM if k > _spot else _OTM      # PUT ITM: strike > spot
                         if _ip:
                             style += "; font-weight: bold"
@@ -2870,7 +2870,15 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
             _styled = (_chain.style
                        .apply(_hl_chain, axis=1)
                        .format(_fmt, na_rep="—")
-                       .hide(axis="index"))
+                       .hide(axis="index")
+                       # Headers fijos: al scrollear vertical el thead queda pegado arriba.
+                       # box-shadow = borde inferior que NO se pierde con border-collapse.
+                       .set_table_styles([{
+                           "selector": "thead th",
+                           "props": [("position", "sticky"), ("top", "0"),
+                                     ("background-color", "#eef1f6"), ("z-index", "3"),
+                                     ("box-shadow", "inset 0 -1px 0 #c9ced6")],
+                       }]))
             st.caption("⬅ CALLS · Strike · PUTS ➡   ·   azul claro = ITM · amarillo claro = OTM · negrita = contrato elegido")
             # Render HTML con table-layout:fixed → las columnas se reparten para
             # AJUSTARSE al panel (entran todas, sin scroll horizontal). Ancho completo:
