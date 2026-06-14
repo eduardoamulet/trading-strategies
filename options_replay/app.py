@@ -759,7 +759,7 @@ def _render_iters_panel(_iters_seed):
     _seed_df["% Cumpl."] = pd.to_numeric(_seed_df["% Cumpl."], errors="coerce")
     # Tipo = modo del motor. Una pierna = "CALL"/"PUT" (= lo que viene en la alerta, así
     # ese es el DEFAULT). Compat: si quedó "Sólo CALL/PUT" de antes, se mapea a CALL/PUT.
-    _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (plus)",
+    _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (Refuerzo)", "CALL y PUT (plus)",
                   "CALL o PUT", "CALL o PUT (plus)"]
     _seed_df["Tipo"] = _seed_df["Tipo"].apply(
         lambda v: str(v).strip() if str(v).strip() in _TIPO_OPTS
@@ -814,11 +814,15 @@ def _render_iters_panel(_iters_seed):
                 help="Estrategia que generó la señal (informativo; llega desde Alertas)."),
         },
     )
-    _sp1, _sp2, _sp3 = st.columns(3)
+    _sp1, _sp2, _sp3, _sp4 = st.columns(4)
     _sig_inv = float(_sp1.number_input("Inversión ($)", min_value=1.0, value=1000.0,
                                        step=100.0, key="sig_inv"))
     _sig_umb = float(_sp2.number_input("Umbral ROI (%)", value=10.0, step=5.0, key="sig_umb"))
     _sig_stop = float(_sp3.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
+    _sig_refuerzo = float(_sp4.number_input(
+        "Umbral pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0, step=5.0,
+        key="sig_refuerzo", help="Solo para filas con Tipo 'CALL y PUT (Refuerzo)'. % de pérdida "
+                                 "del capital total que dispara un refuerzo (otro CALL+PUT).")) / 100.0
 
     _specs = []
     for _, _r in _ed.iterrows():
@@ -850,7 +854,7 @@ def _render_iters_panel(_iters_seed):
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
             _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
-                                False, False, False, s.get("criterio", "spread"))
+                                False, False, False, s.get("criterio", "spread"), _sig_refuerzo)
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):
@@ -1476,7 +1480,7 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
 
     _straddle_mode = st.selectbox(
         "Tipo de operación",
-        options=["CALL y PUT", "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)"],
+        options=["CALL y PUT", "CALL y PUT (Refuerzo)", "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)"],
         index=0,
         key="straddle_mode_radio",
         on_change=_sync_straddle_mode_changed,
@@ -1486,6 +1490,7 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
     is_call_or_put = _straddle_mode == "CALL o PUT"
     is_call_or_put_plus = _straddle_mode == "CALL o PUT (plus)"
     is_both_plus = _straddle_mode == "CALL y PUT (plus)"
+    is_refuerzo = _straddle_mode == "CALL y PUT (Refuerzo)"
     if only_call_now:
         engine_mode = "call_only"
     elif only_put_now:
@@ -1496,6 +1501,8 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
         engine_mode = "call_or_put_plus"
     elif is_both_plus:
         engine_mode = "both_plus"
+    elif is_refuerzo:
+        engine_mode = "both_refuerzo"
     else:
         engine_mode = "both"
 
@@ -1504,6 +1511,11 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
         "CALL y PUT": "🎯 **CALL y PUT** — se compran ambas piernas (50/50) y la salida es "
                       "**combinada por ROI total** (Umbral de ROI / Stop loss sobre la suma de "
                       "las dos). Termina al umbral, al stop o al cierre del día.",
+        "CALL y PUT (Refuerzo)": "🎯 **CALL y PUT (Refuerzo)** — martingala. Igual que CALL y PUT "
+                                 "(50/50) pero **sin stop loss**: cuando el ROI total cae a "
+                                 "**≤ −Umbral de pérdida refuerzo (%)**, compra otro CALL+PUT con la "
+                                 "**misma inversión inicial** (refuerzo, repetible). Termina al "
+                                 "**Umbral de ROI (%)** o al cierre del día.",
         "CALL y PUT (plus)": "🎯 **CALL y PUT (plus)** — se compran ambas piernas (50/50) y se "
                              "venden las dos **solo en el Horario de salida** (sin Umbral de ROI ni "
                              "Stop loss). Termina al horario o al cierre del día.",
@@ -1520,6 +1532,17 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
                              "total**. Termina ahí o al cierre del día.",
     }
     st.info(_MODE_DESC.get(_straddle_mode, ""))
+
+    # Parámetro EXCLUSIVO de "CALL y PUT (Refuerzo)": % de pérdida del capital TOTAL que
+    # dispara un refuerzo (comprar otro CALL+PUT con la inversión inicial). Default 50.
+    if is_refuerzo:
+        refuerzo_loss_pct = st.number_input(
+            "Umbral de pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0,
+            step=5.0, key="refuerzo_loss_pct",
+            help="Solo para CALL y PUT (Refuerzo). Cuando el ROI total cae a ≤ −este valor se "
+                 "compra otro CALL+PUT con la misma inversión inicial.")
+    else:
+        refuerzo_loss_pct = 50.0
 
     # "Tendencia del mercado" (widget) — solo single-day. Su valor (key 'manual_prob')
     # alimenta los Parámetros por iteración, que ya se auto-aplicaron arriba. Va acá,
@@ -1881,6 +1904,7 @@ if btn_iniciar:
                         stop_loss_pct=float(stop_loss_pct),
                         iteration_idx=1,
                         mode=engine_mode,
+                        refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
                         ext_min=float(ext_premium_min), ext_max=float(ext_premium_max),
                         check_step_min=int(sell_check_min),
                         call_exit_threshold_pct=float(call_exit_threshold_pct),
@@ -2006,6 +2030,7 @@ if btn_iniciar:
                         stop_loss_pct=float(stop_loss_pct),
                         iteration_idx=1,
                         mode=engine_mode,
+                        refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
                         ext_min=float(ext_premium_min), ext_max=float(ext_premium_max),
                         check_step_min=int(sell_check_min),
                         call_exit_threshold_pct=float(call_exit_threshold_pct),
@@ -2213,6 +2238,7 @@ elif btn_proxima:
                         stop_loss_pct=float(stop_loss_pct),
                         iteration_idx=len(replay_state["iterations"]) + 1,
                         mode=engine_mode,
+                        refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
                         ext_min=float(ext_premium_min), ext_max=float(ext_premium_max),
                         check_step_min=int(sell_check_min),
                         call_exit_threshold_pct=float(call_exit_threshold_pct),
@@ -2346,6 +2372,13 @@ def _build_display_df(it: IterationResult) -> pd.DataFrame:
     tdf["roi_dol_call"] = it.invest_call * tdf["pct_call"]
     tdf["roi_dol_put"] = it.invest_put * tdf["pct_put"]
     tdf["roi_dol_total"] = tdf["roi_dol_call"] + tdf["roi_dol_put"]
+    # Modo "CALL y PUT (Refuerzo)" (martingala): las columnas TOTAL reflejan el capital
+    # MULTI-TRANCHE (no la entrada única). El motor dejó ref_roi/ref_value/ref_invested por
+    # minuto; las piernas (Px/ROI Call/Put) siguen mostrando el PRIMER tranche.
+    if getattr(it, "refuerzo", None) is not None and "ref_roi" in tdf.columns:
+        tdf["pct_total"] = tdf["ref_roi"]
+        tdf["val_total"] = tdf["ref_value"]
+        tdf["roi_dol_total"] = tdf["ref_value"] - tdf["ref_invested"]
     # Timestamp → solo hora:minuto (HH:MM). Cada iteración es de un día, así que
     # el string ordena bien al clickear el header.
     tdf["timestamp"] = tdf["timestamp"].dt.strftime("%H:%M")

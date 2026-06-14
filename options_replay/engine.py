@@ -203,6 +203,9 @@ class IterationResult:
     put_exit_idx: Optional[int] = None
     call_exit_reason: str = ""   # "100%_threshold" | "stop_loss" | "session_end"
     put_exit_reason: str = ""
+    # --- Modo "both_refuerzo" (martingala). Si está seteado, gain_total/invest_total se
+    #     leen de acá (capital y ganancia MULTI-TRANCHE). {"gain","invest","n","idxs"}.
+    refuerzo: Optional[dict] = None
 
     @property
     def gain_call(self) -> float:
@@ -218,10 +221,14 @@ class IterationResult:
 
     @property
     def gain_total(self) -> float:
+        if self.refuerzo is not None:
+            return float(self.refuerzo.get("gain", 0.0))
         return self.gain_call + self.gain_put
 
     @property
     def invest_total(self) -> float:
+        if self.refuerzo is not None:
+            return float(self.refuerzo.get("invest", self.invest_call + self.invest_put))
         return self.invest_call + self.invest_put
 
     @property
@@ -752,6 +759,51 @@ def validate_0dte_session(downloader: Downloader, ticker: str, date: str) -> str
     return nearest
 
 
+def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, invest_put,
+                       profit_target, loss_thr):
+    """Martingala 'CALL y PUT (Refuerzo)'. Arranca con 1 tranche (CALL+PUT al precio de
+    entrada). Cada minuto calcula el ROI sobre el capital TOTAL invertido; si el ROI cae a
+    <= -loss_thr se compra OTRO tranche (CALL+PUT al precio del minuto, invirtiendo de nuevo
+    invest_call+invest_put). Sale cuando el ROI total >= profit_target (exit '100%_threshold')
+    o al cierre del día ('session_end'). Sin stop loss.
+    Devuelve (exit_idx, exit_reason, roi[], value[], invested[], refuerzo_idxs[])."""
+    import numpy as np
+    cpx = np.asarray(call_px, dtype=float)
+    ppx = np.asarray(put_px, dtype=float)
+    n = len(cpx)
+    unit = float(invest_call) + float(invest_put)            # inversión por tranche
+    tranches = [(float(call_entry), float(put_entry))]       # (c0, p0) de cada tranche
+    roi = np.zeros(n); value = np.zeros(n); invested = np.zeros(n)
+    ref_idxs: list[int] = []
+    exit_idx, exit_reason = n - 1, "session_end"
+
+    def _value_at(c, p):
+        v = 0.0
+        for c0, p0 in tranches:
+            v += (invest_call * (c / c0)) if c0 > 0 else 0.0
+            v += (invest_put * (p / p0)) if p0 > 0 else 0.0
+        return v
+
+    for t in range(n):
+        c, p = cpx[t], ppx[t]
+        v = _value_at(c, p)
+        inv = len(tranches) * unit
+        r = (v - inv) / inv if inv > 0 else 0.0
+        if r >= profit_target:                               # Umbral de ROI → salir
+            roi[t], value[t], invested[t] = r, v, inv
+            exit_idx, exit_reason = t, "100%_threshold"
+            break
+        if r <= -loss_thr and c > 0.01 and p > 0.01:         # pérdida → REFUERZO
+            tranches.append((float(c), float(p)))
+            ref_idxs.append(t)
+            v = _value_at(c, p); inv = len(tranches) * unit
+            r = (v - inv) / inv if inv > 0 else 0.0
+        roi[t], value[t], invested[t] = r, v, inv
+
+    return (exit_idx, exit_reason, roi[: exit_idx + 1], value[: exit_idx + 1],
+            invested[: exit_idx + 1], ref_idxs)
+
+
 def run_next_iteration(
     downloader: Downloader,
     ticker: str,
@@ -777,6 +829,7 @@ def run_next_iteration(
     put_stop_loss_pct: float = -1.0,
     exit_plus_threshold_pct: float = 0.50,
     exit_plus_time: Optional[time] = None,
+    refuerzo_loss_threshold_pct: float = 0.50,
     selection_criterion: str = "itm",
     value_target: float = 2.0,
     dte: int = 0,
@@ -852,6 +905,7 @@ def run_next_iteration(
         put_stop_loss_pct=put_stop_loss_pct,
         exit_plus_threshold_pct=exit_plus_threshold_pct,
         exit_plus_time=exit_plus_time,
+        refuerzo_loss_threshold_pct=refuerzo_loss_threshold_pct,
         selection_criterion=selection_criterion,
         value_target=value_target,
         spread_cfg=spread_cfg,
@@ -1092,6 +1146,7 @@ def _run_one_iteration(
     put_stop_loss_pct: float = -1.0,
     exit_plus_threshold_pct: float = 0.50,
     exit_plus_time: Optional[time] = None,
+    refuerzo_loss_threshold_pct: float = 0.50,
     selection_criterion: str = "itm",
     value_target: float = 2.0,
     spread_cfg: Optional[dict] = None,
@@ -1234,6 +1289,7 @@ def _run_one_iteration(
     put_exit_idx: Optional[int] = None
     call_exit_reason = ""
     put_exit_reason = ""
+    _refuerzo = None   # solo se llena en mode == "both_refuerzo" (martingala)
 
     def _first_pos(mask) -> Optional[int]:
         return int(mask.values.argmax()) if bool(mask.any()) else None
@@ -1327,6 +1383,21 @@ def _run_one_iteration(
         trigger_pos = None
         exit_reason = "session_end"
         merged = merged.reset_index(drop=True)
+    elif mode == "both_refuerzo":
+        # ----- CALL y PUT (Refuerzo): MARTINGALA. Sin stop loss — cuando el ROI sobre el
+        # capital TOTAL cae a <= -refuerzo_loss_threshold_pct se compra otro tranche CALL+PUT
+        # (misma inversión inicial). Sale al Umbral de ROI o al cierre. ROI/valor/invertido
+        # por minuto quedan en merged (ref_roi/ref_value/ref_invested) para el display. -----
+        _exi, exit_reason, _rroi, _rval, _rinv, _ridx = _simulate_refuerzo(
+            merged["call_px"].values, merged["put_px"].values, call_entry, put_entry,
+            invest_call, invest_put, exit_threshold_pct, float(refuerzo_loss_threshold_pct))
+        merged = merged.iloc[: _exi + 1].reset_index(drop=True)
+        merged["total"] = merged["call_px"] + merged["put_px"]
+        merged["ref_roi"] = _rroi
+        merged["ref_value"] = _rval
+        merged["ref_invested"] = _rinv
+        _refuerzo = {"gain": float(_rval[-1] - _rinv[-1]), "invest": float(_rinv[-1]),
+                     "n": len(_ridx), "idxs": list(_ridx)}
     else:
         # ----- Salida combinada / single-leg (modos existentes) -----
         if exit_metric == "call":
@@ -1424,6 +1495,7 @@ def _run_one_iteration(
         put_exit_idx=put_exit_idx,
         call_exit_reason=call_exit_reason,
         put_exit_reason=put_exit_reason,
+        refuerzo=_refuerzo,
     )
 
 
