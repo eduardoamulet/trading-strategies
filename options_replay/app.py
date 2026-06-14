@@ -2118,7 +2118,8 @@ if btn_iniciar:
                                         "Hora": _hs.strftime("%H:%M") if _hs is not None else "",
                                         "Ganancia": _it.gain_total,
                                         "ROI %": _roi * 100.0,
-                                        "Razón": _REASON_LABELS.get(_it.exit_reason, _it.exit_reason),
+                                        "Razón": (_REASON_ICONS.get(_it.exit_reason, "") + " "
+                                                  + _REASON_LABELS.get(_it.exit_reason, _it.exit_reason)).strip(),
                                     })
                                 else:
                                     _live_rows.append({
@@ -2151,6 +2152,9 @@ if btn_iniciar:
                                 st.dataframe(
                                     _styled_live, use_container_width=True, hide_index=True,
                                     height=min(420, 38 + 35 * max(1, len(_ldf))),
+                                    column_config={
+                                        "Razón": st.column_config.TextColumn("Razón", width="large"),
+                                    },
                                 )
 
             _elapsed_total = time.perf_counter() - _t0
