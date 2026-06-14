@@ -60,7 +60,7 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             stop_pct: float = -100.0, spread_cfg=None, iteration_idx: int = 1,
             entry_at_ask: bool = False, exit_at_bid: bool = False,
             auto_dte: bool = False, selection_criterion: str = "spread",
-            refuerzo_loss_pct: float = 0.50) -> dict:
+            refuerzo_loss_pct: float = 0.50, refuerzo_max: int = 2) -> dict:
     """Corre 1 iteración. `spec` admite 'ticker' o 'symbol', más 'fecha', 'hora', 'tipo'.
     `selection_criterion` = criterio de selección de contrato ('spread' = Opción 1 menor
     spread; 'itm_first' = Opción 2 primer contrato cerca de ITM, ignora spread y rango).
@@ -120,7 +120,7 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
                 dl, ticker, fecha, lo, hi, inv_call, inv_put, order_ts, day_end_ts,
                 exit_threshold_pct=_umb, exit_metric="total", stop_loss_pct=_stp,
                 iteration_idx=int(iteration_idx), mode=mode,
-                refuerzo_loss_threshold_pct=float(refuerzo_loss_pct),
+                refuerzo_loss_threshold_pct=float(refuerzo_loss_pct), refuerzo_max_count=int(refuerzo_max),
                 ext_min=lo, ext_max=hi, selection_criterion=selection_criterion, dte=0, spread_cfg=spread_cfg,
                 entry_at_ask=entry_at_ask, exit_at_bid=exit_at_bid,
                 call_exit_threshold_pct=_umb, call_stop_loss_pct=_stp,

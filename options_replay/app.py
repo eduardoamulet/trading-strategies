@@ -814,7 +814,7 @@ def _render_iters_panel(_iters_seed):
                 help="Estrategia que generó la señal (informativo; llega desde Alertas)."),
         },
     )
-    _sp1, _sp2, _sp3, _sp4 = st.columns(4)
+    _sp1, _sp2, _sp3, _sp4, _sp5 = st.columns(5)
     _sig_inv = float(_sp1.number_input("Inversión ($)", min_value=1.0, value=1000.0,
                                        step=100.0, key="sig_inv"))
     _sig_umb = float(_sp2.number_input("Umbral ROI (%)", value=10.0, step=5.0, key="sig_umb"))
@@ -823,6 +823,9 @@ def _render_iters_panel(_iters_seed):
         "Umbral pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0, step=5.0,
         key="sig_refuerzo", help="Solo para filas con Tipo 'CALL y PUT (Refuerzo)'. % de pérdida "
                                  "del capital total que dispara un refuerzo (otro CALL+PUT).")) / 100.0
+    _sig_refuerzo_max = int(_sp5.number_input(
+        "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
+        help="Solo para filas 'CALL y PUT (Refuerzo)'. Máximo de refuerzos por iteración."))
 
     _specs = []
     for _, _r in _ed.iterrows():
@@ -854,7 +857,8 @@ def _render_iters_panel(_iters_seed):
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
             _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
-                                False, False, False, s.get("criterio", "spread"), _sig_refuerzo)
+                                False, False, False, s.get("criterio", "spread"), _sig_refuerzo,
+                                _sig_refuerzo_max)
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):
@@ -1536,13 +1540,19 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
     # Parámetro EXCLUSIVO de "CALL y PUT (Refuerzo)": % de pérdida del capital TOTAL que
     # dispara un refuerzo (comprar otro CALL+PUT con la inversión inicial). Default 50.
     if is_refuerzo:
-        refuerzo_loss_pct = st.number_input(
+        _rc1, _rc2 = st.columns(2)
+        refuerzo_loss_pct = _rc1.number_input(
             "Umbral de pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0,
             step=5.0, key="refuerzo_loss_pct",
-            help="Solo para CALL y PUT (Refuerzo). Cuando el ROI total cae a ≤ −este valor se "
-                 "compra otro CALL+PUT con la misma inversión inicial.")
+            help="Cuando el ROI total cae a ≤ −este valor se compra otro CALL+PUT con la misma "
+                 "inversión inicial.")
+        refuerzo_max = int(_rc2.number_input(
+            "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="refuerzo_max",
+            help="Máximo de refuerzos por iteración. Al alcanzarlo, la posición aguanta hasta el "
+                 "Umbral de ROI o el cierre (no refuerza más)."))
     else:
         refuerzo_loss_pct = 50.0
+        refuerzo_max = 2
 
     # "Tendencia del mercado" (widget) — solo single-day. Su valor (key 'manual_prob')
     # alimenta los Parámetros por iteración, que ya se auto-aplicaron arriba. Va acá,
@@ -1905,6 +1915,7 @@ if btn_iniciar:
                         iteration_idx=1,
                         mode=engine_mode,
                         refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
+                        refuerzo_max_count=int(refuerzo_max),
                         ext_min=float(ext_premium_min), ext_max=float(ext_premium_max),
                         check_step_min=int(sell_check_min),
                         call_exit_threshold_pct=float(call_exit_threshold_pct),
@@ -2031,6 +2042,7 @@ if btn_iniciar:
                         iteration_idx=1,
                         mode=engine_mode,
                         refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
+                        refuerzo_max_count=int(refuerzo_max),
                         ext_min=float(ext_premium_min), ext_max=float(ext_premium_max),
                         check_step_min=int(sell_check_min),
                         call_exit_threshold_pct=float(call_exit_threshold_pct),
@@ -2239,6 +2251,7 @@ elif btn_proxima:
                         iteration_idx=len(replay_state["iterations"]) + 1,
                         mode=engine_mode,
                         refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
+                        refuerzo_max_count=int(refuerzo_max),
                         ext_min=float(ext_premium_min), ext_max=float(ext_premium_max),
                         check_step_min=int(sell_check_min),
                         call_exit_threshold_pct=float(call_exit_threshold_pct),

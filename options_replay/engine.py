@@ -760,7 +760,7 @@ def validate_0dte_session(downloader: Downloader, ticker: str, date: str) -> str
 
 
 def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, invest_put,
-                       profit_target, loss_thr):
+                       profit_target, loss_thr, max_refuerzos=2):
     """Martingala 'CALL y PUT (Refuerzo)'. Arranca con 1 tranche (CALL+PUT al precio de
     entrada). Cada minuto calcula el ROI sobre el capital TOTAL invertido; si el ROI cae a
     <= -loss_thr se compra OTRO tranche (CALL+PUT al precio del minuto, invirtiendo de nuevo
@@ -793,7 +793,8 @@ def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, inve
             roi[t], value[t], invested[t] = r, v, inv
             exit_idx, exit_reason = t, "100%_threshold"
             break
-        if r <= -loss_thr and c > 0.01 and p > 0.01:         # pérdida → REFUERZO
+        # pérdida → REFUERZO (solo hasta `max_refuerzos`; después la posición aguanta).
+        if r <= -loss_thr and c > 0.01 and p > 0.01 and len(ref_idxs) < max_refuerzos:
             tranches.append((float(c), float(p)))
             ref_idxs.append(t)
             v = _value_at(c, p); inv = len(tranches) * unit
@@ -830,6 +831,7 @@ def run_next_iteration(
     exit_plus_threshold_pct: float = 0.50,
     exit_plus_time: Optional[time] = None,
     refuerzo_loss_threshold_pct: float = 0.50,
+    refuerzo_max_count: int = 2,
     selection_criterion: str = "itm",
     value_target: float = 2.0,
     dte: int = 0,
@@ -906,6 +908,7 @@ def run_next_iteration(
         exit_plus_threshold_pct=exit_plus_threshold_pct,
         exit_plus_time=exit_plus_time,
         refuerzo_loss_threshold_pct=refuerzo_loss_threshold_pct,
+        refuerzo_max_count=refuerzo_max_count,
         selection_criterion=selection_criterion,
         value_target=value_target,
         spread_cfg=spread_cfg,
@@ -1147,6 +1150,7 @@ def _run_one_iteration(
     exit_plus_threshold_pct: float = 0.50,
     exit_plus_time: Optional[time] = None,
     refuerzo_loss_threshold_pct: float = 0.50,
+    refuerzo_max_count: int = 2,
     selection_criterion: str = "itm",
     value_target: float = 2.0,
     spread_cfg: Optional[dict] = None,
@@ -1390,7 +1394,8 @@ def _run_one_iteration(
         # por minuto quedan en merged (ref_roi/ref_value/ref_invested) para el display. -----
         _exi, exit_reason, _rroi, _rval, _rinv, _ridx = _simulate_refuerzo(
             merged["call_px"].values, merged["put_px"].values, call_entry, put_entry,
-            invest_call, invest_put, exit_threshold_pct, float(refuerzo_loss_threshold_pct))
+            invest_call, invest_put, exit_threshold_pct, float(refuerzo_loss_threshold_pct),
+            int(refuerzo_max_count))
         merged = merged.iloc[: _exi + 1].reset_index(drop=True)
         merged["total"] = merged["call_px"] + merged["put_px"]
         merged["ref_roi"] = _rroi
