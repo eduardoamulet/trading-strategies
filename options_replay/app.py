@@ -3195,16 +3195,19 @@ if _mode == "range":
             _n_pos = int((summary_df["ROI (%)"] >= 0).sum())
             _n_neg = int((summary_df["ROI (%)"] < 0).sum())
 
-            # Opciones extra: filtrar por Razón. Una opción por cada motivo PRESENTE
-            # en los resultados (orden fijo umbral → stop → cierre → overnight). La
-            # celda "Razón" es f"{icono} {label}", así que la reconstruimos para
-            # contar (badge) y para filtrar por igualdad de esa columna.
+            # Opciones extra: filtrar por Razón (orden fijo umbral → stop → cierre →
+            # overnight). Las 3 principales (umbral/stop/cierre) van SIEMPRE aunque tengan
+            # 0 días (así el filtro de stop loss está siempre disponible); overnight solo
+            # si aparece (es raro/dormido). La celda "Razón" es f"{icono} {label}", así que
+            # la reconstruimos para contar (badge) y filtrar por igualdad de esa columna.
             _reason_counts = summary_df["Razón"].value_counts().to_dict()
             _reason_opts, _reason_tag = [], {}
-            for _rk, _tag in (("100%_threshold", "umbral"), ("stop_loss", "stop"),
-                              ("session_end", "cierre"), ("overnight_1dte", "overnight")):
+            for _rk, _tag, _always in (("100%_threshold", "umbral", True),
+                                       ("stop_loss", "stop", True),
+                                       ("session_end", "cierre", True),
+                                       ("overnight_1dte", "overnight", False)):
                 _cell = f"{_REASON_ICONS.get(_rk, '•')} {_REASON_LABELS.get(_rk, _rk)}"
-                if _reason_counts.get(_cell, 0) > 0:
+                if _always or _reason_counts.get(_cell, 0) > 0:
                     _reason_opts.append(_cell)
                     _reason_tag[_cell] = _tag
 
