@@ -24,9 +24,15 @@ from adapter_polygon import PolygonAdapter
 
 
 class Downloader:
+    # Resolución de barras → (sufijo de cache, multiplier, timespan de Polygon).
+    RES = {"1min": ("", 1, "minute"), "30s": ("_30s", 30, "second"), "15s": ("_15s", 15, "second")}
+
     def __init__(self, adapter: PolygonAdapter, data_dir: Path):
         self.adapter = adapter
         self.data_dir = Path(data_dir)
+        # Resolución por defecto de las barras (underlying + opción). La setea la app antes
+        # de cada backtest (toggle 1 min / 30 s / 15 s); los hilos del batch solo la LEEN.
+        self.resolution = "1min"
         (self.data_dir / "underlying").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "chain").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "options").mkdir(parents=True, exist_ok=True)
@@ -53,12 +59,14 @@ class Downloader:
         df.to_parquet(tmp, index=False)
         os.replace(tmp, path)
 
-    def underlying(self, ticker: str, date: str, force: bool = False) -> pd.DataFrame:
-        path = self.data_dir / "underlying" / f"{ticker}_{date}.parquet"
+    def underlying(self, ticker: str, date: str, force: bool = False,
+                   resolution: Optional[str] = None) -> pd.DataFrame:
+        _sfx, _mult, _span = self.RES.get(resolution or self.resolution, ("", 1, "minute"))
+        path = self.data_dir / "underlying" / f"{ticker}_{date}{_sfx}.parquet"
         with self._lock_for(path):
             if path.exists() and not force:
                 return pd.read_parquet(path)
-            df = self.adapter.underlying_minute_bars(ticker, date)
+            df = self.adapter.underlying_minute_bars(ticker, date, _mult, _span)
             if not df.empty:
                 self._write_parquet(df, path)
             return df
@@ -73,13 +81,15 @@ class Downloader:
                 self._write_parquet(df, path)
             return df
 
-    def option(self, occ_symbol: str, date: str, force: bool = False) -> pd.DataFrame:
+    def option(self, occ_symbol: str, date: str, force: bool = False,
+               resolution: Optional[str] = None) -> pd.DataFrame:
+        _sfx, _mult, _span = self.RES.get(resolution or self.resolution, ("", 1, "minute"))
         safe = occ_symbol.replace(":", "_")
-        path = self.data_dir / "options" / f"{safe}_{date}.parquet"
+        path = self.data_dir / "options" / f"{safe}_{date}{_sfx}.parquet"
         with self._lock_for(path):
             if path.exists() and not force:
                 return pd.read_parquet(path)
-            df = self.adapter.option_minute_bars(occ_symbol, date)
+            df = self.adapter.option_minute_bars(occ_symbol, date, _mult, _span)
             if not df.empty:
                 self._write_parquet(df, path)
             return df

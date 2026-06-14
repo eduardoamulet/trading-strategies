@@ -82,11 +82,13 @@ class PolygonAdapter:
 
     # ---------- underlying ----------
 
-    def underlying_minute_bars(self, ticker: str, date: str) -> pd.DataFrame:
-        """1-min OHLCV for the underlying on `date` (YYYY-MM-DD), in America/New_York tz.
+    def underlying_minute_bars(self, ticker: str, date: str,
+                               mult: int = 1, span: str = "minute") -> pd.DataFrame:
+        """OHLCV del subyacente en `date` (YYYY-MM-DD), tz America/New_York, a la resolución
+        `mult`/`span` (default 1/minute; 30/second = barras de 30s; 15/second = 15s).
         Index tickers (SPX, VIX, ...) get prefixed with 'I:' as Polygon requires."""
         polygon_ticker = _aggs_ticker(ticker)
-        path = f"/v2/aggs/ticker/{polygon_ticker}/range/1/minute/{date}/{date}"
+        path = f"/v2/aggs/ticker/{polygon_ticker}/range/{mult}/{span}/{date}/{date}"
         data = self._get(path, {"adjusted": "true", "sort": "asc", "limit": 50000})
         return self._bars_to_df(data.get("results", []))
 
@@ -140,8 +142,9 @@ class PolygonAdapter:
 
     # ---------- option bars ----------
 
-    def option_minute_bars(self, occ_symbol: str, date: str) -> pd.DataFrame:
-        path = f"/v2/aggs/ticker/{occ_symbol}/range/1/minute/{date}/{date}"
+    def option_minute_bars(self, occ_symbol: str, date: str,
+                           mult: int = 1, span: str = "minute") -> pd.DataFrame:
+        path = f"/v2/aggs/ticker/{occ_symbol}/range/{mult}/{span}/{date}/{date}"
         data = self._get(path, {"adjusted": "true", "sort": "asc", "limit": 50000})
         return self._bars_to_df(data.get("results", []))
 

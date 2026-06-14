@@ -839,9 +839,29 @@ def _render_iters_panel(_iters_seed):
                        "tipo": str(_r.get("Tipo") or "").upper().strip(),
                        "criterio": _CRIT_KEY.get(str(_r.get("Criterio") or "").strip(), "spread")})
 
+    # Resolución (señales): 30s/15s solo si TODOS los tickers marcados tienen la data fina.
+    try:
+        import json as _json
+        _avail = set(_json.loads((Path(__file__).resolve().parent / "data" /
+                     "resolutions_available.json").read_text(encoding="utf-8")).get("tickers", []))
+    except Exception:
+        _avail = set()
+    _sig_res_ok = bool(_specs) and {s["ticker"] for s in _specs}.issubset(_avail)
+    _sig_res_opts = ["1 min"] + (["30 seg", "15 seg"] if _sig_res_ok else [])
+    if st.session_state.get("sig_res_lbl") not in _sig_res_opts:
+        st.session_state.pop("sig_res_lbl", None)
+    _sig_res_lbl = st.selectbox(
+        "Resolución de barras", _sig_res_opts, index=0, key="sig_res_lbl",
+        help="30s/15s solo si TODAS las señales marcadas son de tickers con data fina descargada.")
+    _sig_resolution = {"1 min": "1min", "30 seg": "30s", "15 seg": "15s"}[_sig_res_lbl]
+    if _specs and not _sig_res_ok:
+        _noav = sorted({s["ticker"] for s in _specs} - _avail)
+        st.caption(f"⏱️ Solo **1 min** disponible — {', '.join(_noav)} sin 30s/15s descargada.")
+
     if st.button(f"▶ Correr backtest de {len(_specs)} iteración(es)", type="primary",
                  disabled=not _specs, key="sig_run"):
         _dl = get_downloader(api_key)
+        _dl.resolution = _sig_resolution   # barras a la resolución elegida para esta corrida
         # Solo 0DTE: salteamos las señales SIN 0DTE ese día (no se intentan → no ensucian
         # los resultados con avisos "No 0 DTE option").
         _skipped = []
@@ -1092,6 +1112,36 @@ if ticker not in _cached_set:
         f"⚠ **{ticker}** no tiene cache local. Cada backtest va a bajar datos "
         f"de Polygon en vivo (lento, consume rate limit)."
     )
+
+
+# ── Resolución de barras (1 min / 30 seg / 15 seg) ──────────────────────────────
+@st.cache_data(ttl=20)
+def _subsec_tickers() -> set:
+    """Tickers con la data fina (30s/15s) PRE-DESCARGADA (options_replay/download_subsecond.py
+    escribe data/resolutions_available.json)."""
+    try:
+        import json as _json
+        _p = Path(__file__).resolve().parent / "data" / "resolutions_available.json"
+        return set(_json.loads(_p.read_text(encoding="utf-8")).get("tickers", []))
+    except Exception:
+        return set()
+
+
+_RES_LBL2KEY = {"1 min": "1min", "30 seg": "30s", "15 seg": "15s"}
+_res_ok = ticker in _subsec_tickers()
+_res_opts = ["1 min"] + (["30 seg", "15 seg"] if _res_ok else [])
+if st.session_state.get("bar_res_lbl") not in _res_opts:
+    st.session_state.pop("bar_res_lbl", None)
+_res_lbl = st.sidebar.selectbox(
+    "Resolución de barras", _res_opts, index=0, key="bar_res_lbl",
+    help="Granularidad de la tabla minuto a minuto y de los chequeos de salida/refuerzo. "
+         "30s/15s solo para tickers con la data fina descargada.")
+bar_resolution = _RES_LBL2KEY[_res_lbl]
+if not _res_ok:
+    st.sidebar.caption(f"⏱️ Para **{ticker}** solo hay acceso a información de **1 min** "
+                       f"(30s/15s no descargadas para este ticker).")
+get_downloader(api_key).resolution = bar_resolution   # los handlers comparten este downloader
+
 def_premium_min, def_premium_max = _defaults_for(ticker)
 
 # Info del ticker (Excel) + Rango óptimo Min/Max — todo dentro del expander.
@@ -2394,7 +2444,8 @@ def _build_display_df(it: IterationResult) -> pd.DataFrame:
         tdf["roi_dol_total"] = tdf["ref_value"] - tdf["ref_invested"]
     # Timestamp → solo hora:minuto (HH:MM). Cada iteración es de un día, así que
     # el string ordena bien al clickear el header.
-    tdf["timestamp"] = tdf["timestamp"].dt.strftime("%H:%M")
+    _sub_min = bool((tdf["timestamp"].dt.second != 0).any())   # 30s/15s → mostrar segundos
+    tdf["timestamp"] = tdf["timestamp"].dt.strftime("%H:%M:%S" if _sub_min else "%H:%M")
     # Marca con ➕ los minutos donde hubo un refuerzo (modo martingala).
     if getattr(it, "refuerzo", None) is not None:
         _tcol = tdf.columns.get_loc("timestamp")
@@ -2850,13 +2901,19 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
     # la tabla minuto a minuto). Las pestañas no anidan → se ve todo bien.
     _key_suffix = f"{date}_{it.iteration}"
     display_df = _build_display_df(it)
-    _step_min = 1
+    _step_sec = 60
     if getattr(it, "df", None) is not None and len(it.df) > 1:
-        _d = it.df["timestamp"].diff().dropna().dt.total_seconds().div(60).round()
+        _d = it.df["timestamp"].diff().dropna().dt.total_seconds().round()
         if len(_d):
-            _step_min = int(_d.median())
-    _tbl_title = ("📋 Tabla minuto a minuto" if _step_min <= 1
-                  else f"📋 Tabla (paso {_step_min} min)")
+            _step_sec = int(_d.median())
+    if _step_sec <= 20:
+        _tbl_title = "📋 Tabla 15 segundos a 15 segundos"
+    elif _step_sec <= 45:
+        _tbl_title = "📋 Tabla 30 segundos a 30 segundos"
+    elif _step_sec <= 90:
+        _tbl_title = "📋 Tabla minuto a minuto"
+    else:
+        _tbl_title = f"📋 Tabla (paso {_step_sec // 60} min)"
     _tab_ops, _tab_chain, _tab_chart, _tab_tbl = st.tabs([
         "📑 Operaciones",
         f"Strikes ({len(it.call_probes)}C · {len(it.put_probes)}P)",
