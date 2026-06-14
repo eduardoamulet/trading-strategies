@@ -2762,9 +2762,12 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         # esta tabla, no al backtest. Los quotes ya pedidos en el backtest no se re-piden.
         _quote_all = st.checkbox(
             "Cotizar toda la cadena (bid/ask de todos los strikes · más llamadas a la API)",
-            value=True, key=f"chain_qall_{_key_suffix}",
+            value=False, key=f"chain_qall_{_key_suffix}",
             help="Pide el bid/ask de TODOS los strikes probados, no solo los del rango de "
-                 "prima. La 1ª vez tarda unos segundos (después se cachea); solo toca esta tabla.")
+                 "prima. APAGADO por defecto: como los 4 tabs se renderizan juntos, cotizar la "
+                 "cadena entera (strikes fuera de rango, no cacheados) demoraba la apertura del "
+                 "detalle y de la tabla minuto a minuto. Tildalo cuando quieras ver la cadena "
+                 "completa — la 1ª vez tarda unos segundos y después se cachea; solo toca esta tabla.")
         _extra_q: dict = {}
         if _quote_all:
             _probes_all = ((list(it.call_probes) if _show_call else [])
