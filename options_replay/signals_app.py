@@ -221,28 +221,11 @@ if fdf.empty:
     st.info("No hay señales que cumplan los filtros seleccionados. "
             "Ajustá los filtros (por ej., bajá el **% Cumpl. mínimo**).")
     st.stop()
-_so1, _so2 = st.columns([2, 5], vertical_alignment="center")
-_sort_opt = _so1.selectbox(
-    "Ordenar por", ["Fecha (recientes)", "Fecha (antiguas)", "Acción", "% Cumpl."],
-    key="sig_sort", label_visibility="collapsed")
-# Acciones ARRIBA, a la derecha del filtro de orden (Ver / Eliminar). Este contenedor se
-# llena DESPUÉS de la tabla, cuando ya sabemos qué filas están seleccionadas.
-_acts_ph = _so2.container()
-if _sort_opt == "Fecha (recientes)":
-    fdf = fdf.sort_values(["fecha", "hora"], ascending=False)
-elif _sort_opt == "Fecha (antiguas)":
-    fdf = fdf.sort_values(["fecha", "hora"], ascending=True)
-elif _sort_opt == "Acción":
-    fdf = fdf.sort_values("symbol")
-elif _sort_opt == "% Cumpl.":
-    fdf = fdf.sort_values("probabilidad", ascending=False, na_position="last")
-fdf = fdf.reset_index(drop=True)
-
-# Al cambiar el orden, reseteamos la tabla (bump de key) → la selección de filas queda
-# alineada con el nuevo orden (y vacía).
-if st.session_state.get("_sig_sort_prev") != _sort_opt:
-    st.session_state["_sig_sort_prev"] = _sort_opt
-    st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+# Acciones ARRIBA (Ver / Eliminar). Este contenedor se llena DESPUÉS de la tabla, cuando
+# ya sabemos qué filas están seleccionadas.
+_acts_ph = st.container()
+# Orden FIJO: por fecha, las más recientes primero (se quitó el selector "Ordenar por").
+fdf = fdf.sort_values(["fecha", "hora"], ascending=False).reset_index(drop=True)
 
 # ── Navegación por FECHA ──────────────────────────────────────────────────────
 # El historial se mueve POR FECHA: se elige un día (dropdown o ◀/▶) y la tabla muestra
