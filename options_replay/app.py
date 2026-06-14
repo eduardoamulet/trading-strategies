@@ -2933,16 +2933,17 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
 
     with _tab_tbl:
         total_rows = len(display_df)
-        st.caption(f"{total_rows} filas · scrolleá DENTRO de la tabla (rueda sobre la tabla) para verlas todas.")
+        st.caption(f"{total_rows} fila(s)" + (" · scrolleá DENTRO de la tabla (rueda sobre la "
+                   "tabla) para verlas todas." if total_rows > 9 else "."))
         _styled_show = _style_display_df(
             display_df, it.exit_threshold_pct, getattr(it, "exit_metric", "total"),
             getattr(it, "stop_loss_pct", 1.0), it=it,
         )
-        # Alto FIJO ~360px (~10 filas): suficientemente BAJO para que TODA la grilla
-        # entre en el viewport (si fuera más alta que la ventana, su scroll interno
-        # "atrapa" la rueda y nunca se llega a las últimas filas). Con este alto, el
-        # scroll interno alcanza la última fila. SELECCIÓN (casillas) = "Ver Gráfico".
-        _mev = st.dataframe(_styled_show, use_container_width=True, height=360,
+        # Alto ADAPTATIVO: se ajusta a la cantidad de filas (sin ranuras vacías cuando hay
+        # pocas), con tope ~360px (~10 filas) para que las tablas largas (390 filas) entren
+        # en el viewport y el scroll interno alcance la última fila. SELECCIÓN = "Ver Gráfico".
+        _mev = st.dataframe(_styled_show, use_container_width=True,
+                            height=min(360, 38 + 35 * max(1, total_rows)),
                             on_select="rerun", selection_mode="multi-row",
                             key=f"mtable_{_key_suffix}")
         # "Temporalidad del gráfico": DEBAJO de la tabla, justo encima del gráfico.
