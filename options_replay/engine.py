@@ -764,12 +764,12 @@ def validate_0dte_session(downloader: Downloader, ticker: str, date: str) -> str
 def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, invest_put,
                        profit_target, loss_thr, max_refuerzos=2):
     """Martingala POR PIERNA del MISMO tipo. Abre CALL (invest_call) y PUT (invest_put).
-    Cada pierna es su PROPIA martingala: cuando el ROI de ESA pierna (sobre su propio
-    capital) cae a <= -loss_thr, se compra MÁS de la MISMA pierna (otro tranche del mismo
-    tipo al precio del minuto, invirtiendo de nuevo el capital INICIAL de esa pierna).
-    NUNCA compra la pierna contraria. Cada pierna refuerza hasta `max_refuerzos` veces.
-    Sale cuando el ROI TOTAL (ambas piernas juntas) >= profit_target ('100%_threshold')
-    o al cierre del día ('session_end'). Sin stop loss.
+    Disparador POR PIERNA: cada pierna mira SU PROPIO ROI. Cuando una (o ambas) cae a
+    <= -loss_thr, se refuerza la pierna que MÁS pierde (ROI más negativo) comprando otro
+    tranche de ESA misma pierna (mismo tipo, al precio del minuto, invirtiendo de nuevo su
+    capital inicial). NUNCA compra la pierna contraria. Cada pierna refuerza hasta
+    `max_refuerzos` veces. Sale cuando el ROI TOTAL (ambas piernas) >= profit_target
+    ('100%_threshold') o al cierre del día ('session_end'). Sin stop loss.
     Devuelve (exit_idx, exit_reason, roi[], value[], invested[], events[]), donde
     events = [{'idx': t, 'leg': 'CALL'|'PUT', 'price': px}, ...] (un evento por refuerzo)."""
     import numpy as np
@@ -798,18 +798,24 @@ def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, inve
             roi[t], value[t], invested[t] = r, v, inv
             exit_idx, exit_reason = t, "100%_threshold"
             break
-        # REFUERZO POR PIERNA: cada pierna mira SU propio ROI y compra más del MISMO tipo.
+        # REFUERZO POR PIERNA: cada pierna mira SU PROPIO ROI. Entre las que cayeron a
+        # <= -loss_thr (activas, comprables y bajo su tope), se refuerza la que MÁS pierde
+        # (ROI más negativo) comprando más del MISMO tipo. Nunca la contraria.
         croi = (cv - ci) / ci if ci > 0 else 0.0
         proi = (pv - pi) / pi if pi > 0 else 0.0
-        did = False
+        cand = []
         if invest_call > 0 and croi <= -loss_thr and c > 0.01 and n_call < max_refuerzos:
-            call_tr.append(float(c)); n_call += 1
-            events.append({"idx": t, "leg": "CALL", "price": float(c)}); did = True
+            cand.append(("CALL", croi, float(c)))
         if invest_put > 0 and proi <= -loss_thr and p > 0.01 and n_put < max_refuerzos:
-            put_tr.append(float(p)); n_put += 1
-            events.append({"idx": t, "leg": "PUT", "price": float(p)}); did = True
-        if did:                                              # recomputar con el tranche nuevo
-            cv, ci = _leg(c, call_tr, invest_call)
+            cand.append(("PUT", proi, float(p)))
+        if cand:
+            leg, _, px = min(cand, key=lambda x: x[1])       # la pierna que MÁS pierde
+            if leg == "CALL":
+                call_tr.append(px); n_call += 1
+            else:
+                put_tr.append(px); n_put += 1
+            events.append({"idx": t, "leg": leg, "price": px})
+            cv, ci = _leg(c, call_tr, invest_call)           # recomputar con el tranche nuevo
             pv, pi = _leg(p, put_tr, invest_put)
             v, inv = cv + pv, ci + pi
             r = (v - inv) / inv if inv > 0 else 0.0

@@ -821,8 +821,8 @@ def _render_iters_panel(_iters_seed):
     _sig_stop = float(_sp3.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
     _sig_refuerzo = float(_sp4.number_input(
         "Umbral pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0, step=5.0,
-        key="sig_refuerzo", help="Solo para filas 'CALL y PUT (Refuerzo)'. % de pérdida de UNA "
-                                 "pierna que dispara comprar más de ESA misma pierna (mismo tipo).")) / 100.0
+        key="sig_refuerzo", help="Solo para filas 'CALL y PUT (Refuerzo)'. % de pérdida de una pierna "
+                                 "que dispara reforzar la pierna que más pierde (mismo tipo).")) / 100.0
     _sig_refuerzo_max = int(_sp5.number_input(
         "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
         help="Solo para filas 'CALL y PUT (Refuerzo)'. Máximo de refuerzos POR PIERNA (CALL y PUT cuentan aparte)."))
@@ -1566,11 +1566,11 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
                       "**combinada por ROI total** (Umbral de ROI / Stop loss sobre la suma de "
                       "las dos). Termina al umbral, al stop o al cierre del día.",
         "CALL y PUT (Refuerzo)": "🎯 **CALL y PUT (Refuerzo)** — martingala **por pierna**. Igual que "
-                                 "CALL y PUT (50/50) pero **sin stop loss**: cada pierna (CALL y PUT) "
-                                 "se vigila aparte y, cuando **su propio ROI cae a ≤ −Umbral de pérdida "
-                                 "refuerzo (%)**, compra **más de ESA misma pierna** (mismo tipo, nunca "
-                                 "la contraria) con su inversión inicial. Termina al **Umbral de ROI "
-                                 "(%)** total o al cierre del día.",
+                                 "CALL y PUT (50/50) pero **sin stop loss**: cada pierna mira su propio "
+                                 "ROI y, cuando cae a **≤ −Umbral de pérdida refuerzo (%)**, se refuerza "
+                                 "la **pierna que más pierde** comprando **más de ESA misma pierna** "
+                                 "(mismo tipo, nunca la contraria) con su inversión inicial. Termina al "
+                                 "**Umbral de ROI (%)** total o al cierre del día.",
         "CALL y PUT (plus)": "🎯 **CALL y PUT (plus)** — se compran ambas piernas (50/50) y se "
                              "venden las dos **solo en el Horario de salida** (sin Umbral de ROI ni "
                              "Stop loss). Termina al horario o al cierre del día.",
@@ -1589,14 +1589,14 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
     st.info(_MODE_DESC.get(_straddle_mode, ""))
 
     # Parámetro EXCLUSIVO de "CALL y PUT (Refuerzo)": % de pérdida de UNA pierna que dispara
-    # un refuerzo de esa MISMA pierna (más contratos del mismo tipo). Default 50.
+    # reforzar la pierna que MÁS pierde (más contratos del mismo tipo). Default 50.
     if is_refuerzo:
         _rc1, _rc2 = st.columns(2)
         refuerzo_loss_pct = _rc1.number_input(
             "Umbral de pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0,
             step=5.0, key="refuerzo_loss_pct",
-            help="Cuando el ROI de una pierna (CALL o PUT) cae a ≤ −este valor, compra más "
-                 "contratos de ESA misma pierna con su inversión inicial (nunca la contraria).")
+            help="Cuando el ROI de una pierna (CALL o PUT) cae a ≤ −este valor, se refuerza la "
+                 "pierna que más pierde con más contratos de ESA misma pierna (nunca la contraria).")
         refuerzo_max = int(_rc2.number_input(
             "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="refuerzo_max",
             help="Máximo de refuerzos POR PIERNA (CALL y PUT cuentan aparte). Al alcanzarlo, esa "
