@@ -1156,11 +1156,11 @@ else:
 # Default = ayer, ajustado al último día hábil de mercado (si ayer fue sábado,
 # domingo o feriado US, retrocede al viernes hábil anterior).
 default_date = _last_open_market_day(date_cls.today() - timedelta(days=1))
-# Default para "Fecha inicial" en modo rango: 10 meses atrás (calendario real,
-# vía pd.DateOffset que respeta longitudes de mes — no aproxima a 300 días).
-# También ajustado al último día hábil si cae en feriado/weekend.
+# Default para "Fecha inicial" en modo rango: 6 meses ANTES de la última fecha de
+# mercado abierto (`default_date`), vía pd.DateOffset (respeta longitudes de mes, no
+# aproxima a 180 días) y snap al último día hábil si cae en feriado/weekend.
 default_start_date = _last_open_market_day(
-    (pd.Timestamp.today() - pd.DateOffset(months=10)).date()
+    (pd.Timestamp(default_date) - pd.DateOffset(months=6)).date()
 )
 
 # El header "Parámetros de sesión", los time_input "Inicio/Fin" y el radio
@@ -1224,7 +1224,7 @@ with st.sidebar.expander("Parámetros de sesión", expanded=True):
             format="YYYY-MM-DD",
             key="sel_fecha_inicial",
             on_change=_reset_hora_on_date_change,
-            help=f"Fecha de inicio del rango (inclusiva). Default: 10 meses atrás ({default_start_date}).",
+            help=f"Fecha de inicio del rango (inclusiva). Default: 6 meses antes de la última fecha de mercado ({default_start_date}).",
         )
         # Robustez: la final NO puede ser < inicial. Si la guardada quedó anterior a
         # la inicial (porque el usuario movió la inicial más adelante), la subimos a
