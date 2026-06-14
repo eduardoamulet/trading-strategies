@@ -821,11 +821,11 @@ def _render_iters_panel(_iters_seed):
     _sig_stop = float(_sp3.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
     _sig_refuerzo = float(_sp4.number_input(
         "Umbral pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0, step=5.0,
-        key="sig_refuerzo", help="Solo para filas con Tipo 'CALL y PUT (Refuerzo)'. % de pérdida "
-                                 "del capital total que dispara un refuerzo (otro CALL+PUT).")) / 100.0
+        key="sig_refuerzo", help="Solo para filas 'CALL y PUT (Refuerzo)'. % de pérdida de UNA "
+                                 "pierna que dispara comprar más de ESA misma pierna (mismo tipo).")) / 100.0
     _sig_refuerzo_max = int(_sp5.number_input(
         "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
-        help="Solo para filas 'CALL y PUT (Refuerzo)'. Máximo de refuerzos por iteración."))
+        help="Solo para filas 'CALL y PUT (Refuerzo)'. Máximo de refuerzos POR PIERNA (CALL y PUT cuentan aparte)."))
 
     _specs = []
     for _, _r in _ed.iterrows():
@@ -1565,11 +1565,12 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
         "CALL y PUT": "🎯 **CALL y PUT** — se compran ambas piernas (50/50) y la salida es "
                       "**combinada por ROI total** (Umbral de ROI / Stop loss sobre la suma de "
                       "las dos). Termina al umbral, al stop o al cierre del día.",
-        "CALL y PUT (Refuerzo)": "🎯 **CALL y PUT (Refuerzo)** — martingala. Igual que CALL y PUT "
-                                 "(50/50) pero **sin stop loss**: cuando el ROI total cae a "
-                                 "**≤ −Umbral de pérdida refuerzo (%)**, compra otro CALL+PUT con la "
-                                 "**misma inversión inicial** (refuerzo, repetible). Termina al "
-                                 "**Umbral de ROI (%)** o al cierre del día.",
+        "CALL y PUT (Refuerzo)": "🎯 **CALL y PUT (Refuerzo)** — martingala **por pierna**. Igual que "
+                                 "CALL y PUT (50/50) pero **sin stop loss**: cada pierna (CALL y PUT) "
+                                 "se vigila aparte y, cuando **su propio ROI cae a ≤ −Umbral de pérdida "
+                                 "refuerzo (%)**, compra **más de ESA misma pierna** (mismo tipo, nunca "
+                                 "la contraria) con su inversión inicial. Termina al **Umbral de ROI "
+                                 "(%)** total o al cierre del día.",
         "CALL y PUT (plus)": "🎯 **CALL y PUT (plus)** — se compran ambas piernas (50/50) y se "
                              "venden las dos **solo en el Horario de salida** (sin Umbral de ROI ni "
                              "Stop loss). Termina al horario o al cierre del día.",
@@ -1587,19 +1588,19 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
     }
     st.info(_MODE_DESC.get(_straddle_mode, ""))
 
-    # Parámetro EXCLUSIVO de "CALL y PUT (Refuerzo)": % de pérdida del capital TOTAL que
-    # dispara un refuerzo (comprar otro CALL+PUT con la inversión inicial). Default 50.
+    # Parámetro EXCLUSIVO de "CALL y PUT (Refuerzo)": % de pérdida de UNA pierna que dispara
+    # un refuerzo de esa MISMA pierna (más contratos del mismo tipo). Default 50.
     if is_refuerzo:
         _rc1, _rc2 = st.columns(2)
         refuerzo_loss_pct = _rc1.number_input(
             "Umbral de pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0,
             step=5.0, key="refuerzo_loss_pct",
-            help="Cuando el ROI total cae a ≤ −este valor se compra otro CALL+PUT con la misma "
-                 "inversión inicial.")
+            help="Cuando el ROI de una pierna (CALL o PUT) cae a ≤ −este valor, compra más "
+                 "contratos de ESA misma pierna con su inversión inicial (nunca la contraria).")
         refuerzo_max = int(_rc2.number_input(
             "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="refuerzo_max",
-            help="Máximo de refuerzos por iteración. Al alcanzarlo, la posición aguanta hasta el "
-                 "Umbral de ROI o el cierre (no refuerza más)."))
+            help="Máximo de refuerzos POR PIERNA (CALL y PUT cuentan aparte). Al alcanzarlo, esa "
+                 "pierna aguanta hasta el Umbral de ROI o el cierre (no refuerza más)."))
     else:
         refuerzo_loss_pct = 50.0
         refuerzo_max = 2
@@ -2584,11 +2585,15 @@ def render_ops_report(it: IterationResult):
     if getattr(it, "refuerzo", None) is not None and it.refuerzo.get("n"):
         _entries = [(it.start_dt, float(it.call_entry_premium or 0),
                      float(it.put_entry_premium or 0), "Apertura")]
-        for _j, _i in enumerate(it.refuerzo.get("idxs", []), start=1):
+        # Cada refuerzo es de UNA pierna (mismo tipo): se compra SOLO esa pierna, la otra va en 0.
+        for _j, _ev in enumerate(it.refuerzo.get("events", []), start=1):
+            _i = int(_ev["idx"])
             if 0 <= _i < len(it.df):
                 _r = it.df.iloc[_i]
-                _entries.append((_r["timestamp"], float(_r["call_px"]), float(_r["put_px"]),
-                                 f"Refuerzo {_j}"))
+                _leg = _ev["leg"]
+                _ce = float(_r["call_px"]) if _leg == "CALL" else 0.0
+                _pe = float(_r["put_px"]) if _leg == "PUT" else 0.0
+                _entries.append((_r["timestamp"], _ce, _pe, f"Refuerzo {_j} ({_leg})"))
         _cx, _px = float(it.call_exit_premium), float(it.put_exit_premium)
         buy_lines, buy_total, nc_tot, np_tot = [], 0.0, 0, 0
         for _ts, _ce, _pe, _lbl in _entries:
@@ -2619,7 +2624,9 @@ def render_ops_report(it: IterationResult):
             sell_lines.append(f"- **CALL**: {nc_tot} contratos a ${_cx * 100:,.2f} = **${nc_tot * _cx * 100:,.2f}**")
         if np_tot:
             sell_lines.append(f"- **PUT**: {np_tot} contratos a ${_px * 100:,.2f} = **${np_tot * _px * 100:,.2f}**")
-        md = [f"**🟢 Compras** — apertura + {it.refuerzo['n']} refuerzo(s) · capital total ${it.invest_total:,.0f}",
+        _split = (f" ({it.refuerzo.get('n_call', 0)} CALL, {it.refuerzo.get('n_put', 0)} PUT)"
+                  if it.refuerzo.get("events") else "")
+        md = [f"**🟢 Compras** — apertura + {it.refuerzo['n']} refuerzo(s){_split} · capital total ${it.invest_total:,.0f}",
               *buy_lines, f"➡ **Total compra: ${buy_total:,.2f}**", "",
               f"**🔴 Venta (cierre @ {it.end_dt:%H:%M})** — se venden TODOS los contratos de todos los tranches",
               *sell_lines, f"➡ **Total venta: ${sell_total:,.2f}**", "",
@@ -2826,10 +2833,12 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
     if getattr(it, "refuerzo", None) and it.refuerzo.get("n"):
         _rtimes = [pd.Timestamp(it.df.iloc[_ri]["timestamp"]).strftime("%H:%M")
                    for _ri in it.refuerzo.get("idxs", []) if 0 <= _ri < len(it.df)]
+        _bsplit = (f" ({it.refuerzo.get('n_call', 0)} CALL, {it.refuerzo.get('n_put', 0)} PUT)"
+                   if it.refuerzo.get("events") else "")
         st.markdown(
             f"<div style='padding:8px 12px; background:#fff3cd; border:1px solid #ffe08a; "
             f"border-radius:6px; display:inline-block; margin-bottom:8px;'>"
-            f"➕ <b>{it.refuerzo['n']} refuerzo(s)</b> (martingala) — capital total "
+            f"➕ <b>{it.refuerzo['n']} refuerzo(s)</b>{_bsplit} (martingala, mismo tipo) — capital total "
             f"<b>${it.invest_total:,.0f}</b>. Comprados a las: <b>{', '.join(_rtimes) or '—'}</b> "
             f"<span style='color:#7a6000'>· también marcados con ➕ en la tabla minuto a minuto.</span>"
             f"</div>",
