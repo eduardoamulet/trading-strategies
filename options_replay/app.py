@@ -2382,6 +2382,12 @@ def _build_display_df(it: IterationResult) -> pd.DataFrame:
     # Timestamp → solo hora:minuto (HH:MM). Cada iteración es de un día, así que
     # el string ordena bien al clickear el header.
     tdf["timestamp"] = tdf["timestamp"].dt.strftime("%H:%M")
+    # Marca con ➕ los minutos donde hubo un refuerzo (modo martingala).
+    if getattr(it, "refuerzo", None) is not None:
+        _tcol = tdf.columns.get_loc("timestamp")
+        for _ri in it.refuerzo.get("idxs", []):
+            if 0 <= _ri < len(tdf):
+                tdf.iat[_ri, _tcol] = f"{tdf.iat[_ri, _tcol]} ➕"
     return tdf.rename(columns={
         "timestamp": "Minuto",
         "spot": "Spot",
@@ -3055,8 +3061,10 @@ def _render_signals_session(rs):
         _roi_pct = (it.gain_total / it.invest_total) if it.invest_total else 0.0
         _pct_part = (f":green[▲ {abs(_roi_pct):.1%}]" if it.gain_total >= 0
                      else f":red[▼ {abs(_roi_pct):.1%}]")
+        _ref_part = (f"  ·  ➕ {it.refuerzo['n']} refuerzo(s)"
+                     if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
         _title = (f"{_icon} {r['ticker']} {r['tipo']}  ·  {r['fecha']} {r['hora']}  ·  "
-                  f"{_reason}  ·  Ganancia: {_gp} ({_pct_part})")
+                  f"{_reason}  ·  Ganancia: {_gp} ({_pct_part}){_ref_part}")
         with st.expander(_title, expanded=(len(oks) == 1)):
             st.markdown(f"**{r['ticker']} — {r['fecha']}  ·  0 DTE  ·  Ventana 09:30–16:00**")
             render_iteration(it, r["ticker"], r["fecha"])
@@ -3198,6 +3206,7 @@ if _mode == "range":
                     "Entrada": it.start_dt.strftime("%H:%M"),
                     "Salida": it.end_dt.strftime("%H:%M"),
                     "Razón": _reason_cell,
+                    "Refuerzos": (it.refuerzo["n"] if getattr(it, "refuerzo", None) else 0),
                     # === Columnas nuevas de Predicción Apertura ===
                     "Predicción": _pred_str,
                     "Mode": _mode_str,
@@ -3229,6 +3238,10 @@ if _mode == "range":
             if "Fallback" in summary_df.columns and \
                not summary_df["Fallback"].astype(str).str.strip().ne("").any():
                 summary_df = summary_df.drop(columns=["Fallback"])
+            # Si NINGÚN día usó refuerzo (no fue el Tipo "CALL y PUT (Refuerzo)"), ocultar
+            # la columna para no ensuciar el resumen con ceros.
+            if "Refuerzos" in summary_df.columns and int(summary_df["Refuerzos"].sum()) == 0:
+                summary_df = summary_df.drop(columns=["Refuerzos"])
 
             # Filtro por ROI — mantiene "ROI ($) acumulado" sobre la vista
             # original (no se recalcula sobre el subset, para que siga reflejando
@@ -3425,9 +3438,11 @@ if _mode == "range":
             _pct_part = (f":green[▲ {abs(_roi_pct):.1%}]" if it.gain_total >= 0
                          else f":red[▼ {abs(_roi_pct):.1%}]")
             _fb_tag = "  ·  ⚠ fallback" if (it.call_fallback or it.put_fallback) else ""
+            _ref_tag = (f"  ·  ➕ {it.refuerzo['n']} refuerzo(s)"
+                        if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
             _exp_title = (
                 f"{_icon} {sel_fecha}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M}  ·  "
-                f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}"
+                f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}{_ref_tag}"
             )
             with st.expander(_exp_title, expanded=False):
                 render_iteration(it, ticker_str, sel_run["date"])
@@ -3502,9 +3517,11 @@ for it in iterations:
     _fb_tag = ""
     if getattr(it, "call_fallback", False) or getattr(it, "put_fallback", False):
         _fb_tag = "  ·  ⚠ fallback"
+    _ref_tag = (f"  ·  ➕ {it.refuerzo['n']} refuerzo(s)"
+                if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
     _exp_title = (
         f"{_icon} Iteración {it.iteration}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M}  ·  "
-        f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}"
+        f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}{_ref_tag}"
     )
     with st.expander(_exp_title, expanded=False):
         render_iteration(it, ticker_str, date_str)
