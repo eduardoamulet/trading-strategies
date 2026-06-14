@@ -3191,9 +3191,28 @@ if _mode == "range":
             # el backtest real).
             _n_pos = int((summary_df["ROI (%)"] >= 0).sum())
             _n_neg = int((summary_df["ROI (%)"] < 0).sum())
+
+            # Opciones extra: filtrar por Razón. Una opción por cada motivo PRESENTE
+            # en los resultados (orden fijo umbral → stop → cierre → overnight). La
+            # celda "Razón" es f"{icono} {label}", así que la reconstruimos para
+            # contar (badge) y para filtrar por igualdad de esa columna.
+            _reason_counts = summary_df["Razón"].value_counts().to_dict()
+            _reason_opts, _reason_tag = [], {}
+            for _rk, _tag in (("100%_threshold", "umbral"), ("stop_loss", "stop"),
+                              ("session_end", "cierre"), ("overnight_1dte", "overnight")):
+                _cell = f"{_REASON_ICONS.get(_rk, '•')} {_REASON_LABELS.get(_rk, _rk)}"
+                if _reason_counts.get(_cell, 0) > 0:
+                    _reason_opts.append(_cell)
+                    _reason_tag[_cell] = _tag
+
+            _filter_options = ["Todas", "ROI ≥ 0", "ROI < 0"] + _reason_opts
+            # Si la selección guardada ya no figura entre las opciones (otro backtest
+            # con distintos motivos), borrarla → el radio cae a "Todas" (index=0).
+            if st.session_state.get("batch_roi_filter") not in _filter_options:
+                st.session_state.pop("batch_roi_filter", None)
             _roi_filter = st.radio(
                 "Filtrar filas",
-                options=["Todas", "ROI ≥ 0", "ROI < 0"],
+                options=_filter_options,
                 index=0,
                 horizontal=True,
                 key="batch_roi_filter",
@@ -3201,12 +3220,14 @@ if _mode == "range":
                     "Todas": f"Todas ({len(summary_df)})",
                     "ROI ≥ 0": f"ROI ≥ 0 ({_n_pos})",
                     "ROI < 0": f"ROI < 0 ({_n_neg})",
-                }[o],
+                }.get(o, f"{o} ({_reason_counts.get(o, 0)})"),
             )
             if _roi_filter == "ROI ≥ 0":
                 view_df = summary_df[summary_df["ROI (%)"] >= 0].copy()
             elif _roi_filter == "ROI < 0":
                 view_df = summary_df[summary_df["ROI (%)"] < 0].copy()
+            elif _roi_filter in _reason_opts:
+                view_df = summary_df[summary_df["Razón"] == _roi_filter].copy()
             else:
                 view_df = summary_df.copy()
 
@@ -3306,7 +3327,8 @@ if _mode == "range":
 
             # Descarga CSV / Excel del resumen — exporta SOLO las filas que pasan
             # el filtro de ROI (Todas / ROI ≥ 0 / ROI < 0), es decir `view_df`.
-            _filter_tag = {"ROI ≥ 0": "ROIpos", "ROI < 0": "ROIneg"}.get(_roi_filter, "todas")
+            _filter_tag = {"ROI ≥ 0": "ROIpos", "ROI < 0": "ROIneg"}.get(
+                _roi_filter, _reason_tag.get(_roi_filter, "todas"))
             _export_name = (
                 f"{ticker_str}_backtest_{replay_state['date_start']}_"
                 f"{replay_state['date_end']}_{_filter_tag}"
