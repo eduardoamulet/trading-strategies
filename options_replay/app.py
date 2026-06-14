@@ -2748,6 +2748,38 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
     with _tab_ops:
         render_ops_report(it)
 
+    # La tabla minuto a minuto se construye ANTES que la cadena (que cotiza por red la 1ª
+    # vez): como st.tabs ejecuta todos los tabs en orden de código, ponerla acá hace que
+    # aparezca rápido aunque la cadena esté cotizando en su propio tab.
+    with _tab_tbl:
+        total_rows = len(display_df)
+        st.caption(f"{total_rows} fila(s)" + (" · scrolleá DENTRO de la tabla (rueda sobre la "
+                   "tabla) para verlas todas." if total_rows > 9 else "."))
+        _styled_show = _style_display_df(
+            display_df, it.exit_threshold_pct, getattr(it, "exit_metric", "total"),
+            getattr(it, "stop_loss_pct", 1.0), it=it,
+        )
+        # Alto ADAPTATIVO: se ajusta a la cantidad de filas (sin ranuras vacías cuando hay
+        # pocas), con tope ~360px (~10 filas) para que las tablas largas (390 filas) entren
+        # en el viewport y el scroll interno alcance la última fila. SELECCIÓN = "Ver Gráfico".
+        _mev = st.dataframe(_styled_show, use_container_width=True,
+                            height=min(360, 38 + 35 * max(1, total_rows)),
+                            on_select="rerun", selection_mode="multi-row",
+                            key=f"mtable_{_key_suffix}")
+        # "Temporalidad del gráfico": DEBAJO de la tabla, justo encima del gráfico.
+        _tf = st.selectbox(
+            "Temporalidad del gráfico", list(_LWC_TF.keys()), index=2, key=f"tf_{_key_suffix}",
+            help="Marcá una o más FILAS (minutos) con la casilla de la izquierda → se dibuja "
+                 "el gráfico de esa zona (mismo ticker/fecha) a esta temporalidad.")
+        _msel = sorted(_mev.selection.rows) if (_mev and _mev.selection) else []
+        for _ri in _msel[:4]:   # hasta 4 gráficos a la vez (evita recargar de más)
+            _hora = str(display_df.iloc[_ri]["Minuto"])
+            st.markdown(f"**📈 Ver Gráfico — {ticker} · {date} · {_hora} · {_tf}**")
+            _render_lwc_chart(get_downloader(api_key), ticker, date, _hora, _tf,
+                              f"{_key_suffix}_{_ri}")
+        if len(_msel) > 4:
+            st.caption(f"Marcaste {len(_msel)} filas; muestro 4 gráficos para no recargar.")
+
     with _tab_chain:
         # Cadena de opciones estilo thinkorswim: CALLS (izq) · Strike (centro) · PUTS
         # (der). Orden: Last, Bid, Ask, Spread | Strike | Bid, Ask, Spread, Last.
@@ -2756,20 +2788,16 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
         _show_call = _it_mode != "put_only"
         _show_put = _it_mode != "call_only"
 
-        # Por defecto el motor solo cotiza (bid/ask) los strikes cuya prima cae en el
-        # rango de prima; el resto queda en "—". Con esta opción se pide el NBBO de TODOS
-        # los strikes probados (más llamadas a Polygon, pero se cachean). SOLO afecta a
-        # esta tabla, no al backtest. Los quotes ya pedidos en el backtest no se re-piden.
-        _quote_all = st.checkbox(
-            "Cotizar toda la cadena (bid/ask de todos los strikes · más llamadas a la API)",
-            value=False, key=f"chain_qall_{_key_suffix}",
-            help="Pide el bid/ask de TODOS los strikes probados, no solo los del rango de "
-                 "prima. APAGADO por defecto: como los 4 tabs se renderizan juntos, cotizar la "
-                 "cadena entera (strikes fuera de rango, no cacheados) demoraba la apertura del "
-                 "detalle y de la tabla minuto a minuto. Tildalo cuando quieras ver la cadena "
-                 "completa — la 1ª vez tarda unos segundos y después se cachea; solo toca esta tabla.")
-        _extra_q: dict = {}
-        if _quote_all:
+        # Cotizamos el NBBO de TODA la cadena (no solo los strikes del rango) y lo CACHEAMOS
+        # por iteración en session_state: se pide UNA sola vez (la 1ª vez que se abre este
+        # detalle) y los reruns/reaperturas lo leen del cache → instantáneo. Como además la
+        # tabla minuto a minuto se renderiza ANTES (más arriba en el código), este cotizado
+        # no demora lo que importa. Los quotes ya pedidos en el backtest (in-range) no se repiten.
+        _qcache_key = f"chain_extraq_{_key_suffix}"
+        if _qcache_key in st.session_state:
+            _extra_q = st.session_state[_qcache_key]
+        else:
+            _extra_q = {}
             _probes_all = ((list(it.call_probes) if _show_call else [])
                            + (list(it.put_probes) if _show_put else []))
             _need = [p for p in _probes_all
@@ -2784,10 +2812,11 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
                         return p.occ, q.get("bid"), q.get("ask")
                     except Exception:  # noqa: BLE001
                         return p.occ, None, None
-                with st.spinner(f"Cotizando {len(_need)} strikes…"):
+                with st.spinner(f"Cotizando la cadena ({len(_need)} strikes)… solo la 1ª vez"):
                     with ThreadPoolExecutor(max_workers=8) as _exq:
                         for _occ, _b, _a in _exq.map(_q1, _need):
                             _extra_q[_occ] = (_b, _a)
+            st.session_state[_qcache_key] = _extra_q
 
         def _leg_df(probes, s):
             def _ba(p):
@@ -2894,35 +2923,6 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
 
     with _tab_chart:
         st.plotly_chart(build_chart(it), use_container_width=True, key=f"chart_iter_{_key_suffix}")
-
-    with _tab_tbl:
-        total_rows = len(display_df)
-        st.caption(f"{total_rows} fila(s)" + (" · scrolleá DENTRO de la tabla (rueda sobre la "
-                   "tabla) para verlas todas." if total_rows > 9 else "."))
-        _styled_show = _style_display_df(
-            display_df, it.exit_threshold_pct, getattr(it, "exit_metric", "total"),
-            getattr(it, "stop_loss_pct", 1.0), it=it,
-        )
-        # Alto ADAPTATIVO: se ajusta a la cantidad de filas (sin ranuras vacías cuando hay
-        # pocas), con tope ~360px (~10 filas) para que las tablas largas (390 filas) entren
-        # en el viewport y el scroll interno alcance la última fila. SELECCIÓN = "Ver Gráfico".
-        _mev = st.dataframe(_styled_show, use_container_width=True,
-                            height=min(360, 38 + 35 * max(1, total_rows)),
-                            on_select="rerun", selection_mode="multi-row",
-                            key=f"mtable_{_key_suffix}")
-        # "Temporalidad del gráfico": DEBAJO de la tabla, justo encima del gráfico.
-        _tf = st.selectbox(
-            "Temporalidad del gráfico", list(_LWC_TF.keys()), index=2, key=f"tf_{_key_suffix}",
-            help="Marcá una o más FILAS (minutos) con la casilla de la izquierda → se dibuja "
-                 "el gráfico de esa zona (mismo ticker/fecha) a esta temporalidad.")
-        _msel = sorted(_mev.selection.rows) if (_mev and _mev.selection) else []
-        for _ri in _msel[:4]:   # hasta 4 gráficos a la vez (evita recargar de más)
-            _hora = str(display_df.iloc[_ri]["Minuto"])
-            st.markdown(f"**📈 Ver Gráfico — {ticker} · {date} · {_hora} · {_tf}**")
-            _render_lwc_chart(get_downloader(api_key), ticker, date, _hora, _tf,
-                              f"{_key_suffix}_{_ri}")
-        if len(_msel) > 4:
-            st.caption(f"Marcaste {len(_msel)} filas; muestro 4 gráficos para no recargar.")
 
     dc = st.columns(2)
     csv_bytes = display_df.to_csv(index=False).encode("utf-8")
