@@ -2529,6 +2529,58 @@ def render_ops_report(it: IterationResult):
     """Reporte de operaciones de la iteración: contratos comprados/vendidos por
     pierna, comisión, ganancia neta y ROI. Los contratos se calculan como
     enteros = inversión // (prima_entrada × 100)."""
+    # ── Modo "CALL y PUT (Refuerzo)" (martingala): reportar TODOS los tranches ──
+    if getattr(it, "refuerzo", None) is not None and it.refuerzo.get("n"):
+        _entries = [(it.start_dt, float(it.call_entry_premium or 0),
+                     float(it.put_entry_premium or 0), "Apertura")]
+        for _j, _i in enumerate(it.refuerzo.get("idxs", []), start=1):
+            if 0 <= _i < len(it.df):
+                _r = it.df.iloc[_i]
+                _entries.append((_r["timestamp"], float(_r["call_px"]), float(_r["put_px"]),
+                                 f"Refuerzo {_j}"))
+        _cx, _px = float(it.call_exit_premium), float(it.put_exit_premium)
+        buy_lines, buy_total, nc_tot, np_tot = [], 0.0, 0, 0
+        for _ts, _ce, _pe, _lbl in _entries:
+            _t = pd.Timestamp(_ts).strftime("%H:%M")
+            _parts, _lc = [], 0.0
+            if _ce > 0:
+                _n = int(it.invest_call // (_ce * 100.0))
+                if _n > 0:
+                    _b = _n * _ce * 100.0; buy_total += _b; nc_tot += _n; _lc += _b
+                    _parts.append(f"CALL {_n}×${_ce * 100:,.2f}")
+            if _pe > 0:
+                _n = int(it.invest_put // (_pe * 100.0))
+                if _n > 0:
+                    _b = _n * _pe * 100.0; buy_total += _b; np_tot += _n; _lc += _b
+                    _parts.append(f"PUT {_n}×${_pe * 100:,.2f}")
+            buy_lines.append(f"- **{_lbl}** ({_t}): {' · '.join(_parts) or 'sin contratos'} = **${_lc:,.2f}**")
+        total_contracts = nc_tot + np_tot
+        if total_contracts == 0:
+            st.info("La inversión no alcanza para 1 contrato entero. Aumentá la inversión.")
+            return
+        sell_total = nc_tot * _cx * 100.0 + np_tot * _px * 100.0
+        commission = COMMISSION_PER_CONTRACT * total_contracts
+        net = sell_total - buy_total - commission
+        roi = (net / buy_total * 100.0) if buy_total else 0.0
+        _ok = "✅" if net >= 0 else "🔻"
+        sell_lines = []
+        if nc_tot:
+            sell_lines.append(f"- **CALL**: {nc_tot} contratos a ${_cx * 100:,.2f} = **${nc_tot * _cx * 100:,.2f}**")
+        if np_tot:
+            sell_lines.append(f"- **PUT**: {np_tot} contratos a ${_px * 100:,.2f} = **${np_tot * _px * 100:,.2f}**")
+        md = [f"**🟢 Compras** — apertura + {it.refuerzo['n']} refuerzo(s) · capital total ${it.invest_total:,.0f}",
+              *buy_lines, f"➡ **Total compra: ${buy_total:,.2f}**", "",
+              f"**🔴 Venta (cierre @ {it.end_dt:%H:%M})** — se venden TODOS los contratos de todos los tranches",
+              *sell_lines, f"➡ **Total venta: ${sell_total:,.2f}**", "",
+              f"**💸 Comisión** · ${COMMISSION_PER_CONTRACT:.2f}/contrato × {total_contracts} contratos = **${commission:,.2f}**", "",
+              f"**Ganancia neta** · ${sell_total:,.2f} − ${buy_total:,.2f} − ${commission:,.2f} = {_ok} **${net:,.2f}**",
+              f"**ROI** · (${net:,.2f} ÷ ${buy_total:,.2f}) × 100 = {_ok} **{roi:+.1f}%**"]
+        st.markdown("\n".join(md))
+        st.caption("Refuerzo (martingala): cada compra es un tranche CALL+PUT con la misma inversión "
+                   "inicial, a su precio de entrada; al cierre se venden todos. Contratos enteros + "
+                   "comisión → puede diferir levemente de la 'Ganancia total' de arriba.")
+        return
+
     mode = getattr(it, "mode", "both")
     legs = []
     if mode != "put_only" and it.call_entry_premium > 0:
