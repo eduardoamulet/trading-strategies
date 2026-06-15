@@ -97,22 +97,54 @@ def _max_spread_for_price(spot: float, cfg: dict) -> float:
         spot, buckets=cfg.get("buckets", []), override=cfg.get("_max_spread_override"))
 
 
-# Opción 1 ("menor spread"): rango [min, max] de spread permitido según el STRIKE (regla
-# del usuario). Sus valores son POR CONTRATO (×100); acá en $ de prima por ACCIÓN (÷100).
-# Rechaza tanto lo más ancho que el máx como lo más angosto que el mín. None = strike
-# fuera de los buckets definidos → cae a la compuerta por precio del subyacente.
-_STRIKE_SPREAD_RANGE = (
+# Opción 1 ("menor spread"): rango [min, max] de spread permitido según el STRIKE. Los
+# valores viven en strike_spread_config.json (editable desde la sección Configuración de la
+# UI), NO hardcodeados. Rechaza tanto lo más ancho que el máx como lo más angosto que el mín.
+# None = strike fuera de los buckets → cae a la compuerta por precio del subyacente.
+# Default (fallback si el JSON falta/corrupto). Por ACCIÓN (= POR CONTRATO ÷100).
+_DEFAULT_STRIKE_SPREAD = (
     (100.0, 300.0, 0.01, 0.05),    # strike $100–300  → spread $1–5  por contrato
-    (300.0, 600.0, 0.06, 0.10),    # strike $300–600  → spread $6–10
-    (600.0, 1200.0, 0.11, 0.25),   # strike $600–1200 → spread $11–25
+    (301.0, 600.0, 0.06, 0.10),    # strike $301–600  → spread $6–10
+    (601.0, 1200.0, 0.11, 0.25),   # strike $601–1200 → spread $11–25
 )
+_STRIKE_SPREAD_PATH = _Path(__file__).parent / "strike_spread_config.json"
+_strike_cfg_cache: dict = {"mtime": None, "buckets": None}
+
+
+def load_strike_spread_config() -> list:
+    """Buckets (strike_min, strike_max, spread_min_acción, spread_max_acción) desde
+    strike_spread_config.json (sus 'spread_*_contrato' van ÷100 → por acción). Cache por
+    mtime: la UI edita el JSON y el siguiente backtest lo toma sin reiniciar. enabled=False
+    → lista vacía (sin filtro por strike; cae a la compuerta por precio)."""
+    try:
+        mt = _STRIKE_SPREAD_PATH.stat().st_mtime
+    except OSError:
+        mt = None
+    if _strike_cfg_cache["buckets"] is not None and _strike_cfg_cache["mtime"] == mt:
+        return _strike_cfg_cache["buckets"]
+    buckets = list(_DEFAULT_STRIKE_SPREAD)
+    if mt is not None:
+        try:
+            with _STRIKE_SPREAD_PATH.open(encoding="utf-8") as f:
+                data = _json.load(f)
+            if not data.get("enabled", True):
+                buckets = []
+            else:
+                buckets = [(float(b["strike_min"]), float(b["strike_max"]),
+                            float(b["spread_min_contrato"]) / 100.0,
+                            float(b["spread_max_contrato"]) / 100.0)
+                           for b in data.get("buckets", [])]
+        except Exception:
+            buckets = list(_DEFAULT_STRIKE_SPREAD)
+    _strike_cfg_cache.update(mtime=mt, buckets=buckets)
+    return buckets
 
 
 def _strike_spread_range(strike: float):
-    """(min, max) de spread por acción permitido para ese strike, o None si está fuera
-    de los buckets definidos."""
-    for _lo, _hi, _smin, _smax in _STRIKE_SPREAD_RANGE:
-        if _lo <= strike < _hi:
+    """(min, max) de spread por acción permitido para ese strike (de la config), o None si
+    está fuera de los buckets → cae a la compuerta por precio del subyacente."""
+    for _lo, _hi, _smin, _smax in load_strike_spread_config():
+        if _lo <= strike <= _hi:
             return (_smin, _smax)
     return None
 
