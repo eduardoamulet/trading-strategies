@@ -9,13 +9,13 @@
       "spread_max_contrato": 5.0
     },
     {
-      "strike_min": 301.0,
+      "strike_min": 300.0,
       "strike_max": 600.0,
       "spread_min_contrato": 6.0,
       "spread_max_contrato": 10.0
     },
     {
-      "strike_min": 601.0,
+      "strike_min": 600.0,
       "strike_max": 1200.0,
       "spread_min_contrato": 11.0,
       "spread_max_contrato": 25.0

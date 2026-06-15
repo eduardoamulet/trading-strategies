@@ -103,9 +103,9 @@ def _max_spread_for_price(spot: float, cfg: dict) -> float:
 # None = strike fuera de los buckets → cae a la compuerta por precio del subyacente.
 # Default (fallback si el JSON falta/corrupto). Por ACCIÓN (= POR CONTRATO ÷100).
 _DEFAULT_STRIKE_SPREAD = (
-    (100.0, 300.0, 0.01, 0.05),    # strike $100–300  → spread $1–5  por contrato
-    (301.0, 600.0, 0.06, 0.10),    # strike $301–600  → spread $6–10
-    (601.0, 1200.0, 0.11, 0.25),   # strike $601–1200 → spread $11–25
+    (100.0, 300.0, 0.01, 0.05),    # 100 <= strike < 300   → spread $1–5  por contrato
+    (300.0, 600.0, 0.06, 0.10),    # 300 <= strike < 600   → spread $6–10
+    (600.0, 1200.0, 0.11, 0.25),   # 600 <= strike < 1200  → spread $11–25
 )
 _STRIKE_SPREAD_PATH = _Path(__file__).parent / "strike_spread_config.json"
 _strike_cfg_cache: dict = {"mtime": None, "buckets": None}
@@ -144,7 +144,7 @@ def _strike_spread_range(strike: float):
     """(min, max) de spread por acción permitido para ese strike (de la config), o None si
     está fuera de los buckets → cae a la compuerta por precio del subyacente."""
     for _lo, _hi, _smin, _smax in load_strike_spread_config():
-        if _lo <= strike <= _hi:
+        if _lo <= strike < _hi:          # medio-abierto [min, max) — spec: 100<=K<300, etc.
             return (_smin, _smax)
     return None
 
@@ -511,7 +511,7 @@ def _probe_premium_range(
 
     def _select(cands: list[StrikeProbe]) -> StrikeProbe:
         # Acá se decide CUÁL contrato se elige entre los candidatos:
-        #   "spread"    (opción 1): el de MENOR spread (desempate: cercano a ITM, mayor ASK).
+        #   "spread"    (opción 1): el de MENOR spread (desempate: MENOR ASK, luego el primero).
         #   "value"     (opción 2 vieja): IGNORA el spread; el de prima de entrada MÁS
         #               CERCANA a value_target ($2 default), igual CALL y PUT. Desempate: ITM.
         #   "itm_first" (opción 2): IGNORA el spread; el MÁS CERCANO a ITM (menor itm_depth
