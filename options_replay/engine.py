@@ -815,8 +815,8 @@ def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, inve
     Disparador POR PIERNA: cada pierna mira SU PROPIO ROI. Cuando una (o ambas) cae a
     <= -loss_thr, se refuerza la pierna que MÁS pierde (ROI más negativo) comprando otro
     tranche de ESA misma pierna (mismo tipo, al precio del minuto, invirtiendo de nuevo su
-    capital inicial). NUNCA compra la pierna contraria. Cada pierna refuerza hasta
-    `max_refuerzos` veces. Sale cuando el ROI TOTAL (ambas piernas) >= profit_target
+    capital inicial). NUNCA compra la pierna contraria. El tope `max_refuerzos` es TOTAL
+    (cuenta ambas piernas juntas). Sale cuando el ROI TOTAL (ambas piernas) >= profit_target
     ('100%_threshold') o al cierre del día ('session_end'). Sin stop loss.
     Devuelve (exit_idx, exit_reason, roi[], value[], invested[], events[]), donde
     events = [{'idx': t, 'leg': 'CALL'|'PUT', 'price': px}, ...] (un evento por refuerzo)."""
@@ -828,7 +828,6 @@ def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, inve
     put_tr = [float(put_entry)]              # idem PUT (cada pierna lleva su propia lista)
     roi = np.zeros(n); value = np.zeros(n); invested = np.zeros(n)
     events: list[dict] = []
-    n_call = n_put = 0
     exit_idx, exit_reason = n - 1, "session_end"
 
     def _leg(px, tranches, unit):
@@ -847,21 +846,19 @@ def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, inve
             exit_idx, exit_reason = t, "100%_threshold"
             break
         # REFUERZO POR PIERNA: cada pierna mira SU PROPIO ROI. Entre las que cayeron a
-        # <= -loss_thr (activas, comprables y bajo su tope), se refuerza la que MÁS pierde
-        # (ROI más negativo) comprando más del MISMO tipo. Nunca la contraria.
+        # <= -loss_thr (activas y comprables), se refuerza la que MÁS pierde (ROI más
+        # negativo) comprando más del MISMO tipo. Nunca la contraria. El tope `max_refuerzos`
+        # es TOTAL: cuenta los refuerzos de AMBAS piernas juntas (no por pierna).
         croi = (cv - ci) / ci if ci > 0 else 0.0
         proi = (pv - pi) / pi if pi > 0 else 0.0
         cand = []
-        if invest_call > 0 and croi <= -loss_thr and c > 0.01 and n_call < max_refuerzos:
+        if invest_call > 0 and croi <= -loss_thr and c > 0.01:
             cand.append(("CALL", croi, float(c)))
-        if invest_put > 0 and proi <= -loss_thr and p > 0.01 and n_put < max_refuerzos:
+        if invest_put > 0 and proi <= -loss_thr and p > 0.01:
             cand.append(("PUT", proi, float(p)))
-        if cand:
+        if cand and len(events) < max_refuerzos:             # tope TOTAL (ambas piernas juntas)
             leg, _, px = min(cand, key=lambda x: x[1])       # la pierna que MÁS pierde
-            if leg == "CALL":
-                call_tr.append(px); n_call += 1
-            else:
-                put_tr.append(px); n_put += 1
+            (call_tr if leg == "CALL" else put_tr).append(px)
             events.append({"idx": t, "leg": leg, "price": px})
             cv, ci = _leg(c, call_tr, invest_call)           # recomputar con el tranche nuevo
             pv, pi = _leg(p, put_tr, invest_put)

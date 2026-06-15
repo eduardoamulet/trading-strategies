@@ -834,7 +834,7 @@ def _render_iters_panel(_iters_seed):
                                  "que dispara reforzar la pierna que más pierde (mismo tipo).")) / 100.0
     _sig_refuerzo_max = int(_sp5.number_input(
         "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
-        help="Solo para filas 'CALL y PUT (Refuerzo)'. Máximo de refuerzos POR PIERNA (CALL y PUT cuentan aparte)."))
+        help="Solo para filas 'CALL y PUT (Refuerzo)'. Máximo de refuerzos por iteración (en total, sumando ambas piernas)."))
 
     _specs = []
     for _, _r in _ed.iterrows():
@@ -1608,8 +1608,8 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
                  "pierna que más pierde con más contratos de ESA misma pierna (nunca la contraria).")
         refuerzo_max = int(_rc2.number_input(
             "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="refuerzo_max",
-            help="Máximo de refuerzos POR PIERNA (CALL y PUT cuentan aparte). Al alcanzarlo, esa "
-                 "pierna aguanta hasta el Umbral de ROI o el cierre (no refuerza más)."))
+            help="Máximo de refuerzos por iteración (en total, sumando ambas piernas). Al alcanzarlo, "
+                 "la posición aguanta hasta el Umbral de ROI o el cierre (no refuerza más)."))
     else:
         refuerzo_loss_pct = 50.0
         refuerzo_max = 2
