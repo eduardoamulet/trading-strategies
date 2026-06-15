@@ -78,13 +78,15 @@ datos = st.Page("options_replay/update_status_app.py", title="Datos", icon="🔄
                 url_path="datos")
 tareas = st.Page("options_replay/tareas_app.py", title="Tareas", icon="🧰",
                  url_path="tareas")
+configuracion = st.Page("options_replay/configuracion_app.py", title="Configuración", icon="⚙️",
+                        url_path="configuracion")
 usuarios = st.Page("options_replay/usuarios_app.py", title="Usuarios", icon="👥",
                    url_path="usuarios")
 
 # ── 3) Navegación según rol ──────────────────────────────────────────────────
 nav = {
     "Menú": [dashboard, alertas, estrategias, activos, perfil, ayuda],
-    "Herramientas": [backtesting, live, registro, datos, tareas],
+    "Herramientas": [backtesting, live, registro, datos, tareas, configuracion],
 }
 if user.get("rol") == "admin":
     nav["Administración"] = [usuarios]

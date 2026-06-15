@@ -87,12 +87,21 @@ def get_market_hours(ticker: str) -> tuple[time_cls, time_cls]:
 
 
 @st.cache_data
-def load_ticker_info() -> dict:
+def _load_ticker_info_cached(_mtime: float) -> dict:
     if not TICKER_INFO_PATH.exists():
         return {}
     import json
     with TICKER_INFO_PATH.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_ticker_info() -> dict:
+    # mtime en la key del cache → al editar el JSON (sección Configuración) se re-lee solo.
+    try:
+        _mt = TICKER_INFO_PATH.stat().st_mtime
+    except OSError:
+        _mt = 0.0
+    return _load_ticker_info_cached(_mt)
 
 
 def load_api_key() -> str:

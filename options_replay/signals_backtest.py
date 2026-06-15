@@ -23,7 +23,26 @@ from engine import (NoMatchError, run_next_iteration, run_overnight_1dte,
 
 _HERE = _Path(__file__).parent
 _TI_PATH = _HERE / "ticker_info.json"
-TICKER_INFO = (_json.loads(_TI_PATH.read_text(encoding="utf-8")) if _TI_PATH.exists() else {})
+_TI_CACHE: dict = {"mtime": None, "data": {}}
+
+
+def _ticker_info() -> dict:
+    """ticker_info.json con caché por mtime: la sección Configuración lo edita y se re-lee
+    en el siguiente backtest sin reiniciar el proceso."""
+    try:
+        mt = _TI_PATH.stat().st_mtime
+    except OSError:
+        mt = None
+    if _TI_CACHE["mtime"] != mt:
+        try:
+            _TI_CACHE["data"] = _json.loads(_TI_PATH.read_text(encoding="utf-8")) if _TI_PATH.exists() else {}
+        except Exception:
+            _TI_CACHE["data"] = {}
+        _TI_CACHE["mtime"] = mt
+    return _TI_CACHE["data"]
+
+
+TICKER_INFO = _ticker_info()   # compat (carga inicial); premium_range usa _ticker_info() fresco
 
 REASON = {
     "100%_threshold": "Umbral de profit",
@@ -39,7 +58,7 @@ def to_ts(date_iso: str, t) -> pd.Timestamp:
 
 def premium_range(ticker: str):
     """Rango de prima (óptimo) por ticker desde ticker_info.json (÷100). Fallback 0.30–0.50."""
-    info = TICKER_INFO.get((ticker or "").upper(), {}) or {}
+    info = _ticker_info().get((ticker or "").upper(), {}) or {}
     lo = (info.get("min") / 100.0) if info.get("min") is not None else 0.30
     hi = (info.get("max") / 100.0) if info.get("max") is not None else 0.50
     return float(lo), float(hi if hi > lo else lo + 0.05)
