@@ -494,7 +494,10 @@ def _probe_premium_range(
                 else:
                     _r = _ask_spread_range(ask)
                     # RANGO por ASK: rechaza spread MÁS CHICO que el mín y MÁS ANCHO que el máx.
-                    spread_ok = (_r[0] <= spread <= _r[1]) if _r is not None else (spread <= max_spread)
+                    # round(...,2): el spread está en centavos; sin esto el ruido float (0.00999…
+                    # en vez de 0.01) rechaza un contrato que está JUSTO en el borde del bucket.
+                    _rs = round(spread, 2)
+                    spread_ok = (_r[0] <= _rs <= _r[1]) if _r is not None else (_rs <= max_spread)
             else:
                 spread_ok = spread <= max_spread
 
