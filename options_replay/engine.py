@@ -97,54 +97,59 @@ def _max_spread_for_price(spot: float, cfg: dict) -> float:
         spot, buckets=cfg.get("buckets", []), override=cfg.get("_max_spread_override"))
 
 
-# Opción 1 ("menor spread"): rango [min, max] de spread permitido según el STRIKE. Los
-# valores viven en strike_spread_config.json (editable desde la sección Configuración de la
-# UI), NO hardcodeados. Rechaza tanto lo más ancho que el máx como lo más angosto que el mín.
-# None = strike fuera de los buckets → cae a la compuerta por precio del subyacente.
-# Default (fallback si el JSON falta/corrupto). Por ACCIÓN (= POR CONTRATO ÷100).
-_DEFAULT_STRIKE_SPREAD = (
-    (100.0, 300.0, 0.01, 0.05),    # 100 <= strike < 300   → spread $1–5  por contrato
-    (300.0, 600.0, 0.06, 0.10),    # 300 <= strike < 600   → spread $6–10
-    (600.0, 1200.0, 0.11, 0.25),   # 600 <= strike < 1200  → spread $11–25
+# Opción 1 ("menor spread"): rango [min, max] de spread permitido según el PRECIO DEL
+# CONTRATO (ASK). Los valores viven en strike_spread_config.json (editable desde la sección
+# Configuración de la UI), NO hardcodeados. Rechaza tanto lo más ancho que el máx como lo más
+# angosto que el mín. None = ASK fuera de los buckets → cae a la compuerta por precio.
+# Default (fallback si el JSON falta/corrupto). Por ACCIÓN (= POR CONTRATO ÷100):
+# ASK $25–300/contrato = $0.25–3.00/acción, etc.
+_DEFAULT_ASK_SPREAD = (
+    (0.25, 3.00, 0.01, 0.05),    # ASK $25–300/contrato   → spread $1–5  por contrato
+    (3.00, 6.00, 0.06, 0.10),    # ASK $300–600/contrato  → spread $6–10
+    (6.00, 12.00, 0.11, 0.25),   # ASK $600–1200/contrato → spread $11–25
 )
-_STRIKE_SPREAD_PATH = _Path(__file__).parent / "strike_spread_config.json"
-_strike_cfg_cache: dict = {"mtime": None, "buckets": None}
+_ASK_SPREAD_PATH = _Path(__file__).parent / "strike_spread_config.json"
+_ask_cfg_cache: dict = {"mtime": None, "buckets": None}
 
 
-def load_strike_spread_config() -> list:
-    """Buckets (strike_min, strike_max, spread_min_acción, spread_max_acción) desde
-    strike_spread_config.json (sus 'spread_*_contrato' van ÷100 → por acción). Cache por
-    mtime: la UI edita el JSON y el siguiente backtest lo toma sin reiniciar. enabled=False
-    → lista vacía (sin filtro por strike; cae a la compuerta por precio)."""
+def load_ask_spread_config() -> list:
+    """Buckets (ask_min, ask_max, spread_min, spread_max) POR ACCIÓN, desde
+    strike_spread_config.json. Sus campos ('ask_min'/'ask_max' y 'spread_*_contrato') están
+    POR CONTRATO (×100) → se dividen ÷100 a por-acción. Cache por mtime: la UI edita el JSON y
+    el siguiente backtest lo toma sin reiniciar. enabled=False → lista vacía (sin filtro; cae a
+    la compuerta por precio). Compat: acepta 'strike_min'/'strike_max' de configs viejos."""
     try:
-        mt = _STRIKE_SPREAD_PATH.stat().st_mtime
+        mt = _ASK_SPREAD_PATH.stat().st_mtime
     except OSError:
         mt = None
-    if _strike_cfg_cache["buckets"] is not None and _strike_cfg_cache["mtime"] == mt:
-        return _strike_cfg_cache["buckets"]
-    buckets = list(_DEFAULT_STRIKE_SPREAD)
+    if _ask_cfg_cache["buckets"] is not None and _ask_cfg_cache["mtime"] == mt:
+        return _ask_cfg_cache["buckets"]
+    buckets = list(_DEFAULT_ASK_SPREAD)
     if mt is not None:
         try:
-            with _STRIKE_SPREAD_PATH.open(encoding="utf-8") as f:
+            with _ASK_SPREAD_PATH.open(encoding="utf-8") as f:
                 data = _json.load(f)
             if not data.get("enabled", True):
                 buckets = []
             else:
-                buckets = [(float(b["strike_min"]), float(b["strike_max"]),
+                buckets = [(float(b.get("ask_min", b.get("strike_min"))) / 100.0,
+                            float(b.get("ask_max", b.get("strike_max"))) / 100.0,
                             float(b["spread_min_contrato"]) / 100.0,
                             float(b["spread_max_contrato"]) / 100.0)
                            for b in data.get("buckets", [])]
         except Exception:
-            buckets = list(_DEFAULT_STRIKE_SPREAD)
-    _strike_cfg_cache.update(mtime=mt, buckets=buckets)
+            buckets = list(_DEFAULT_ASK_SPREAD)
+    _ask_cfg_cache.update(mtime=mt, buckets=buckets)
     return buckets
 
 
-def _strike_spread_range(strike: float):
-    """(min, max) de spread por acción permitido para ese strike (de la config), o None si
-    está fuera de los buckets → cae a la compuerta por precio del subyacente."""
-    for _lo, _hi, _smin, _smax in load_strike_spread_config():
-        if _lo <= strike < _hi:          # medio-abierto [min, max) — spec: 100<=K<300, etc.
+def _ask_spread_range(ask: float):
+    """(min, max) de spread por acción permitido para ese PRECIO DEL CONTRATO (ASK, por acción)
+    según la config, o None si el ASK está fuera de los buckets → cae a la compuerta por precio."""
+    if ask is None:
+        return None
+    for _lo, _hi, _smin, _smax in load_ask_spread_config():
+        if _lo <= ask < _hi:             # medio-abierto [min, max) — spec: $25<=ASK<$300, etc.
             return (_smin, _smax)
     return None
 
@@ -408,11 +413,11 @@ def _probe_premium_range(
     dentro del rango de prima, en 4 pasos:
     1-2. CASCADA por prima (filtrando por el ASK del NBBO): los que caen en el Rango
          Óptimo; si NINGUNO, los del Rango Extendido; si ninguno tampoco → no se compra.
-    3.   FILTRO DE SPREAD por strike sobre ESE set: se conservan los que tienen spread
-         (ask-bid) DENTRO del rango [mín,máx] de su bucket de strike (_strike_spread_range).
+    3.   FILTRO DE SPREAD por PRECIO DEL CONTRATO (ASK) sobre ESE set: se conservan los que
+         tienen spread (ask-bid) DENTRO del rango [mín,máx] del bucket de su ASK (_ask_spread_range).
          Un 'Spread máx' explícito (override) reemplaza el rango por un techo. Si ninguno
          cumple → no se compra (NO se cruza al otro tier).
-    4.   SELECCIÓN: el de MENOR spread; empate → MENOR ask; empate → el primero (orden por
+    4.   SELECCIÓN: el de MENOR spread; empate → MAYOR ask; empate → el primero (orden por
          cercanía a ATM). tier="optimo"/"extended".
     Otros criterios: "itm_first" (Opción 2 = el 1-ITM, ignora spread y rango) · "value"
     (prima ≈ value_target) · "itm" (legado, cascada previa).
@@ -431,9 +436,9 @@ def _probe_premium_range(
     spread_enabled = bool(spread_cfg.get("enable_spread_filter", True))
     max_spread = _max_spread_for_price(spot, spread_cfg) if spot is not None else float("inf")
     # Opción 1 = criterio "spread": filtra el rango de prima por el ASK del NBBO (no por el
-    # open del bar) y aplica la compuerta de spread como RANGO [mín,máx] por bucket de STRIKE
-    # (_strike_spread_range). Un 'Spread máx'/ceiling explícito (override) reemplaza el rango
-    # por un techo. Los demás criterios mantienen el flujo previo (rango por open, máx por precio).
+    # open del bar) y aplica la compuerta de spread como RANGO [mín,máx] por bucket de PRECIO
+    # DEL CONTRATO (ASK) (_ask_spread_range). Un 'Spread máx'/ceiling explícito (override)
+    # reemplaza el rango por un techo. Los demás criterios mantienen el flujo previo.
     _opt1 = (selection_criterion == "spread")
     _override = spread_cfg.get("_max_spread_override")
     # Rango de fetch de quotes = unión de óptimo y extendido. En Opción 1 se ensancha
@@ -479,15 +484,16 @@ def _probe_premium_range(
             in_opt = premium_min <= opening <= premium_max
             in_ext = ext_min <= opening <= ext_max
 
-        # Paso 3 — compuerta de spread: Opción 1 = RANGO [mín,máx] por bucket de STRIKE (o el
-        # override = techo si el usuario lo fijó). Los demás criterios usan el máximo por precio.
+        # Paso 3 — compuerta de spread: Opción 1 = RANGO [mín,máx] por bucket de PRECIO DEL
+        # CONTRATO (ASK) (o el override = techo si el usuario lo fijó). Los demás criterios usan
+        # el máximo por precio del subyacente.
         if spread_enabled and spread is not None:
             if _opt1:
                 if _override is not None:
                     spread_ok = spread <= float(_override)   # override = techo explícito (solo máx)
                 else:
-                    _r = _strike_spread_range(strike)
-                    # RANGO por strike: rechaza spread MÁS CHICO que el mín y MÁS ANCHO que el máx.
+                    _r = _ask_spread_range(ask)
+                    # RANGO por ASK: rechaza spread MÁS CHICO que el mín y MÁS ANCHO que el máx.
                     spread_ok = (_r[0] <= spread <= _r[1]) if _r is not None else (spread <= max_spread)
             else:
                 spread_ok = spread <= max_spread
@@ -511,16 +517,16 @@ def _probe_premium_range(
 
     def _select(cands: list[StrikeProbe]) -> StrikeProbe:
         # Acá se decide CUÁL contrato se elige entre los candidatos:
-        #   "spread"    (opción 1): el de MENOR spread (desempate: MENOR ASK, luego el primero).
+        #   "spread"    (opción 1): el de MENOR spread (desempate: MAYOR ASK, luego el primero).
         #   "value"     (opción 2 vieja): IGNORA el spread; el de prima de entrada MÁS
         #               CERCANA a value_target ($2 default), igual CALL y PUT. Desempate: ITM.
         #   "itm_first" (opción 2): IGNORA el spread; el MÁS CERCANO a ITM (menor itm_depth
         #               ≥ 0 = el "1-ITM", primer strike dentro del dinero). Único criterio.
         #   "itm"       (legado): de los 2 de menor spread, el más cercano a ITM.
         if selection_criterion == "spread":
-            # Paso 4 (tu spec): menor spread → desempate por MENOR ask → el primero de la lista
+            # Paso 4 (tu spec): menor spread → desempate por MAYOR ask → el primero de la lista
             # (min es estable → respeta el orden por cercanía a ATM). Sin desempate por ITM.
-            return min(cands, key=lambda p: (_sp(p), p.ask if p.ask is not None else 9e9))
+            return min(cands, key=lambda p: (_sp(p), -(p.ask if p.ask is not None else 0.0)))
         if selection_criterion == "value":
             return min(cands, key=lambda p: (round(abs((p.opening_premium or 0.0) - value_target), 4),
                                              _itm_rank(p)))

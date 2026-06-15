@@ -1,22 +1,22 @@
 {
   "enabled": true,
-  "_comment": "Filtro de spread por strike (Opción 1). spread_*_contrato en $ POR CONTRATO (x100). El motor compara spread por accion = valor/100.",
+  "_comment": "Filtro de spread por PRECIO DEL CONTRATO (ASK) — Opción 1. ask_min/ask_max y spread_*_contrato en $ POR CONTRATO (x100); el motor compara ASK*100 (precio del contrato) y spread*100. Boundaries medio-abiertos [ask_min, ask_max).",
   "buckets": [
     {
-      "strike_min": 100.0,
-      "strike_max": 300.0,
+      "ask_min": 25.0,
+      "ask_max": 300.0,
       "spread_min_contrato": 1.0,
       "spread_max_contrato": 5.0
     },
     {
-      "strike_min": 300.0,
-      "strike_max": 600.0,
+      "ask_min": 300.0,
+      "ask_max": 600.0,
       "spread_min_contrato": 6.0,
       "spread_max_contrato": 10.0
     },
     {
-      "strike_min": 600.0,
-      "strike_max": 1200.0,
+      "ask_min": 600.0,
+      "ask_max": 1200.0,
       "spread_min_contrato": 11.0,
       "spread_max_contrato": 25.0
     }

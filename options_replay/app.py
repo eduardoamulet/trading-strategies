@@ -1437,8 +1437,8 @@ with st.sidebar.expander("Parámetros de sesión", expanded=True):
     selection_criterion = "itm_first" if str(_crit_label).startswith("Opción 2") else "spread"
 
     # Selección de contrato = SOLO la lógica del criterio elegido (Opción 1 / Opción 2).
-    # La compuerta de spread va INCLUIDA en Opción 1 (máximo por bucket de strike); no hay
-    # toggle/override de spread ni fills al ASK/BID — entrada y salida al precio del bar.
+    # La compuerta de spread va INCLUIDA en Opción 1 (rango por bucket de precio del contrato
+    # ASK); no hay toggle/override de spread ni fills al ASK/BID — entrada y salida al precio del bar.
     _spread_cfg = None
     entry_at_ask = False
     exit_at_bid = False
