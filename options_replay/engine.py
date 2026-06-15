@@ -103,8 +103,8 @@ def _max_spread_for_price(spot: float, cfg: dict) -> float:
 # fuera de los buckets definidos → cae a la compuerta por precio del subyacente.
 _STRIKE_SPREAD_RANGE = (
     (100.0, 300.0, 0.01, 0.05),    # strike $100–300  → spread $1–5  por contrato
-    (300.0, 600.0, 0.05, 0.10),    # strike $300–600  → spread $5–10
-    (600.0, 1200.0, 0.10, 0.25),   # strike $600–1200 → spread $10–25
+    (300.0, 600.0, 0.06, 0.10),    # strike $300–600  → spread $6–10
+    (600.0, 1200.0, 0.11, 0.25),   # strike $600–1200 → spread $11–25
 )
 
 
@@ -370,24 +370,24 @@ def _probe_premium_range(
     selection_criterion: str = "itm",   # "itm" (cercano a ITM) | "spread" (menor spread) | "value" (prima ≈ value_target, IGNORA spread) | "itm_first" (1-ITM más cercano, IGNORA spread y rango)
     value_target: float = 2.0,          # objetivo de prima ($) para selection_criterion="value"
 ) -> tuple[Optional[StrikeProbe], list[StrikeProbe], str]:
-    """Selector de contrato: filtro de spread (compuerta dura) + Óptimo/Extendido.
+    """Selector de contrato.
 
-    Lógica (confirmada por el usuario — SIN fallback):
-    1. Candidatos: hasta max_probe strikes ordenados por cercanía a ATM; se lee
-       su premium de apertura en el minuto de entrada.
-    2. Filtro de spread (COMPUERTA): trae el NBBO y descarta todo contrato cuyo
-       spread (ask-bid) supere el máximo del bucket de precio del subyacente
-       (spread_config.json). Si NINGÚN contrato pasa el filtro → NO se compra.
-    3. Entre los que pasan spread, dentro del Rango Óptimo → el MÁS CERCANO A ITM.
-       tier="optimo".
-    4. Si ninguno en óptimo: dentro del Rango Extendido → el MÁS CERCANO A ITM.
-       tier="extended".
-    5. Si tampoco hay en extendido → NO se compra (None). NO hay fallback ni
-       mecanismo alternativo de selección.
+    Opción 1 (selection_criterion="spread") — el contrato más líquido (menor spread)
+    dentro del rango de prima, en 4 pasos:
+    1-2. CASCADA por prima (filtrando por el ASK del NBBO): los que caen en el Rango
+         Óptimo; si NINGUNO, los del Rango Extendido; si ninguno tampoco → no se compra.
+    3.   FILTRO DE SPREAD por strike sobre ESE set: se conservan los que tienen spread
+         (ask-bid) DENTRO del rango [mín,máx] de su bucket de strike (_strike_spread_range).
+         Un 'Spread máx' explícito (override) reemplaza el rango por un techo. Si ninguno
+         cumple → no se compra (NO se cruza al otro tier).
+    4.   SELECCIÓN: el de MENOR spread; empate → MENOR ask; empate → el primero (orden por
+         cercanía a ATM). tier="optimo"/"extended".
+    Otros criterios: "itm_first" (Opción 2 = el 1-ITM, ignora spread y rango) · "value"
+    (prima ≈ value_target) · "itm" (legado, cascada previa).
     Devuelve (probe_elegido, todos_los_probes, tier). tier="" si no hubo compra.
 
-    Retro-compat: ext_min/ext_max default al rango óptimo; si spread_cfg es None
-    o el filtro está deshabilitado, se omite el filtro de spread.
+    Retro-compat: ext_min/ext_max default al rango óptimo; si spread_cfg es None o el
+    filtro está deshabilitado, se omite el filtro de spread.
     """
     if ext_min is None:
         ext_min = premium_min
@@ -398,10 +398,10 @@ def _probe_premium_range(
 
     spread_enabled = bool(spread_cfg.get("enable_spread_filter", True))
     max_spread = _max_spread_for_price(spot, spread_cfg) if spot is not None else float("inf")
-    # Opción 1 = criterio "spread": (Paso 2) filtra el rango de prima por el ASK del NBBO,
-    # no por el open del bar; (Paso 3) compuerta de spread SOLO-MÁXIMO por bucket de STRIKE
-    # (_strike_spread_range[1]). Un 'Spread máx'/ceiling explícito (override) manda sobre el
-    # bucket. Los demás criterios mantienen el flujo previo (rango por open, máx por precio).
+    # Opción 1 = criterio "spread": filtra el rango de prima por el ASK del NBBO (no por el
+    # open del bar) y aplica la compuerta de spread como RANGO [mín,máx] por bucket de STRIKE
+    # (_strike_spread_range). Un 'Spread máx'/ceiling explícito (override) reemplaza el rango
+    # por un techo. Los demás criterios mantienen el flujo previo (rango por open, máx por precio).
     _opt1 = (selection_criterion == "spread")
     _override = spread_cfg.get("_max_spread_override")
     # Rango de fetch de quotes = unión de óptimo y extendido. En Opción 1 se ensancha
@@ -447,15 +447,16 @@ def _probe_premium_range(
             in_opt = premium_min <= opening <= premium_max
             in_ext = ext_min <= opening <= ext_max
 
-        # Paso 3 — compuerta de spread: Opción 1 = SOLO MÁXIMO por bucket de STRIKE (o el
-        # override si el usuario lo fijó). Los demás criterios usan el máximo por precio.
+        # Paso 3 — compuerta de spread: Opción 1 = RANGO [mín,máx] por bucket de STRIKE (o el
+        # override = techo si el usuario lo fijó). Los demás criterios usan el máximo por precio.
         if spread_enabled and spread is not None:
             if _opt1:
                 if _override is not None:
-                    spread_ok = spread <= float(_override)
+                    spread_ok = spread <= float(_override)   # override = techo explícito (solo máx)
                 else:
                     _r = _strike_spread_range(strike)
-                    spread_ok = (spread <= _r[1]) if _r is not None else (spread <= max_spread)
+                    # RANGO por strike: rechaza spread MÁS CHICO que el mín y MÁS ANCHO que el máx.
+                    spread_ok = (_r[0] <= spread <= _r[1]) if _r is not None else (spread <= max_spread)
             else:
                 spread_ok = spread <= max_spread
 
@@ -485,8 +486,9 @@ def _probe_premium_range(
         #               ≥ 0 = el "1-ITM", primer strike dentro del dinero). Único criterio.
         #   "itm"       (legado): de los 2 de menor spread, el más cercano a ITM.
         if selection_criterion == "spread":
-            # Paso 4: menor spread → desempate por cercanía a ITM → desempate por MAYOR ask.
-            return min(cands, key=lambda p: (_sp(p), _itm_rank(p), -(p.ask or 0.0)))
+            # Paso 4 (tu spec): menor spread → desempate por MENOR ask → el primero de la lista
+            # (min es estable → respeta el orden por cercanía a ATM). Sin desempate por ITM.
+            return min(cands, key=lambda p: (_sp(p), p.ask if p.ask is not None else 9e9))
         if selection_criterion == "value":
             return min(cands, key=lambda p: (round(abs((p.opening_premium or 0.0) - value_target), 4),
                                              _itm_rank(p)))
@@ -517,18 +519,32 @@ def _probe_premium_range(
             pick.bid, pick.ask, pick.spread = q.get("bid"), q.get("ask"), q.get("spread")
         return pick, probes, selection_criterion
 
-    # a. Óptimo + pasa spread
+    # Opción 1 (criterio "spread") — tu spec de 4 pasos:
+    #   Paso 1-2: primer tier de prima NO vacío por ASK (Óptimo; si vacío, Extendido).
+    #   Paso 3:   sobre ESE set, filtro de spread por strike (rango mín-máx). NO se cruza al
+    #             otro tier: si el tier elegido queda sin nadie tras el spread → no se compra.
+    #   Paso 4:   _select = menor spread → menor ASK → el primero de la lista.
+    if _opt1:
+        opt_set = [p for p in valid if p.in_range]        # ASK en Rango Óptimo
+        ext_set = [p for p in valid if p.in_extended]     # ASK en Rango Extendido
+        if opt_set:
+            base, tier = opt_set, "optimo"
+        elif ext_set:
+            base, tier = ext_set, "extended"
+        else:
+            return None, probes, ""
+        passed = [p for p in base if _passes_spread(p)]   # Paso 3: rango de spread por strike
+        if not passed:
+            return None, probes, ""
+        return _select(passed), probes, tier
+
+    # Legacy "itm": cascada previa (Óptimo+spread, luego Extendido+spread). SIN fallback.
     cand_opt = [p for p in valid if p.in_range and _passes_spread(p)]
     if cand_opt:
         return _select(cand_opt), probes, "optimo"
-
-    # b. Extendido + pasa spread
     cand_ext = [p for p in valid if p.in_extended and _passes_spread(p)]
     if cand_ext:
         return _select(cand_ext), probes, "extended"
-
-    # c. SIN FALLBACK: si nadie quedó dentro del Óptimo/Extendido pasando el filtro
-    #    de spread, NO se compra. No hay mecanismo alternativo de selección.
     return None, probes, ""
 
 
