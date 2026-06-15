@@ -47,6 +47,19 @@ _REASON_LABELS = {
     "session_end": "Sin trigger — corre hasta cierre",
     "overnight_1dte": "Venta overnight (1 DTE, día hábil siguiente)",
 }
+
+
+def _op_dur(it) -> str:
+    """Duración de la operación (entrada → salida): '2h 15m' / '45m' / '30s'."""
+    try:
+        _s = max(0, int((it.end_dt - it.start_dt).total_seconds()))
+    except Exception:
+        return "—"
+    _h, _r = divmod(_s, 3600)
+    _m, _sec = divmod(_r, 60)
+    return f"{_h}h {_m:02d}m" if _h else (f"{_m}m" if _m else f"{_sec}s")
+
+
 _REASON_ICONS = {
     "100%_threshold": "🎯",
     "stop_loss": "🛑",
@@ -3217,7 +3230,8 @@ def _render_signals_session(rs):
                      else f":red[▼ {abs(_roi_pct):.1%}]")
         _ref_part = (f"  ·  ➕ {it.refuerzo['n']} refuerzo(s)"
                      if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
-        _title = (f"{_icon} {r['ticker']} {r['tipo']}  ·  {r['fecha']} {r['hora']}  ·  "
+        _title = (f"{_icon} {r['ticker']} {r['tipo']}  ·  {r['fecha']} {r['hora']} → "
+                  f"{it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
                   f"{_reason}  ·  Ganancia: {_gp} ({_pct_part}){_ref_part}")
         with st.expander(_title, expanded=(len(oks) == 1)):
             st.markdown(f"**{r['ticker']} — {r['fecha']}  ·  0 DTE  ·  Ventana 09:30–16:00**")
@@ -3595,7 +3609,7 @@ if _mode == "range":
             _ref_tag = (f"  ·  ➕ {it.refuerzo['n']} refuerzo(s)"
                         if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
             _exp_title = (
-                f"{_icon} {sel_fecha}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M}  ·  "
+                f"{_icon} {sel_fecha}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
                 f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}{_ref_tag}"
             )
             with st.expander(_exp_title, expanded=False):
@@ -3674,7 +3688,7 @@ for it in iterations:
     _ref_tag = (f"  ·  ➕ {it.refuerzo['n']} refuerzo(s)"
                 if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
     _exp_title = (
-        f"{_icon} Iteración {it.iteration}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M}  ·  "
+        f"{_icon} Iteración {it.iteration}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
         f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}{_ref_tag}"
     )
     with st.expander(_exp_title, expanded=False):
