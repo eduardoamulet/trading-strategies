@@ -120,7 +120,7 @@ if df.empty:
     st.stop()
 
 # ── Filtros ──────────────────────────────────────────────────────────────────
-f1, f2, f3, f4, f5 = st.columns(5)
+f1, f2, f3, f4 = st.columns(4)
 sel_estr = f1.selectbox("Estrategia", ["(todas)"] + sorted(df["estrategia"].dropna().unique().tolist()))
 # Opciones del dropdown "Acción" = universo completo de activos (página Activos) ∪ los
 # símbolos que ya tienen señales (por si alguno no está en ticker_info). Así META/NVDA/
@@ -133,8 +133,6 @@ sel_sym = f2.multiselect("Acción", _sym_opts,
                          placeholder="(todas)")
 sel_est = f3.selectbox("Estado", ["(todos)"] + xs.ESTADOS)
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
-sel_opt = f5.selectbox("Optionable", ["(todas)", "Sólo optionable", "Sólo no optionable"],
-                       help="Filtra por si el ticker tiene opciones vigentes hoy (consulta Polygon, cacheada 24h).")
 _fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
 g1, g2, g3, g4 = st.columns(4)
 d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) else datetime.now().date()))
@@ -145,6 +143,9 @@ g4.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)  # alin
 _solo_0dte = g4.checkbox("Sólo 0 DTE", value=True, key="sig_solo_0dte",
                          help="Muestra solo señales cuyo ticker tenía opción 0DTE ese día "
                               "(según la cache de cadenas en data/chain/).")
+_solo_opt = g4.checkbox("Sólo optionable", value=False, key="sig_solo_opt",
+                        help="Muestra solo señales cuyo ticker tiene opciones vigentes hoy "
+                             "(consulta Polygon, cacheada 24h).")
 
 fdf = df.copy()
 if sel_estr != "(todas)": fdf = fdf[fdf["estrategia"] == sel_estr]
@@ -155,10 +156,8 @@ if pmin > 0: fdf = fdf[pd.to_numeric(fdf["probabilidad"], errors="coerce") >= pm
 fdf = fdf[(fdf["fecha"] >= d_desde.isoformat()) & (fdf["fecha"] <= d_hasta.isoformat())]
 if _solo_0dte and not fdf.empty:
     fdf = fdf[[_es_0dte(s, f) for s, f in zip(fdf["symbol"].astype(str), fdf["fecha"].astype(str))]]
-if sel_opt == "Sólo optionable" and not fdf.empty:
+if _solo_opt and not fdf.empty:
     fdf = fdf[[_es_optionable(s) is True for s in fdf["symbol"].astype(str)]]
-elif sel_opt == "Sólo no optionable" and not fdf.empty:
-    fdf = fdf[[_es_optionable(s) is False for s in fdf["symbol"].astype(str)]]
 
 # ── Métricas ─────────────────────────────────────────────────────────────────
 m1, m2, m3, m4 = st.columns(4)
