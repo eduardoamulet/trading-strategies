@@ -1591,8 +1591,9 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
                                  "CALL y PUT (50/50) pero **sin stop loss**: cada pierna mira su propio "
                                  "ROI y, cuando cae a **≤ −Umbral de pérdida refuerzo (%)**, se refuerza "
                                  "la **pierna que más pierde** comprando **más de ESA misma pierna** "
-                                 "(mismo tipo, nunca la contraria) con su inversión inicial. Termina al "
-                                 "**Umbral de ROI (%)** total o al cierre del día.",
+                                 "(mismo tipo, nunca la contraria) con su inversión inicial. Termina cuando "
+                                 "el **ROI total** (ambas piernas) alcanza el **Umbral de ROI (%)**, o al "
+                                 "cierre del día.",
         "CALL y PUT (plus)": "🎯 **CALL y PUT (plus)** — se compran ambas piernas (50/50) y se "
                              "venden las dos **solo en el Horario de salida** (sin Umbral de ROI ni "
                              "Stop loss). Termina al horario o al cierre del día.",
