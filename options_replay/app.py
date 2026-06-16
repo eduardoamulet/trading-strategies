@@ -836,16 +836,19 @@ def _render_iters_panel(_iters_seed):
                 help="Estrategia que generó la señal (informativo; llega desde Alertas)."),
         },
     )
-    _sp1, _sp2, _sp3, _sp4, _sp5 = st.columns(5)
+    _sp1, _sp2, _sp3, _sp4, _sp5, _sp6 = st.columns(6)
     _sig_inv = float(_sp1.number_input("Inversión ($)", min_value=1.0, value=1000.0,
                                        step=100.0, key="sig_inv"))
-    _sig_umb = float(_sp2.number_input("Umbral ROI (%)", value=10.0, step=5.0, key="sig_umb"))
-    _sig_stop = float(_sp3.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
-    _sig_refuerzo = float(_sp4.number_input(
+    _sig_call_pct = float(_sp2.number_input(
+        "Inversión CALL (%)", value=50.0, min_value=0.0, max_value=100.0, step=5.0, key="sig_call_pct",
+        help="% de la inversión que va a la pierna CALL; el resto va a la PUT. 50 = 50/50."))
+    _sig_umb = float(_sp3.number_input("Umbral ROI (%)", value=10.0, step=5.0, key="sig_umb"))
+    _sig_stop = float(_sp4.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
+    _sig_refuerzo = float(_sp5.number_input(
         "Umbral pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0, step=5.0,
         key="sig_refuerzo", help="Solo para filas 'CALL y PUT (Refuerzo)'. % de pérdida de una pierna "
                                  "que dispara reforzar la pierna que más pierde (mismo tipo).")) / 100.0
-    _sig_refuerzo_max = int(_sp5.number_input(
+    _sig_refuerzo_max = int(_sp6.number_input(
         "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
         help="Solo para filas 'CALL y PUT (Refuerzo)'. Máximo de refuerzos por iteración (en total, sumando ambas piernas)."))
 
@@ -900,7 +903,7 @@ def _render_iters_panel(_iters_seed):
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
             _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
                                 False, False, False, s.get("criterio", "spread"), _sig_refuerzo,
-                                _sig_refuerzo_max)
+                                _sig_refuerzo_max, call_pct=_sig_call_pct)
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):

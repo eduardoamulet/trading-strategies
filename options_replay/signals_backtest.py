@@ -79,7 +79,8 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             stop_pct: float = -100.0, spread_cfg=None, iteration_idx: int = 1,
             entry_at_ask: bool = False, exit_at_bid: bool = False,
             auto_dte: bool = False, selection_criterion: str = "spread",
-            refuerzo_loss_pct: float = 0.50, refuerzo_max: int = 2) -> dict:
+            refuerzo_loss_pct: float = 0.50, refuerzo_max: int = 2,
+            call_pct: float = 50.0) -> dict:
     """Corre 1 iteración. `spec` admite 'ticker' o 'symbol', más 'fecha', 'hora', 'tipo'.
     `selection_criterion` = criterio de selección de contrato ('spread' = Opción 1 menor
     spread; 'itm_first' = Opción 2 primer contrato cerca de ITM, ignora spread y rango).
@@ -98,13 +99,16 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
         entry = _time(int(hh), int(mm))
     except Exception:
         return {**base, "status": "error", "iteration": None, "error": f"hora inválida '{hora_s}'"}
-    # Inversión: una pierna = 100%; dos piernas (both / call_or_put + plus) = 50/50.
+    # Inversión por pierna: una pierna = 100%; dos piernas = según call_pct (% que va a la
+    # CALL; el resto a la PUT). Default 50 → 50/50. NO hardcoded.
     if mode == "call_only":
         inv_call, inv_put = float(inversion), 0.0
     elif mode == "put_only":
         inv_call, inv_put = 0.0, float(inversion)
     else:
-        inv_call = inv_put = float(inversion) / 2.0
+        _cp = max(0.0, min(100.0, float(call_pct))) / 100.0
+        inv_call = float(inversion) * _cp
+        inv_put = float(inversion) * (1.0 - _cp)
     lo, hi = premium_range(ticker)
     order_ts = to_ts(fecha, entry)
     day_end_ts = to_ts(fecha, _time(16, 0)) - pd.Timedelta(minutes=1)
