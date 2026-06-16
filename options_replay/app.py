@@ -2230,7 +2230,9 @@ if btn_iniciar:
                                     _roi = (_it.gain_total / _it.invest_total) if _it.invest_total else 0.0
                                     _live_rows.append({
                                         "Fecha": _r.get("date"),
-                                        "Hora": _hs.strftime("%H:%M") if _hs is not None else "",
+                                        "Hora entrada": _hs.strftime("%H:%M") if _hs is not None else "",
+                                        "Hora salida": (_it.end_dt.strftime("%H:%M")
+                                                        if getattr(_it, "end_dt", None) is not None else ""),
                                         "Ganancia": _it.gain_total,
                                         "ROI %": _roi * 100.0,
                                         "Razón": (_REASON_ICONS.get(_it.exit_reason, "") + " "
@@ -2238,7 +2240,9 @@ if btn_iniciar:
                                     })
                                 else:
                                     _live_rows.append({
-                                        "Fecha": _r.get("date", "?"), "Hora": "",
+                                        "Fecha": _r.get("date", "?"),
+                                        "Hora entrada": _hs.strftime("%H:%M") if _hs is not None else "",
+                                        "Hora salida": "",
                                         "Ganancia": None, "ROI %": None,
                                         "Razón": _r.get("error") or "error",
                                     })
@@ -2246,7 +2250,7 @@ if btn_iniciar:
                             # "Ganancia acumulada" = suma corrida de la Ganancia (los días
                             # sin resultado suman 0). Va a la derecha de ROI %.
                             _ldf["Ganancia acumulada"] = _ldf["Ganancia"].fillna(0.0).cumsum()
-                            _ldf = _ldf[["Fecha", "Hora", "Ganancia", "ROI %",
+                            _ldf = _ldf[["Fecha", "Hora entrada", "Hora salida", "Ganancia", "ROI %",
                                          "Ganancia acumulada", "Razón"]]
 
                             def _live_row_color(_row):
