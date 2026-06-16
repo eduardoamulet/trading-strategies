@@ -52,6 +52,36 @@ def _ticker_universe() -> list[str]:
     except Exception:  # noqa: BLE001
         return []
 
+
+@st.cache_resource(show_spinner=False)
+def _polygon():
+    """PolygonAdapter cacheado (1 instancia). None si no se pudo crear (sin config/clave)."""
+    try:
+        import config
+        from adapter_polygon import PolygonAdapter
+        return PolygonAdapter(config.POLYGON_API_KEY)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _es_optionable(ticker: str):
+    """¿El ticker es optionable HOY? (tiene contratos vigentes en Polygon). True/False, o
+    None si no se pudo consultar. Cacheado 24h (la optionability casi no cambia)."""
+    t = str(ticker or "").strip().upper()
+    _ad = _polygon()
+    if not t or _ad is None:
+        return None
+    try:
+        return _ad.is_optionable(t)
+    except Exception:
+        return None
+
+
+def _opt_icon(v) -> str:
+    return "✅" if v is True else ("❌" if v is False else "—")
+
+
 # ── Importar ─────────────────────────────────────────────────────────────────
 with st.expander("📥 Importar señales", expanded=False):
     t_eml, t_mail = st.tabs(["Subir email (.eml)", "Revisar correo (auto)"])
@@ -89,7 +119,7 @@ if df.empty:
     st.stop()
 
 # ── Filtros ──────────────────────────────────────────────────────────────────
-f1, f2, f3, f4 = st.columns(4)
+f1, f2, f3, f4, f5 = st.columns(5)
 sel_estr = f1.selectbox("Estrategia", ["(todas)"] + sorted(df["estrategia"].dropna().unique().tolist()))
 # Opciones del dropdown "Acción" = universo completo de activos (página Activos) ∪ los
 # símbolos que ya tienen señales (por si alguno no está en ticker_info). Así META/NVDA/
@@ -102,6 +132,8 @@ sel_sym = f2.multiselect("Acción", _sym_opts,
                          placeholder="(todas)")
 sel_est = f3.selectbox("Estado", ["(todos)"] + xs.ESTADOS)
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
+sel_opt = f5.selectbox("Optionable", ["(todas)", "Sólo optionable", "Sólo no optionable"],
+                       help="Filtra por si el ticker tiene opciones vigentes hoy (consulta Polygon, cacheada 24h).")
 _fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
 g1, g2, g3, g4 = st.columns(4)
 d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) else datetime.now().date()))
@@ -122,6 +154,10 @@ if pmin > 0: fdf = fdf[pd.to_numeric(fdf["probabilidad"], errors="coerce") >= pm
 fdf = fdf[(fdf["fecha"] >= d_desde.isoformat()) & (fdf["fecha"] <= d_hasta.isoformat())]
 if _solo_0dte and not fdf.empty:
     fdf = fdf[[_es_0dte(s, f) for s, f in zip(fdf["symbol"].astype(str), fdf["fecha"].astype(str))]]
+if sel_opt == "Sólo optionable" and not fdf.empty:
+    fdf = fdf[[_es_optionable(s) is True for s in fdf["symbol"].astype(str)]]
+elif sel_opt == "Sólo no optionable" and not fdf.empty:
+    fdf = fdf[[_es_optionable(s) is False for s in fdf["symbol"].astype(str)]]
 
 # ── Métricas ─────────────────────────────────────────────────────────────────
 m1, m2, m3, m4 = st.columns(4)
@@ -281,6 +317,7 @@ _show = pd.DataFrame({
              for t in view["tipo"].values],
     "0 DTE": ["✅" if _es_0dte(s, f) else "❌"
               for s, f in zip(view["symbol"].astype(str), view["fecha"].astype(str))],
+    "Optionable": [_opt_icon(_es_optionable(s)) for s in view["symbol"].astype(str)],
 })
 
 # Filas TODAS blancas (sin bandas por fecha). Solo se colorea el texto de Tipo y se centra
@@ -310,6 +347,8 @@ _event = st.dataframe(
         "Tipo": st.column_config.TextColumn("Tipo", width="small"),
         "0 DTE": st.column_config.TextColumn("0 DTE", width="small",
                                              help="✅ = el ticker tenía opción 0DTE ese día"),
+        "Optionable": st.column_config.TextColumn("Optionable", width="small",
+                                                  help="✅ = el ticker tiene opciones vigentes hoy (Polygon) · ❌ = no · — = no verificado"),
         "Criterios": st.column_config.TextColumn("Criterios", width="small"),
     },
 )

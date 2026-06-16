@@ -140,6 +140,18 @@ class PolygonAdapter:
                 break
         return sorted(seen)
 
+    def is_optionable(self, ticker: str) -> bool:
+        """¿El subyacente tiene opciones VIGENTES hoy? = al menos 1 contrato NO expirado
+        (expired=false). Para "¿es optionable?" — distinto de list_expirations, que usa
+        expired=true (contratos vencidos) para backtests históricos. Ej.: BRK.A → False
+        (sin opciones por su precio); BRK.B → True."""
+        t = (ticker or "").strip().upper()
+        if not t:
+            return False
+        data = self._get("/v3/reference/options/contracts",
+                         {"underlying_ticker": t, "expired": "false", "limit": 1})
+        return bool(data.get("results"))
+
     # ---------- option bars ----------
 
     def option_minute_bars(self, occ_symbol: str, date: str,
