@@ -819,14 +819,16 @@ def validate_0dte_session(downloader: Downloader, ticker: str, date: str) -> str
 
 
 def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, invest_put,
-                       profit_target, loss_thr, max_refuerzos=2):
+                       profit_target, loss_thr, max_refuerzos=2, stop_thr=-1.0):
     """Martingala POR PIERNA del MISMO tipo. Abre CALL (invest_call) y PUT (invest_put).
     Disparador POR PIERNA: cada pierna mira SU PROPIO ROI. Cuando una (o ambas) cae a
     <= -loss_thr, se refuerza la pierna que MÁS pierde (ROI más negativo) comprando otro
     tranche de ESA misma pierna (mismo tipo, al precio del minuto, invirtiendo de nuevo su
     capital inicial). NUNCA compra la pierna contraria. El tope `max_refuerzos` es TOTAL
-    (cuenta ambas piernas juntas). Sale cuando el ROI TOTAL (ambas piernas) >= profit_target
-    ('100%_threshold') o al cierre del día ('session_end'). Sin stop loss.
+    (cuenta ambas piernas juntas).
+    Salidas (chequeadas ANTES de reforzar, sobre el ROI TOTAL de ambas piernas): ROI >=
+    profit_target ('100%_threshold'); ROI <= stop_thr ('stop_loss' — stop sobre el TOTAL, NO
+    por pierna; default -1.0 = -100% ≈ sin stop); o al cierre del día ('session_end').
     Devuelve (exit_idx, exit_reason, roi[], value[], invested[], events[]), donde
     events = [{'idx': t, 'leg': 'CALL'|'PUT', 'price': px}, ...] (un evento por refuerzo)."""
     import numpy as np
@@ -850,9 +852,13 @@ def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, inve
         pv, pi = _leg(p, put_tr, invest_put)
         v, inv = cv + pv, ci + pi
         r = (v - inv) / inv if inv > 0 else 0.0
-        if r >= profit_target:                               # Umbral de ROI TOTAL → salir
+        if r >= profit_target:                               # Umbral de ROI TOTAL → salir (gana)
             roi[t], value[t], invested[t] = r, v, inv
             exit_idx, exit_reason = t, "100%_threshold"
+            break
+        if r <= stop_thr:                                    # Stop loss sobre el ROI TOTAL (no por
+            roi[t], value[t], invested[t] = r, v, inv        # pierna) → cortar ANTES de reforzar
+            exit_idx, exit_reason = t, "stop_loss"
             break
         # REFUERZO POR PIERNA: cada pierna mira SU PROPIO ROI. Entre las que cayeron a
         # <= -loss_thr (activas y comprables), se refuerza la que MÁS pierde (ROI más
@@ -1462,15 +1468,15 @@ def _run_one_iteration(
         exit_reason = "session_end"
         merged = merged.reset_index(drop=True)
     elif mode == "both_refuerzo":
-        # ----- CALL y PUT (Refuerzo): MARTINGALA POR PIERNA del MISMO tipo. Sin stop loss —
-        # cada pierna (CALL y PUT) mira SU propio ROI y, cuando cae a <=
-        # -refuerzo_loss_threshold_pct, compra MÁS de la MISMA pierna (nunca la contraria).
-        # Sale al Umbral de ROI TOTAL o al cierre. ROI/valor/invertido TOTAL por minuto
-        # quedan en merged (ref_roi/ref_value/ref_invested) para el display. -----
+        # ----- CALL y PUT (Refuerzo): MARTINGALA POR PIERNA del MISMO tipo. Cada pierna mira SU
+        # propio ROI y, cuando cae a <= -refuerzo_loss_threshold_pct, compra MÁS de la MISMA
+        # pierna (nunca la contraria). Sale por: ROI TOTAL >= Umbral de ROI (gana); ROI TOTAL
+        # <= stop_loss_pct (stop sobre el TOTAL, no por pierna); o cierre. ROI/valor/invertido
+        # TOTAL por minuto quedan en merged (ref_roi/ref_value/ref_invested) para el display. ---
         _exi, exit_reason, _rroi, _rval, _rinv, _events = _simulate_refuerzo(
             merged["call_px"].values, merged["put_px"].values, call_entry, put_entry,
             invest_call, invest_put, exit_threshold_pct, float(refuerzo_loss_threshold_pct),
-            int(refuerzo_max_count))
+            int(refuerzo_max_count), stop_thr=float(stop_loss_pct))
         merged = merged.iloc[: _exi + 1].reset_index(drop=True)
         merged["total"] = merged["call_px"] + merged["put_px"]
         merged["ref_roi"] = _rroi
