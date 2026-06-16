@@ -103,9 +103,10 @@ with st.expander("📥 Importar señales", expanded=False):
 
     st.divider()
     if st.button(f"🧹 Limpiar duplicados existentes ({db.count()} señales)",
-                 help="Borra señales repetidas por identidad (ticker·estrategia·fecha·hora) "
+                 help="Borra señales repetidas por identidad (Acción·Estrategia·Fecha·Hora·Tipo) "
                       "que hayan quedado de antes, conservando 1 por grupo (prioriza las que "
-                      "tengan estado/ganancia editados)."):
+                      "tengan estado/ganancia editados). Un CALL y un PUT iguales en lo demás NO "
+                      "son duplicados."):
         _rm = db.dedupe_existing()
         if _rm:
             st.success(f"🧹 Eliminadas {_rm} duplicada(s). Quedan {db.count()}.")

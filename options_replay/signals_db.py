@@ -7,8 +7,8 @@ servidor. Consistente con live_trader.
 DB en data/signals.db (gitignored). Dedup en DOS niveles para que reimportar (o
 mezclar fuentes) NO duplique ni pise tus ediciones locales (estado/ganancia/notas):
   1) PRIMARY KEY `id` (token del gráfico) — INSERT OR IGNORE.
-  2) IDENTIDAD (ticker·estrategia·fecha·hora = symbol·estrategia_raw·fecha·hora) — si
-     ya existe una señal con esa identidad, se omite aunque traiga otro `id` (p.ej. la
+  2) IDENTIDAD (Acción·Estrategia·Fecha·Hora·Tipo = symbol·estrategia_raw·fecha·hora·tipo)
+     — si ya existe una señal con esa identidad, se omite aunque traiga otro `id` (p.ej. la
      URL de la imagen del email cambia entre envíos y generaría un id distinto).
 """
 from __future__ import annotations
@@ -63,9 +63,11 @@ def init_db() -> None:
             """
         )
         con.execute("CREATE INDEX IF NOT EXISTS ix_alerts_fecha ON alerts(fecha)")
-        con.execute("DROP INDEX IF EXISTS ix_alerts_content")  # versión vieja (incluía tipo)
-        con.execute("CREATE INDEX IF NOT EXISTS ix_alerts_uniq "
-                    "ON alerts(symbol, estrategia_raw, fecha, hora)")
+        con.execute("DROP INDEX IF EXISTS ix_alerts_content")  # versión vieja
+        con.execute("DROP INDEX IF EXISTS ix_alerts_uniq")     # versión SIN tipo (migración)
+        # IDENTIDAD = Acción·Estrategia·Fecha·Hora·Tipo (symbol·estrategia_raw·fecha·hora·tipo).
+        con.execute("CREATE INDEX IF NOT EXISTS ix_alerts_ident "
+                    "ON alerts(symbol, estrategia_raw, fecha, hora, tipo)")
         try:  # migración para DBs viejas
             con.execute("ALTER TABLE alerts ADD COLUMN criterios_json TEXT")
         except sqlite3.OperationalError:
@@ -97,14 +99,15 @@ def upsert_signals(df: pd.DataFrame) -> int:
     inserted = 0
     with _conn() as con:
         for _, r in df.iterrows():
-            # Dedup por IDENTIDAD (ticker·estrategia·fecha·hora): misma señal con otro id
-            # (p.ej. la imagen del email cambió de URL) → no la duplicamos. `IS` compara
-            # NULL de forma segura.
+            # Dedup por IDENTIDAD (Acción·Estrategia·Fecha·Hora·Tipo = symbol·estrategia_raw·
+            # fecha·hora·tipo): misma señal con otro id (p.ej. la imagen del email cambió de
+            # URL) → no la duplicamos. `IS` compara NULL de forma segura. Un CALL y un PUT con
+            # los otros 4 iguales SON señales distintas (no se deduplican).
             dup = con.execute(
                 "SELECT 1 FROM alerts WHERE symbol IS ? AND estrategia_raw IS ? "
-                "AND fecha IS ? AND hora IS ? LIMIT 1",
+                "AND fecha IS ? AND hora IS ? AND tipo IS ? LIMIT 1",
                 (_na(r.get("symbol")), _na(r.get("estrategia_raw")),
-                 _na(r.get("fecha")), _na(r.get("hora"))),
+                 _na(r.get("fecha")), _na(r.get("hora")), _na(r.get("tipo"))),
             ).fetchone()
             if dup is not None:
                 continue
@@ -121,8 +124,8 @@ def upsert_signals(df: pd.DataFrame) -> int:
 
 
 def dedupe_existing() -> int:
-    """Borra duplicados YA presentes en la base por IDENTIDAD (ticker·estrategia·fecha·
-    hora = symbol·estrategia_raw·fecha·hora). Conserva 1 por grupo, priorizando la que
+    """Borra duplicados YA presentes en la base por IDENTIDAD (Acción·Estrategia·Fecha·Hora·
+    Tipo = symbol·estrategia_raw·fecha·hora·tipo). Conserva 1 por grupo, priorizando la que
     tenga estado editado (≠ 'Por definir') y/o ganancia ≠ 0; desempata por importación
     más vieja. Devuelve cuántas filas borró."""
     init_db()
@@ -132,7 +135,7 @@ def dedupe_existing() -> int:
             DELETE FROM alerts WHERE id IN (
                 SELECT id FROM (
                     SELECT id, ROW_NUMBER() OVER (
-                        PARTITION BY symbol, estrategia_raw, fecha, hora
+                        PARTITION BY symbol, estrategia_raw, fecha, hora, tipo
                         ORDER BY
                           (CASE WHEN estado IS NOT NULL AND estado <> 'Por definir' THEN 0 ELSE 1 END),
                           (CASE WHEN ganancia IS NOT NULL AND ganancia <> 0 THEN 0 ELSE 1 END),
