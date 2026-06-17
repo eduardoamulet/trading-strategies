@@ -51,7 +51,12 @@ def chain_df(market, ticker: str, expiry: str, now: Any, cand: dict, n: int = 8)
         cc, pc = by.get((Right.CALL, k)), by.get((Right.PUT, k))
         cq = market.quote(cc.occ, now) if cc else None
         pq = market.quote(pc.occ, now) if pc else None
-        mark = ("✅C" if (cc and cc.occ in cand_occ) else "") + ("✅P" if (pc and pc.occ in cand_occ) else "")
+        _mk = []
+        if cc and cc.occ in cand_occ:
+            _mk.append("✅CALL")
+        if pc and pc.occ in cand_occ:
+            _mk.append("✅PUT")
+        mark = " ".join(_mk)
         rows.append({"✓": mark,
                      "C bid": cq.bid if cq else None, "C ask": cq.ask if cq else None,
                      "Strike": k,
