@@ -85,6 +85,9 @@ def _params() -> dict:
 st.header("🟢 Operar — paper trading en vivo")
 st.caption("La MISMA estrategia que el backtest (trading_core), en tiempo real. "
            "**SANDBOX/paper** — no mueve dinero real; las órdenes las confirmás vos con un click.")
+# Que el contenido que se re-renderiza (la captura en vivo) NO se atenúe / vea deshabilitado.
+st.markdown("<style>[data-stale='true']{opacity:1 !important;transition:none !important;}</style>",
+            unsafe_allow_html=True)
 
 c1, c2, c3 = st.columns([2, 2, 2])
 c1.radio("Fuente", ["Replay / demo", "Tradier sandbox"], key="live_src", horizontal=True)
@@ -92,10 +95,9 @@ c2.text_input("Ticker", value="QQQ", key="live_ticker")
 c3.selectbox("Tipo de operación", list(lc.RIGHTS.keys()), key="live_tipo")
 if st.session_state.get("live_src") == "Replay / demo":
     st.session_state.setdefault("sim_min", 0)
-    d1, d2, d3 = st.columns(3)
+    d1, d2 = st.columns([3, 1])
     d1.text_input("Fecha (YYYY-MM-DD)", value="2026-06-11", key="live_date")
-    d2.checkbox("▶ Auto-play", value=True, key="live_autoplay")
-    if d3.button("⟲ Reiniciar reloj", use_container_width=True):
+    if d2.button("⟲ Reiniciar reloj", use_container_width=True):
         st.session_state["sim_min"] = 0
 e1, e2, e3, e4, e5 = st.columns(5)
 e1.number_input("Inversión ($)", min_value=1.0, value=1000.0, step=100.0, key="live_inv")
@@ -111,6 +113,15 @@ if st.session_state.get("live_tipo") == "CALL y PUT (Refuerzo)":
                     value=50.0, step=5.0, key="live_refloss")
     f4.number_input("Refuerzos (máx)", 0, 10, value=2, key="live_refmax")
 
+# Barra de control de la captura en vivo (FUERA del fragment → no bloquea el resto al refrescar).
+lc1, lc2, _lc3 = st.columns([2, 2, 4])
+lc1.toggle("🔴 Captura en vivo", key="live_capture",
+           help="Prende la actualización automática de la tabla de strikes (y la posición) a "
+                "intervalos. Apagado = estático; tomá la data a demanda con «🔄 Actualizar ahora».")
+if lc2.button("🔄 Actualizar ahora", use_container_width=True):
+    if st.session_state.get("live_src") == "Replay / demo":
+        st.session_state["sim_min"] = min(380, int(st.session_state.get("sim_min", 0)) + 1)
+
 st.divider()
 
 if st.session_state.get("live_closed"):
@@ -120,7 +131,10 @@ if st.session_state.get("live_closed"):
         st.session_state.pop("live_closed", None)
         st.rerun()
 
-_refresh = "1.5s" if st.session_state.get("live_src") == "Replay / demo" else "3s"
+# Solo auto-refresca si la "Captura en vivo" está prendida; si no, run_every=None (estático,
+# se actualiza a demanda con el botón). El fragment aislado = no bloquea el resto de la pantalla.
+_refresh = (("1.5s" if st.session_state.get("live_src") == "Replay / demo" else "3s")
+            if st.session_state.get("live_capture") else None)
 
 
 @st.fragment(run_every=_refresh)
@@ -243,7 +257,8 @@ def live_view():
         with t4:
             st.dataframe(pd.DataFrame(marks), hide_index=True, use_container_width=True)
 
-    if st.session_state.get("live_src") == "Replay / demo" and st.session_state.get("live_autoplay"):
+    # Avanzar el reloj de Replay solo si la captura en vivo está prendida (auto-play).
+    if st.session_state.get("live_src") == "Replay / demo" and st.session_state.get("live_capture"):
         st.session_state["sim_min"] = min(380, int(st.session_state.get("sim_min", 0)) + 1)
 
 
