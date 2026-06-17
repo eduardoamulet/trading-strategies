@@ -883,6 +883,10 @@ def _render_iters_panel(_iters_seed):
         _noav = sorted({s["ticker"] for s in _specs} - _avail)
         st.caption(f"⏱️ Solo **1 min** disponible — {', '.join(_noav)} sin 30s/15s descargada.")
 
+    _sig_fills = st.checkbox(
+        "Fills realistas (NBBO): ASK al entrar · BID al salir", value=False, key="fills_nbbo_sig",
+        help="Pagás el ASK al comprar y vendés al BID al cerrar (NBBO de Polygon), en vez del precio "
+             "de la barra. Refleja el costo del spread → baja el P&L (más realista).")
     if st.button(f"▶ Correr backtest de {len(_specs)} iteración(es)", type="primary",
                  disabled=not _specs, key="sig_run"):
         _dl = get_downloader(api_key)
@@ -902,7 +906,7 @@ def _render_iters_panel(_iters_seed):
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
             _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
-                                False, False, False, s.get("criterio", "spread"), _sig_refuerzo,
+                                _sig_fills, _sig_fills, False, s.get("criterio", "spread"), _sig_refuerzo,
                                 _sig_refuerzo_max, call_pct=_sig_call_pct)
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
@@ -1453,11 +1457,15 @@ with st.sidebar.expander("Parámetros de sesión", expanded=True):
     selection_criterion = "itm_first" if str(_crit_label).startswith("Opción 2") else "spread"
 
     # Selección de contrato = SOLO la lógica del criterio elegido (Opción 1 / Opción 2).
-    # La compuerta de spread va INCLUIDA en Opción 1 (rango por bucket de precio del contrato
-    # ASK); no hay toggle/override de spread ni fills al ASK/BID — entrada y salida al precio del bar.
+    # La compuerta de spread va INCLUIDA en Opción 1 (rango por bucket de precio del contrato ASK).
     _spread_cfg = None
-    entry_at_ask = False
-    exit_at_bid = False
+    # Fills realistas (NBBO): pagar el ASK al entrar y vender al BID al salir (Polygon), en vez
+    # del precio de la barra → refleja el costo del spread. Off = fills al precio del bar (como antes).
+    _fills_nbbo = st.checkbox(
+        "Fills realistas (NBBO): ASK al entrar · BID al salir", value=False, key="fills_nbbo_manual",
+        help="Pagás el ASK (oferta) al comprar y vendés al BID al cerrar, según el NBBO de Polygon, "
+             "en vez del precio de la barra. Refleja el costo del spread → baja el P&L (más realista).")
+    entry_at_ask = exit_at_bid = bool(_fills_nbbo)
 
     # Info del modo overnight (DTE=1).
     if _is_dte1:
