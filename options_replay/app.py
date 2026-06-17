@@ -594,10 +594,12 @@ def _render_risk_panel(successful: list, key_prefix: str = "risk") -> None:
                  help="Retorno medio / desviación a la baja. Penaliza solo la volatilidad mala. Mayor = mejor.")
 
     p = m["pcts"]
+    # OJO: st.caption usa markdown → los `$` SIN escapar se interpretan como LaTeX y
+    # mezclan el texto entre dos signos. Escapamos cada `$` como `\$` (literal).
     st.caption(
-        f"Expectativa **${m['expectancy']:+,.0f}/día** · ROI diario: p5 **{p[5]:+.0%}** · "
+        f"Expectativa **\\${m['expectancy']:+,.0f}/día** · ROI diario: p5 **{p[5]:+.0%}** · "
         f"mediana **{p[50]:+.0%}** · p95 **{p[95]:+.0%}**  ·  "
-        f"Σ ganancias **${m['wins_sum']:,.0f}** / Σ pérdidas **${m['losses_sum']:,.0f}** · "
+        f"Σ ganancias **\\${m['wins_sum']:,.0f}** / Σ pérdidas **\\${m['losses_sum']:,.0f}** · "
         f"Sharpe diario **{m['sharpe']:.2f}**"
     )
 
