@@ -76,6 +76,8 @@ def _params() -> dict:
         pmin=float(st.session_state.get("live_pmin", 0.30)),
         pmax=float(st.session_state.get("live_pmax", 5.00)),
         max_spread=float(st.session_state.get("live_maxspread", 0.10)),
+        refuerzo_loss=float(st.session_state.get("live_refloss", 50.0)),
+        refuerzo_max=int(st.session_state.get("live_refmax", 2)),
     )
 
 
@@ -101,9 +103,13 @@ e2.number_input("Inversión CALL (%)", 0.0, 100.0, value=50.0, step=5.0, key="li
 e3.number_input("Umbral ROI (%)", value=10.0, step=5.0, key="live_umbral")
 e4.number_input("Stop loss (%)", value=-100.0, step=10.0, key="live_stop")
 e5.number_input("Spread máx ($)", min_value=0.0, value=0.10, step=0.01, key="live_maxspread")
-f1, f2, _f3 = st.columns(3)
+f1, f2, f3, f4 = st.columns(4)
 f1.number_input("Prima mín ($)", min_value=0.0, value=0.30, step=0.05, key="live_pmin")
 f2.number_input("Prima máx ($)", min_value=0.0, value=5.00, step=0.05, key="live_pmax")
+if st.session_state.get("live_tipo") == "CALL y PUT (Refuerzo)":
+    f3.number_input("Umbral pérdida refuerzo (%)", min_value=1.0, max_value=99.0,
+                    value=50.0, step=5.0, key="live_refloss")
+    f4.number_input("Refuerzos (máx)", 0, 10, value=2, key="live_refmax")
 
 st.divider()
 
@@ -172,7 +178,9 @@ def live_view():
         head = ("🎯 Umbral alcanzado" if sig == "take_profit"
                 else "🛑 Stop alcanzado" if sig == "stop_loss" else "⏳ En posición")
         arrow = "▲" if m["pnl"] >= 0 else "▼"
-        st.markdown(f"#### {arrow} {head} · {pos['tipo']} · entró {pos['entry_ts'][11:16]} → {str(now)[11:16]}")
+        _nr = len(pos.get("reinforcements", []))
+        st.markdown(f"#### {arrow} {head} · {pos['tipo']} · entró {pos['entry_ts'][11:16]} → "
+                    f"{str(now)[11:16]}" + (f" · ➕{_nr} refuerzo(s)" if _nr else ""))
         g = st.columns(6)
         g[0].metric("Inversión", f"${m['cost']:,.2f}")
         for i, r in enumerate((Right.CALL, Right.PUT)):
@@ -183,8 +191,26 @@ def live_view():
         g[4].metric("Combined % exit", f"{m['combined']:+.1f}%")
         g[5].metric("Capital acumulado", f"${m['capital']:,.2f}")
 
+        # Salida tiene prioridad; si NO hay salida, se evalúa el REFUERZO (martingala).
+        rcand = (lc.reinforce_candidate(pos, m)
+                 if (pos["tipo"] == "CALL y PUT (Refuerzo)" and sig is None) else None)
         if sig is not None:
             st.warning(f"El sistema sugiere CERRAR ({head}). Confirmá con el botón.")
+        elif rcand is not None:
+            _rp = m["per"][rcand]["pct"]
+            st.warning(f"🎯 La pierna **{rcand.value}** cae **{_rp:+.0f}%** — el sistema sugiere "
+                       f"REFORZAR (refuerzo {_nr + 1}/{pos['refuerzo_max']}).")
+            if st.button(f"➕ Reforzar {rcand.value} (paper)", use_container_width=True):
+                try:
+                    ev = lc.reinforce(broker, market, now, pos, rcand)
+                    st.session_state["live_pos"] = pos
+                    st.session_state.setdefault("live_fills", []).append(
+                        {"hora": str(now)[11:16],
+                         "occ": next(l["occ"] for l in pos["legs"] if l["right"] == rcand.value),
+                         "lado": "BUY (refuerzo)", "qty": ev["qty"], "precio": ev["price"]})
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"No se pudo reforzar: {e}")
         if st.button("💵 Cerrar / Vender (paper)", type="primary", use_container_width=True):
             for r in (Right.CALL, Right.PUT):
                 rl = [l for l in pos["legs"] if l["right"] == r.value]

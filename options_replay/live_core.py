@@ -82,7 +82,44 @@ def buy_proposal(broker, market, now: Any, ticker: str, expiry: str, p: dict, ca
         legs.append({"occ": c.occ, "right": r.value, "strike": c.strike,
                      "qty": qty, "entry_price": f.price, "entry_ts": str(now)})
     return {"ticker": ticker, "expiry": expiry, "tipo": p["tipo"],
-            "umbral": p["umbral"], "stop": p["stop"], "entry_ts": str(now), "legs": legs}
+            "umbral": p["umbral"], "stop": p["stop"], "entry_ts": str(now), "legs": legs,
+            "invest": {r.value: v for r, v in invest.items()},        # para re-invertir al reforzar
+            "refuerzo_loss": float(p.get("refuerzo_loss", 50.0)),
+            "refuerzo_max": int(p.get("refuerzo_max", 0)),
+            "reinforcements": []}
+
+
+def reinforce_candidate(pos: dict, m: dict) -> Optional[Right]:
+    """¿Qué pierna reforzar AHORA (martingala)? La que MÁS pierde entre las elegibles:
+    ROI propio <= -refuerzo_loss, mark > penny, y bajo el tope total. None si ninguna."""
+    if len(pos.get("reinforcements", [])) >= int(pos.get("refuerzo_max", 0)):
+        return None
+    loss = float(pos.get("refuerzo_loss", 50.0))
+    cands = []
+    for r in (Right.CALL, Right.PUT):
+        d = m["per"].get(r)
+        if not d or d["cost"] <= 0 or d["bid"] <= 0.01:
+            continue
+        if d["pct"] <= -loss:
+            cands.append((r, d["pct"]))
+    return min(cands, key=lambda x: x[1])[0] if cands else None
+
+
+def reinforce(broker, market, now: Any, pos: dict, right: Right) -> dict:
+    """Compra (paper) otra tranche de la pierna `right` (MISMO contrato) al ask, re-invirtiendo
+    el capital original de esa pierna. Muta `pos` (agrega la tranche + el evento). Devuelve el
+    evento de refuerzo para el log de operaciones."""
+    base = next(l for l in pos["legs"] if l["right"] == right.value)
+    ask = market.quote(base["occ"], now).ask
+    if not ask or ask <= 0:
+        raise RuntimeError(f"sin ask para reforzar {right.value}")
+    qty = max(1, int(float(pos.get("invest", {}).get(right.value, 0.0)) // (ask * 100)))
+    f = broker.execute(OrderRequest(base["occ"], OrderSide.BUY, qty, ts=now), now)
+    pos["legs"].append({"occ": base["occ"], "right": right.value, "strike": base["strike"],
+                        "qty": qty, "entry_price": f.price, "entry_ts": str(now)})
+    ev = {"ts": str(now), "right": right.value, "price": f.price, "qty": qty}
+    pos.setdefault("reinforcements", []).append(ev)
+    return ev
 
 
 def mark(market, pos: dict, now: Any) -> dict:
