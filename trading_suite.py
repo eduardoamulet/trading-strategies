@@ -71,7 +71,7 @@ perfil = st.Page("options_replay/perfil_app.py", title="Perfil", icon="👤", ur
 ayuda = st.Page("options_replay/ayuda_app.py", title="Ayuda", icon="❓", url_path="ayuda")
 backtesting = st.Page("options_replay/app.py", title="Backtesting", icon="🔬",
                       url_path="simulation")
-live = st.Page("live_trader/ui/app.py", title="Live", icon="🟢", url_path="live")
+live = st.Page("options_replay/live_app.py", title="Operar", icon="🟢", url_path="live")
 registro = st.Page("options_replay/registro_app.py", title="Registro", icon="📓",
                    url_path="registro")
 datos = st.Page("options_replay/update_status_app.py", title="Datos", icon="🔄",
