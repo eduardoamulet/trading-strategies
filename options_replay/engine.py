@@ -925,6 +925,7 @@ def run_next_iteration(
     entry_at_ask: bool = False,
     exit_at_bid: bool = False,
     nbbo_timeline: bool = False,
+    search_window_min: float = 0.0,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -1001,6 +1002,7 @@ def run_next_iteration(
         entry_at_ask=entry_at_ask,
         exit_at_bid=exit_at_bid,
         nbbo_timeline=nbbo_timeline,
+        search_window_min=search_window_min,
     )
 
 
@@ -1244,6 +1246,7 @@ def _run_one_iteration(
     entry_at_ask: bool = False,
     exit_at_bid: bool = False,
     nbbo_timeline: bool = False,
+    search_window_min: float = 0.0,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -1253,65 +1256,82 @@ def _run_one_iteration(
     elif mode == "put_only":
         invest_call = 0.0
 
-    under = under_full[
-        (under_full["timestamp"] >= start_ts) & (under_full["timestamp"] <= end_ts)
-    ].reset_index(drop=True)
-    if under.empty:
+    if under_full[(under_full["timestamp"] >= start_ts)
+                  & (under_full["timestamp"] <= end_ts)].empty:
         raise ValueError(f"No bars after {start_ts}")
-    spot_at_start = float(under.iloc[0]["open"])
-
-    calls_sorted = calls_chain.assign(
-        _d=(calls_chain["strike_price"] - spot_at_start).abs()
-    ).sort_values(["_d", "strike_price"])
-    puts_sorted = puts_chain.assign(
-        _d=(puts_chain["strike_price"] - spot_at_start).abs()
-    ).sort_values(["_d", "strike_price"])
 
     spread_cfg = spread_cfg or load_spread_config()
 
-    # Probing CALL (skip si mode == "put_only")
-    if mode != "put_only":
-        call_pick, call_probes, call_tier = _probe_premium_range(
-            downloader, ticker, date, calls_sorted, "C", start_ts, end_ts,
-            premium_min, premium_max, max_strikes_to_probe,
-            ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
-            selection_criterion=selection_criterion, value_target=value_target,
-        )
-        if call_pick is None:
-            raise NoMatchError("CALL", call_probes, premium_min, premium_max)
-        call_fallback = (call_tier == "fallback")
-        df_c = downloader.option(call_pick.occ, date)
-    else:
-        call_pick = StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False)
-        call_probes = []
-        call_fallback = False
-        call_tier = ""
-        df_c = pd.DataFrame({
-            "timestamp": under["timestamp"],
-            "open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0, "volume": 0,
-        })
+    def _empty_leg(_under):
+        return pd.DataFrame({"timestamp": _under["timestamp"], "open": 0.0, "high": 0.0,
+                             "low": 0.0, "close": 0.0, "volume": 0})
 
-    # Probing PUT (skip si mode == "call_only")
-    if mode != "call_only":
-        put_pick, put_probes, put_tier = _probe_premium_range(
-            downloader, ticker, date, puts_sorted, "P", start_ts, end_ts,
-            premium_min, premium_max, max_strikes_to_probe,
-            ext_min=ext_min, ext_max=ext_max, spot=spot_at_start, spread_cfg=spread_cfg,
-            selection_criterion=selection_criterion, value_target=value_target,
-        )
-        if put_pick is None:
-            raise NoMatchError("PUT", put_probes, premium_min, premium_max)
-        put_fallback = (put_tier == "fallback")
-        df_p = downloader.option(put_pick.occ, date)
-    else:
-        put_pick = StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False)
-        put_probes = []
-        put_fallback = False
-        put_tier = ""
-        df_p = pd.DataFrame({
-            "timestamp": under["timestamp"],
-            "open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0, "volume": 0,
-        })
+    def _try_select(probe_ts):
+        """Intenta seleccionar CALL+PUT (según `mode`) con los datos AL minuto `probe_ts`
+        (spot, prima y spread de ese momento). Devuelve {'ok':True,...} si TODAS las piernas
+        requeridas encuentran contrato; {'ok':False,'leg','probes'} si alguna no (→ seguir
+        buscando); None si ya no hay barras desde `probe_ts`."""
+        _under = under_full[(under_full["timestamp"] >= probe_ts)
+                            & (under_full["timestamp"] <= end_ts)].reset_index(drop=True)
+        if _under.empty:
+            return None
+        _spot = float(_under.iloc[0]["open"])
+        _calls = calls_chain.assign(_d=(calls_chain["strike_price"] - _spot).abs()).sort_values(["_d", "strike_price"])
+        _puts = puts_chain.assign(_d=(puts_chain["strike_price"] - _spot).abs()).sort_values(["_d", "strike_price"])
+        if mode != "put_only":
+            _cp, _cprobes, _ctier = _probe_premium_range(
+                downloader, ticker, date, _calls, "C", probe_ts, end_ts,
+                premium_min, premium_max, max_strikes_to_probe, ext_min=ext_min, ext_max=ext_max,
+                spot=_spot, spread_cfg=spread_cfg, selection_criterion=selection_criterion, value_target=value_target)
+            if _cp is None:
+                return {"ok": False, "leg": "CALL", "probes": _cprobes}
+            _dfc = downloader.option(_cp.occ, date)
+        else:
+            _cp, _cprobes, _ctier, _dfc = (StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False),
+                                           [], "", _empty_leg(_under))
+        if mode != "call_only":
+            _pp, _pprobes, _ptier = _probe_premium_range(
+                downloader, ticker, date, _puts, "P", probe_ts, end_ts,
+                premium_min, premium_max, max_strikes_to_probe, ext_min=ext_min, ext_max=ext_max,
+                spot=_spot, spread_cfg=spread_cfg, selection_criterion=selection_criterion, value_target=value_target)
+            if _pp is None:
+                return {"ok": False, "leg": "PUT", "probes": _pprobes}
+            _dfp = downloader.option(_pp.occ, date)
+        else:
+            _pp, _pprobes, _ptier, _dfp = (StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False),
+                                           [], "", _empty_leg(_under))
+        return {"ok": True, "ts": probe_ts, "under": _under, "spot": _spot,
+                "call_pick": _cp, "call_probes": _cprobes, "call_tier": _ctier, "df_c": _dfc,
+                "put_pick": _pp, "put_probes": _pprobes, "put_tier": _ptier, "df_p": _dfp}
+
+    # VENTANA DE BÚSQUEDA: desde start_ts, repreguntar Opción 1 cada minuto hasta
+    # start_ts + search_window_min, y ENTRAR en el primer minuto donde TODAS las piernas
+    # pasan. 0 = un solo intento a start_ts (clásico). Espera a que el spread de la subasta
+    # se cierre (transitorio → entra) sin forzar contratos ilíquidos (spread persistente →
+    # nunca pasa → NoMatchError = "Sin resultado"). Granularidad 1 min = la del cache de quotes.
+    _win = max(0, int(round(float(search_window_min or 0))))
+    _attempt, _last_fail, _t = None, None, start_ts
+    _limit = start_ts + pd.Timedelta(minutes=_win)
+    while _t <= _limit:
+        _res = _try_select(_t)
+        if _res is None:
+            break
+        if _res.get("ok"):
+            _attempt = _res
+            break
+        _last_fail = _res
+        _t = _t + pd.Timedelta(minutes=1)
+    if _attempt is None:
+        _lf = _last_fail or {"leg": "CALL", "probes": []}
+        raise NoMatchError(_lf["leg"], _lf["probes"], premium_min, premium_max)
+
+    start_ts = _attempt["ts"]
+    under, spot_at_start = _attempt["under"], _attempt["spot"]
+    call_pick, call_probes, call_tier, df_c = (_attempt["call_pick"], _attempt["call_probes"],
+                                               _attempt["call_tier"], _attempt["df_c"])
+    put_pick, put_probes, put_tier, df_p = (_attempt["put_pick"], _attempt["put_probes"],
+                                            _attempt["put_tier"], _attempt["df_p"])
+    call_fallback, put_fallback = (call_tier == "fallback"), (put_tier == "fallback")
 
     merged = _merge_minute(under, df_c, df_p, start_ts, end_ts)
     if merged.empty:

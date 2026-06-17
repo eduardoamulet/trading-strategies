@@ -982,6 +982,11 @@ def _render_iters_panel(_iters_seed):
     _sig_fill_default = st.selectbox(
         "Modelo de fills (por defecto · sobrescribible por fila en la columna «Fills»)",
         _FILL_MODES, index=0, key="fill_mode_sig", help=_FILL_MODE_HELP)
+    _sig_search = float(st.number_input(
+        "Ventana de búsqueda (min)", min_value=0.0, max_value=30.0, value=0.0, step=1.0, key="sig_search",
+        help="Desde el horario de entrada, repregunta Opción 1 cada minuto hasta encontrar un contrato "
+             "que pase TODO (espera a que el spread de la subasta de 09:30 se cierre). Entra en ese "
+             "momento. 0 = un solo intento. Las acciones ilíquidas siguen sin match (spread persistente)."))
 
     def _eff_fills(label) -> str:
         _l = str(label or "(default)").strip()
@@ -1045,7 +1050,8 @@ def _render_iters_panel(_iters_seed):
                 _ef = _f1 or _f2
                 _futs.append(_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
                                         _ef, _ef, False, s.get("criterio", "spread"), _sig_refuerzo,
-                                        _sig_refuerzo_max, call_pct=_sig_call_pct, nbbo_timeline=_f2))
+                                        _sig_refuerzo_max, call_pct=_sig_call_pct, nbbo_timeline=_f2,
+                                        search_window_min=_sig_search))
             _dn = 0
             for _f in as_completed(_futs):
                 try:
@@ -1602,6 +1608,12 @@ with st.sidebar.expander("Parámetros de sesión", expanded=True):
     _f1, _f2 = _fill_flags(_fill_mode)
     entry_at_ask = exit_at_bid = (_f1 or _f2)
     nbbo_timeline = _f2
+    search_window_min = float(st.number_input(
+        "Ventana de búsqueda (min)", min_value=0.0, max_value=30.0, value=0.0, step=1.0,
+        key="search_window_manual",
+        help="Desde el horario de entrada, repregunta Opción 1 cada minuto hasta encontrar un contrato "
+             "que pase TODO (espera a que el spread de la subasta se cierre). Entra en ese momento. "
+             "0 = un solo intento. Las acciones ilíquidas siguen sin match."))
 
     # Info del modo overnight (DTE=1).
     if _is_dte1:
@@ -2153,6 +2165,7 @@ if btn_iniciar:
                         entry_at_ask=entry_at_ask,
                         exit_at_bid=exit_at_bid,
                         nbbo_timeline=nbbo_timeline,
+                        search_window_min=search_window_min,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -2281,6 +2294,7 @@ if btn_iniciar:
                         entry_at_ask=entry_at_ask,
                         exit_at_bid=exit_at_bid,
                         nbbo_timeline=nbbo_timeline,
+                        search_window_min=search_window_min,
                     )
                     _exp = it.end_dt.strftime("%Y-%m-%d") if dte == 1 else expiry
                     return {"status": "ok", "run": {
@@ -2495,6 +2509,7 @@ elif btn_proxima:
                         entry_at_ask=entry_at_ask,
                         exit_at_bid=exit_at_bid,
                         nbbo_timeline=nbbo_timeline,
+                        search_window_min=search_window_min,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
