@@ -878,11 +878,12 @@ def _has_0dte_on(dl, ticker: str, date: str) -> bool:
 
 def _render_iters_panel(_iters_seed):
     st.caption(
-        "Cada fila = 1 iteración. **Tipo** = modo (CALL/PUT una pierna · CALL y PUT · "
-        "CALL o PUT + variantes 'plus'; los de dos piernas reparten 50/50) · **Criterio** = "
-        "selección de contrato por fila (Opción 1 menor spread · Opción 2 primer contrato "
-        "cerca de ITM) · mismo día (sale 16:00). Editá, agregá o borrá filas. Las señales "
-        "de **Alertas** llegan acá."
+        "Cada fila = 1 iteración, configurable por fila: **Tipo** = modo (CALL/PUT una pierna · "
+        "CALL y PUT · CALL o PUT + variantes 'plus' · Refuerzo; los de dos piernas reparten "
+        "50/50) · **Criterio** = selección de contrato (Opción 1 menor spread · Opción 2 cerca "
+        "de ITM) · **Fills** = modelo de fills ('(default)' usa el selector global de abajo, o "
+        "Barra/Fase 1/Fase 2 por fila) · mismo día (sale 16:00). Editá, agregá o borrá filas. "
+        "Las señales de **Alertas** llegan acá."
     )
     _seed_df = pd.DataFrame(_iters_seed)
     for _c in ("Ticker", "Fecha", "Hora", "Tipo", "Estrategia"):
@@ -908,6 +909,13 @@ def _render_iters_panel(_iters_seed):
         _seed_df["Criterio"] = _CRIT_OPTS[0]
     _seed_df["Criterio"] = _seed_df["Criterio"].apply(
         lambda v: str(v).strip() if str(v).strip() in _CRIT_OPTS else _CRIT_OPTS[0])
+    # Modelo de fills POR FILA. "(default)" = usa el selector global de abajo; o un modo
+    # concreto (Barra / Fase 1 / Fase 2) que SOBRESCRIBE el default para esa fila.
+    _FILL_ROW_OPTS = ["(default)"] + _FILL_MODES
+    if "Fills" not in _seed_df.columns:
+        _seed_df["Fills"] = "(default)"
+    _seed_df["Fills"] = _seed_df["Fills"].apply(
+        lambda v: str(v).strip() if str(v).strip() in _FILL_ROW_OPTS else "(default)")
     # Columna ✓ (1ª, a la izquierda) para elegir qué filas backtestear. Por defecto TODAS
     # marcadas; los botones marcan/desmarcan todas (re-siembran el editor).
     _bsa, _bsn, _ = st.columns([1.7, 1.7, 5])
@@ -924,7 +932,7 @@ def _render_iters_panel(_iters_seed):
     # Centrar los VALORES (text-align en celdas vía Styler; los headers no se pueden
     # centrar — limitación del grid de Glide, igual que en la tabla de resultados).
     _ed = st.data_editor(
-        _seed_df[["✓", "Ticker", "Fecha", "Hora", "Tipo", "Criterio", "% Cumpl.", "Estrategia"]].style.set_properties(
+        _seed_df[["✓", "Ticker", "Fecha", "Hora", "Tipo", "Criterio", "Fills", "% Cumpl.", "Estrategia"]].style.set_properties(
             **{"text-align": "center"}),
         num_rows="dynamic",
         use_container_width=True, hide_index=True, key="bt_iters_editor",
@@ -941,6 +949,11 @@ def _render_iters_panel(_iters_seed):
                 help="Cómo se elige el contrato. Opción 1: menor spread en el rango (con "
                      "compuerta de spread). Opción 2: el primer contrato dentro del dinero "
                      "(1-ITM), ignorando spread y rango de prima."),
+            "Fills": st.column_config.SelectboxColumn(
+                "Fills", options=_FILL_ROW_OPTS, required=True, width="medium",
+                help="Modelo de fills POR FILA. '(default)' usa el selector global de abajo. "
+                     "Barra = precio del bar (optimista). Fase 1 = ASK al entrar/BID al salir "
+                     "(parche en la salida). Fase 2 = bid por barra, el más realista."),
             "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%",
                                                       help="Probabilidad de la señal (informativo)."),
             "Estrategia": st.column_config.TextColumn(
@@ -964,6 +977,16 @@ def _render_iters_panel(_iters_seed):
         "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
         help="Solo para filas 'CALL y PUT (Refuerzo)'. Máximo de refuerzos por iteración (en total, sumando ambas piernas)."))
 
+    # Modelo de fills POR DEFECTO del batch. Las filas con Fills="(default)" usan ESTE valor;
+    # las filas con un modo concreto en la columna «Fills» lo sobrescriben.
+    _sig_fill_default = st.selectbox(
+        "Modelo de fills (por defecto · sobrescribible por fila en la columna «Fills»)",
+        _FILL_MODES, index=0, key="fill_mode_sig", help=_FILL_MODE_HELP)
+
+    def _eff_fills(label) -> str:
+        _l = str(label or "(default)").strip()
+        return _l if _l in _FILL_MODES else _sig_fill_default
+
     _specs = []
     for _, _r in _ed.iterrows():
         if not bool(_r.get("✓", False)):   # solo las filas MARCADAS
@@ -974,7 +997,8 @@ def _render_iters_panel(_iters_seed):
         _specs.append({"ticker": _tk, "fecha": str(_r.get("Fecha") or "").strip(),
                        "hora": str(_r.get("Hora") or "").strip(),
                        "tipo": str(_r.get("Tipo") or "").upper().strip(),
-                       "criterio": _CRIT_KEY.get(str(_r.get("Criterio") or "").strip(), "spread")})
+                       "criterio": _CRIT_KEY.get(str(_r.get("Criterio") or "").strip(), "spread"),
+                       "fills": _eff_fills(_r.get("Fills"))})
 
     # Resolución (señales): 30s/15s solo si TODOS los tickers marcados tienen la data fina.
     try:
@@ -995,10 +1019,6 @@ def _render_iters_panel(_iters_seed):
         _noav = sorted({s["ticker"] for s in _specs} - _avail)
         st.caption(f"⏱️ Solo **1 min** disponible — {', '.join(_noav)} sin 30s/15s descargada.")
 
-    _sig_fill_mode = st.selectbox(
-        "Modelo de fills", _FILL_MODES, index=0, key="fill_mode_sig", help=_FILL_MODE_HELP)
-    _sig_f1, _sig_f2 = _fill_flags(_sig_fill_mode)
-    _sig_fills = _sig_f1 or _sig_f2   # ambas fases: pagar ASK al entrar / cobrar BID al salir
     if st.button(f"▶ Correr backtest de {len(_specs)} iteración(es)", type="primary",
                  disabled=not _specs, key="sig_run"):
         _dl = get_downloader(api_key)
@@ -1017,10 +1037,15 @@ def _render_iters_panel(_iters_seed):
         _t0 = time.perf_counter()
         _res = []
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
-            _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
-                                _sig_fills, _sig_fills, False, s.get("criterio", "spread"), _sig_refuerzo,
-                                _sig_refuerzo_max, call_pct=_sig_call_pct, nbbo_timeline=_sig_f2)
-                     for _i, s in enumerate(_specs, start=1)]
+            _futs = []
+            for _i, s in enumerate(_specs, start=1):
+                # flags de fills POR FILA: f1/f2 desde la columna «Fills» (ya resuelta a un
+                # modo concreto). entry_at_ask/exit_at_bid = (Fase 1 o Fase 2); nbbo = Fase 2.
+                _f1, _f2 = _fill_flags(s.get("fills", _FILL_MODES[0]))
+                _ef = _f1 or _f2
+                _futs.append(_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
+                                        _ef, _ef, False, s.get("criterio", "spread"), _sig_refuerzo,
+                                        _sig_refuerzo_max, call_pct=_sig_call_pct, nbbo_timeline=_f2))
             _dn = 0
             for _f in as_completed(_futs):
                 try:
