@@ -84,17 +84,18 @@ _rows = [{"Ticker": k,
           "Nombre": v.get("nombre"), "Sector": v.get("bloque_sector")}
          for k, v in sorted(_ti.items())]
 _df_t = pd.DataFrame(_rows, columns=["Ticker", "Óptimo mín", "Óptimo máx", "Ext mín", "Ext máx", "Nombre", "Sector"])
-# Buscador por ticker: filtra la VISTA. El guardado MERGEA en el set completo (no borra los
-# tickers ocultos por el filtro). Guardá antes de cambiar el filtro para no perder ediciones.
-_q = st.text_input("🔎 Buscar ticker", key="cfg_ti_search",
-                   placeholder="ej. IWM · vacío = todos").strip()
-_df_view = (_df_t[_df_t["Ticker"].str.contains(_q, case=False, na=False)].reset_index(drop=True)
-            if _q else _df_t)
+# Buscador por ticker (typeahead): multiselect con búsqueda nativa al tipear; podés elegir
+# varios. Filtra la VISTA. El guardado MERGEA en el set completo (no borra los tickers ocultos).
+_all_tk = _df_t["Ticker"].astype(str).tolist()
+_sel = st.multiselect(
+    "🔎 Buscar ticker (typeahead)", options=_all_tk, default=[], key="cfg_ti_search_ms",
+    placeholder="Tipeá para buscar · podés elegir varios · vacío = todos")
+_df_view = (_df_t[_df_t["Ticker"].isin(_sel)].reset_index(drop=True) if _sel else _df_t)
 st.caption(f"Mostrando **{len(_df_view)}** de **{len(_df_t)}** tickers."
-           + (" · 💾 Guardá antes de cambiar el filtro." if _q else ""))
+           + (" · 💾 Guardá antes de cambiar la selección." if _sel else ""))
 _ed_t = st.data_editor(
-    _df_view, num_rows="dynamic", use_container_width=True, hide_index=True, height=460,
-    key=f"cfg_ti_ed_{_q.upper()}",
+    _df_view, num_rows="dynamic", use_container_width=True, hide_index=True,
+    height=(None if _sel else 460), key="cfg_ti_ed_" + "_".join(sorted(_sel)),
     column_config={
         "Ticker": st.column_config.TextColumn("Ticker", required=True, width="small"),
         "Óptimo mín": st.column_config.NumberColumn("Óptimo mín", min_value=0.0, step=5.0),
@@ -139,5 +140,5 @@ if st.button("💾 Guardar rangos por ticker", type="primary", key="save_ti"):
         new.pop(_tk, None)
     TICKER_INFO_PATH.write_text(json.dumps(new, indent=2, ensure_ascii=False), encoding="utf-8")
     st.success(f"Guardado: {len(new)} ticker(s) en total"
-               + (f" · editaste {len(_edited)} en el filtro «{_q}»." if _q else ".")
+               + (f" · editaste {len(_edited)} de la selección ({', '.join(_sel)})." if _sel else ".")
                + " El motor lo toma en el próximo backtest.")
