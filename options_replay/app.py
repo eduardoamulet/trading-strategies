@@ -1741,7 +1741,7 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
     else:
         engine_mode = "both"
 
-    # Panel de descripción del Tipo de operación elegido (reemplaza al tooltip ⓘ).
+    # Descripción del Tipo de operación elegido (texto por modo).
     _MODE_DESC = {
         "CALL y PUT": "🎯 **CALL y PUT** — se compran ambas piernas (50/50) y la salida es "
                       "**combinada por ROI total** (Umbral de ROI / Stop loss sobre la suma de "
@@ -1769,7 +1769,12 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
                              "cuando, entre lo bancado y su valor, se **recupera la inversión "
                              "total**. Termina ahí o al cierre del día.",
     }
-    st.info(_MODE_DESC.get(_straddle_mode, ""))
+    # La descripción va en un EXPANDER colapsado: no se muestra por defecto; se abre al
+    # hacer click (para no ocupar espacio salvo que se quiera leer).
+    _desc = _MODE_DESC.get(_straddle_mode, "")
+    if _desc:
+        with st.expander(f"ⓘ ¿Qué hace «{_straddle_mode}»?", expanded=False):
+            st.markdown(_desc)
 
     # Parámetro EXCLUSIVO de "CALL y PUT (Refuerzo)": % de pérdida de UNA pierna que dispara
     # reforzar la pierna que MÁS pierde (más contratos del mismo tipo). Default 50.
