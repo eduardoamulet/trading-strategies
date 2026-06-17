@@ -84,8 +84,17 @@ _rows = [{"Ticker": k,
           "Nombre": v.get("nombre"), "Sector": v.get("bloque_sector")}
          for k, v in sorted(_ti.items())]
 _df_t = pd.DataFrame(_rows, columns=["Ticker", "Óptimo mín", "Óptimo máx", "Ext mín", "Ext máx", "Nombre", "Sector"])
+# Buscador por ticker: filtra la VISTA. El guardado MERGEA en el set completo (no borra los
+# tickers ocultos por el filtro). Guardá antes de cambiar el filtro para no perder ediciones.
+_q = st.text_input("🔎 Buscar ticker", key="cfg_ti_search",
+                   placeholder="ej. IWM · vacío = todos").strip()
+_df_view = (_df_t[_df_t["Ticker"].str.contains(_q, case=False, na=False)].reset_index(drop=True)
+            if _q else _df_t)
+st.caption(f"Mostrando **{len(_df_view)}** de **{len(_df_t)}** tickers."
+           + (" · 💾 Guardá antes de cambiar el filtro." if _q else ""))
 _ed_t = st.data_editor(
-    _df_t, num_rows="dynamic", use_container_width=True, hide_index=True, height=460, key="cfg_ti_ed",
+    _df_view, num_rows="dynamic", use_container_width=True, hide_index=True, height=460,
+    key=f"cfg_ti_ed_{_q.upper()}",
     column_config={
         "Ticker": st.column_config.TextColumn("Ticker", required=True, width="small"),
         "Óptimo mín": st.column_config.NumberColumn("Óptimo mín", min_value=0.0, step=5.0),
@@ -104,11 +113,17 @@ if st.button("💾 Guardar rangos por ticker", type="primary", key="save_ti"):
             return float(x)
         except (TypeError, ValueError):
             return None
-    new = {}
+    # MERGE: arrancamos del set COMPLETO (preserva los tickers que el filtro oculta) y
+    # aplicamos las ediciones de la VISTA. Solo se borran los tickers que estaban en la vista
+    # y el usuario quitó — nunca los ocultos por el filtro.
+    new = {tk: dict(v) for tk, v in _ti.items()}
+    _shown = set(_df_view["Ticker"].astype(str).str.strip().str.upper())
+    _edited = set()
     for _, r in _ed_t.iterrows():
         tk = str(r.get("Ticker") or "").strip().upper()
         if not tk:
             continue
+        _edited.add(tk)
         e = dict(_ti.get(tk, {}))   # preservar metadata (sectores, indice, fecha, etc.)
         e["ticker"] = tk
         e["rango_optimo_lo"] = _num(r.get("Óptimo mín"))
@@ -120,5 +135,9 @@ if st.button("💾 Guardar rangos por ticker", type="primary", key="save_ti"):
         if e.get("min") is not None and e.get("max") is not None:
             e["min_max_text"] = f"MIN ${e['min']:g} MAX ${e['max']:g}"
         new[tk] = e
+    for _tk in (_shown - _edited):   # filas que estaban en la vista y se borraron en el editor
+        new.pop(_tk, None)
     TICKER_INFO_PATH.write_text(json.dumps(new, indent=2, ensure_ascii=False), encoding="utf-8")
-    st.success(f"Guardado: {len(new)} ticker(s). El motor lo toma en el próximo backtest.")
+    st.success(f"Guardado: {len(new)} ticker(s) en total"
+               + (f" · editaste {len(_edited)} en el filtro «{_q}»." if _q else ".")
+               + " El motor lo toma en el próximo backtest.")
