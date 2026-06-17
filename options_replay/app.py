@@ -130,6 +130,27 @@ def get_downloader(api_key: str) -> Downloader:
     return Downloader(PolygonAdapter(api_key), DATA_DIR)
 
 
+# --- Modelo de fills (cómo se valúan entrada y salida) — compartido por ambos paneles ---
+_FILL_MODE_BAR = "Precio de barra (rápido)"
+_FILL_MODE_F1 = "NBBO entrada/salida (Fase 1)"
+_FILL_MODE_F2 = "NBBO por barra · triggers sobre el bid (Fase 2)"
+_FILL_MODES = [_FILL_MODE_BAR, _FILL_MODE_F1, _FILL_MODE_F2]
+_FILL_MODE_HELP = (
+    "Cómo se valúan la entrada y la salida:\n\n"
+    "• **Precio de barra**: usa el precio de la barra (último trade). Más rápido y optimista.\n\n"
+    "• **NBBO entrada/salida (Fase 1)**: pagás el ASK al entrar y cobrás el BID al salir (parche solo "
+    "en la salida). Aproximación barata del costo del spread.\n\n"
+    "• **NBBO por barra (Fase 2)**: la valuación y TODOS los triggers usan el BID por minuto (lo que "
+    "realmente cobrás en cada barra) y la entrada el ASK. El más realista → baja el P&L. La 1ª corrida "
+    "por contrato/día baja la línea de quotes (~2 s) y queda cacheada.")
+
+
+def _fill_flags(mode: str) -> tuple[bool, bool]:
+    """(fase1, fase2) según el modo de fills. fase1 = NBBO entrada/salida (parche última fila);
+    fase2 = NBBO por barra (serie de bid → valuación y triggers sobre el bid)."""
+    return (mode == _FILL_MODE_F1, mode == _FILL_MODE_F2)
+
+
 TZ = "America/New_York"
 
 # Feriados bursátiles US conocidos (NYSE/CBOE). Cuando se computa el default
@@ -883,10 +904,10 @@ def _render_iters_panel(_iters_seed):
         _noav = sorted({s["ticker"] for s in _specs} - _avail)
         st.caption(f"⏱️ Solo **1 min** disponible — {', '.join(_noav)} sin 30s/15s descargada.")
 
-    _sig_fills = st.checkbox(
-        "Fills realistas (NBBO): ASK al entrar · BID al salir", value=False, key="fills_nbbo_sig",
-        help="Pagás el ASK al comprar y vendés al BID al cerrar (NBBO de Polygon), en vez del precio "
-             "de la barra. Refleja el costo del spread → baja el P&L (más realista).")
+    _sig_fill_mode = st.selectbox(
+        "Modelo de fills", _FILL_MODES, index=0, key="fill_mode_sig", help=_FILL_MODE_HELP)
+    _sig_f1, _sig_f2 = _fill_flags(_sig_fill_mode)
+    _sig_fills = _sig_f1 or _sig_f2   # ambas fases: pagar ASK al entrar / cobrar BID al salir
     if st.button(f"▶ Correr backtest de {len(_specs)} iteración(es)", type="primary",
                  disabled=not _specs, key="sig_run"):
         _dl = get_downloader(api_key)
@@ -907,7 +928,7 @@ def _render_iters_panel(_iters_seed):
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
             _futs = [_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
                                 _sig_fills, _sig_fills, False, s.get("criterio", "spread"), _sig_refuerzo,
-                                _sig_refuerzo_max, call_pct=_sig_call_pct)
+                                _sig_refuerzo_max, call_pct=_sig_call_pct, nbbo_timeline=_sig_f2)
                      for _i, s in enumerate(_specs, start=1)]
             _dn = 0
             for _f in as_completed(_futs):
@@ -1459,13 +1480,12 @@ with st.sidebar.expander("Parámetros de sesión", expanded=True):
     # Selección de contrato = SOLO la lógica del criterio elegido (Opción 1 / Opción 2).
     # La compuerta de spread va INCLUIDA en Opción 1 (rango por bucket de precio del contrato ASK).
     _spread_cfg = None
-    # Fills realistas (NBBO): pagar el ASK al entrar y vender al BID al salir (Polygon), en vez
-    # del precio de la barra → refleja el costo del spread. Off = fills al precio del bar (como antes).
-    _fills_nbbo = st.checkbox(
-        "Fills realistas (NBBO): ASK al entrar · BID al salir", value=False, key="fills_nbbo_manual",
-        help="Pagás el ASK (oferta) al comprar y vendés al BID al cerrar, según el NBBO de Polygon, "
-             "en vez del precio de la barra. Refleja el costo del spread → baja el P&L (más realista).")
-    entry_at_ask = exit_at_bid = bool(_fills_nbbo)
+    # Modelo de fills: barra (rápido) | NBBO entrada/salida (Fase 1) | NBBO por barra (Fase 2).
+    _fill_mode = st.selectbox(
+        "Modelo de fills", _FILL_MODES, index=0, key="fill_mode_manual", help=_FILL_MODE_HELP)
+    _f1, _f2 = _fill_flags(_fill_mode)
+    entry_at_ask = exit_at_bid = (_f1 or _f2)
+    nbbo_timeline = _f2
 
     # Info del modo overnight (DTE=1).
     if _is_dte1:
@@ -2016,6 +2036,7 @@ if btn_iniciar:
                         spread_cfg=_spread_cfg,
                         entry_at_ask=entry_at_ask,
                         exit_at_bid=exit_at_bid,
+                        nbbo_timeline=nbbo_timeline,
                     )
                 except NoMatchError as e:
                     st.error(str(e))
@@ -2143,6 +2164,7 @@ if btn_iniciar:
                         spread_cfg=_spread_cfg,
                         entry_at_ask=entry_at_ask,
                         exit_at_bid=exit_at_bid,
+                        nbbo_timeline=nbbo_timeline,
                     )
                     _exp = it.end_dt.strftime("%Y-%m-%d") if dte == 1 else expiry
                     return {"status": "ok", "run": {
@@ -2356,6 +2378,7 @@ elif btn_proxima:
                         spread_cfg=_spread_cfg,
                         entry_at_ask=entry_at_ask,
                         exit_at_bid=exit_at_bid,
+                        nbbo_timeline=nbbo_timeline,
                     )
                 except NoMatchError as e:
                     st.error(str(e))

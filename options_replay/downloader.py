@@ -37,6 +37,7 @@ class Downloader:
         (self.data_dir / "chain").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "options").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "quotes").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "quotes_minute").mkdir(parents=True, exist_ok=True)
         # Lock por path (creados on-demand bajo el guard). Serializa SOLO el acceso al
         # mismo archivo; archivos distintos no se bloquean entre sí.
         self._path_locks: dict[str, threading.Lock] = {}
@@ -118,6 +119,33 @@ class Downloader:
             # Persistir aunque sea vacío (None) para no re-intentar contratos sin quote.
             self._write_parquet(pd.DataFrame([q]), path)
             return q
+
+    def option_quote_series(self, occ_symbol: str, date: str, force: bool = False) -> pd.DataFrame:
+        """Línea de bid/ask por MINUTO de la sesión RTH (09:30–16:00) de `occ`/`date`,
+        cacheada en quotes_minute/ (1 parquet por occ+date, reusado por TODAS las
+        iteraciones de ese contrato/día). Trae los NBBO crudos de la sesión y los
+        resamplea al ÚLTIMO bid/ask de cada minuto → alineado al CIERRE del minuto, igual
+        que el bar (arregla el desfasaje de Fase 1, que tomaba el bid al inicio del bar).
+        Para los fills NBBO por barra (Fase 2). Devuelve DataFrame[timestamp, bid, ask]
+        (vacío si el contrato no tuvo quotes). Idempotente vía cache."""
+        safe = occ_symbol.replace(":", "_")
+        path = self.data_dir / "quotes_minute" / f"{safe}_{date}.parquet"
+        with self._lock_for(path):
+            if path.exists() and not force:
+                return pd.read_parquet(path)
+            start = pd.Timestamp(f"{date} 09:30", tz="America/New_York")
+            end = pd.Timestamp(f"{date} 16:00", tz="America/New_York")
+            raw = self.adapter.option_quotes_window(occ_symbol, start, end)
+            if raw is None or raw.empty:
+                out = pd.DataFrame(columns=["timestamp", "bid", "ask"])
+            else:
+                raw = raw.copy()
+                raw["timestamp"] = raw["timestamp"].dt.floor("min")
+                out = (raw.groupby("timestamp", as_index=False)
+                          .agg(bid=("bid", "last"), ask=("ask", "last")))
+            # Persistir aunque sea vacío para no re-pegar a la API en contratos sin quotes.
+            self._write_parquet(out, path)
+            return out
 
     def nearest_expiry(self, ticker: str, on_or_after: str) -> Optional[str]:
         """Return the smallest expiration >= on_or_after, or None.

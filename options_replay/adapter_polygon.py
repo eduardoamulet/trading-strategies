@@ -191,6 +191,38 @@ class PolygonAdapter:
             "spread": spread,
         }
 
+    def option_quotes_window(self, occ_symbol: str, start_ts: pd.Timestamp,
+                             end_ts: pd.Timestamp, max_pages: int = 40) -> pd.DataFrame:
+        """TODOS los NBBO (bid/ask) entre `start_ts` y `end_ts` (tz-aware), paginado.
+        Para construir la línea de bid/ask por minuto (fills NBBO por barra, Fase 2):
+        se traen los quotes crudos de la ventana y el caller los resamplea a minuto.
+        Devuelve DataFrame[timestamp(ET), bid, ask] asc (vacío si no hay quotes).
+        `max_pages` es un tope de seguridad (un 0DTE líquido ≈ 3 páginas de 50k)."""
+        ns0 = int(pd.Timestamp(start_ts).value)
+        ns1 = int(pd.Timestamp(end_ts).value)
+        path = f"/v3/quotes/{occ_symbol}"
+        params = {"timestamp.gte": ns0, "timestamp.lte": ns1,
+                  "order": "asc", "sort": "timestamp", "limit": 50000}
+        ts_list: list = []
+        bids: list = []
+        asks: list = []
+        next_url: Optional[str] = None
+        pages = 0
+        while True:
+            data = self._get(next_url or path, params if next_url is None else None)
+            for q in data.get("results", []):
+                ts_list.append(q.get("sip_timestamp"))
+                bids.append(q.get("bid_price"))
+                asks.append(q.get("ask_price"))
+            next_url = data.get("next_url")
+            pages += 1
+            if not next_url or pages >= max_pages:
+                break
+        if not ts_list:
+            return pd.DataFrame(columns=["timestamp", "bid", "ask"])
+        ts = pd.to_datetime(pd.Series(ts_list), unit="ns", utc=True).dt.tz_convert("America/New_York")
+        return pd.DataFrame({"timestamp": ts, "bid": bids, "ask": asks})
+
     # ---------- helpers ----------
 
     @staticmethod

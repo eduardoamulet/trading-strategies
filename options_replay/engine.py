@@ -819,7 +819,8 @@ def validate_0dte_session(downloader: Downloader, ticker: str, date: str) -> str
 
 
 def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, invest_put,
-                       profit_target, loss_thr, max_refuerzos=2, stop_thr=-1.0):
+                       profit_target, loss_thr, max_refuerzos=2, stop_thr=-1.0,
+                       call_buy_px=None, put_buy_px=None):
     """Martingala POR PIERNA del MISMO tipo. Abre CALL (invest_call) y PUT (invest_put).
     Disparador POR PIERNA: cada pierna mira SU PROPIO ROI. Cuando una (o ambas) cae a
     <= -loss_thr, se refuerza la pierna que MÁS pierde (ROI más negativo) comprando otro
@@ -832,8 +833,12 @@ def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, inve
     Devuelve (exit_idx, exit_reason, roi[], value[], invested[], events[]), donde
     events = [{'idx': t, 'leg': 'CALL'|'PUT', 'price': px}, ...] (un evento por refuerzo)."""
     import numpy as np
-    cpx = np.asarray(call_px, dtype=float)
+    cpx = np.asarray(call_px, dtype=float)   # MARK por minuto (bid si Fase 2) → valuación/ROI
     ppx = np.asarray(put_px, dtype=float)
+    # Precio de COMPRA de cada refuerzo: el ASK por minuto si se pasa (Fase 2: pagás la
+    # oferta al agregar tranches), si no el propio mark (comportamiento previo).
+    cbuy = np.asarray(call_buy_px if call_buy_px is not None else call_px, dtype=float)
+    pbuy = np.asarray(put_buy_px if put_buy_px is not None else put_px, dtype=float)
     n = len(cpx)
     call_tr = [float(call_entry)]            # precios de entrada de cada tranche CALL
     put_tr = [float(put_entry)]              # idem PUT (cada pierna lleva su propia lista)
@@ -868,9 +873,9 @@ def _simulate_refuerzo(call_px, put_px, call_entry, put_entry, invest_call, inve
         proi = (pv - pi) / pi if pi > 0 else 0.0
         cand = []
         if invest_call > 0 and croi <= -loss_thr and c > 0.01:
-            cand.append(("CALL", croi, float(c)))
+            cand.append(("CALL", croi, float(cbuy[t])))      # se PAGA el ask (cbuy)
         if invest_put > 0 and proi <= -loss_thr and p > 0.01:
-            cand.append(("PUT", proi, float(p)))
+            cand.append(("PUT", proi, float(pbuy[t])))
         if cand and len(events) < max_refuerzos:             # tope TOTAL (ambas piernas juntas)
             leg, _, px = min(cand, key=lambda x: x[1])       # la pierna que MÁS pierde
             (call_tr if leg == "CALL" else put_tr).append(px)
@@ -919,6 +924,7 @@ def run_next_iteration(
     spread_cfg: Optional[dict] = None,
     entry_at_ask: bool = False,
     exit_at_bid: bool = False,
+    nbbo_timeline: bool = False,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -994,6 +1000,7 @@ def run_next_iteration(
         spread_cfg=spread_cfg,
         entry_at_ask=entry_at_ask,
         exit_at_bid=exit_at_bid,
+        nbbo_timeline=nbbo_timeline,
     )
 
 
@@ -1236,6 +1243,7 @@ def _run_one_iteration(
     spread_cfg: Optional[dict] = None,
     entry_at_ask: bool = False,
     exit_at_bid: bool = False,
+    nbbo_timeline: bool = False,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -1333,11 +1341,49 @@ def _run_one_iteration(
         if not _capped.empty:
             merged = _capped.reset_index(drop=True)
 
-    # Base de costo de entrada: 'open' del bar (default) o el ASK del NBBO al minuto de
-    # entrada (entry_at_ask=True → fill realista: pagás la oferta, no el último trade).
+    # Fills NBBO POR BARRA (Fase 2): la VALUACIÓN y los triggers usan el BID por minuto (lo
+    # que REALMENTE cobrás si vendés en ese bar), no el precio del bar. Reemplazamos call_px/
+    # put_px por la línea de bid (mark) alineada al cierre de cada minuto; la entrada sigue al
+    # ASK y los refuerzos se compran al ASK (series _ask_*_ser). Así TODOS los modos/triggers
+    # disparan sobre el bid sin tocar su lógica. Si no hay timeline para una pierna, esa pierna
+    # cae al precio del bar (degradación segura). bid=0 (worthless) es válido → no se rellena.
+    _ask_c_ser = _ask_p_ser = None
+    if nbbo_timeline:
+        _idx = pd.DatetimeIndex(merged["timestamp"])
+
+        def _nbbo_series(pick, bar_col):
+            if not pick.occ or (pick.opening_premium or 0) <= 0:
+                return None, None
+            try:
+                qs = downloader.option_quote_series(pick.occ, date)
+            except Exception:
+                qs = None
+            if qs is None or qs.empty:
+                return None, None
+            qs = qs.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+            _bar = pd.Series(merged[bar_col].values, index=_idx)
+            _bid = qs["bid"].reindex(_idx, method="ffill")
+            _ask = qs["ask"].reindex(_idx, method="ffill")
+            _bid = _bid.where(_bid.notna(), _bar)   # minutos sin quote → precio del bar
+            _ask = _ask.where(_ask.notna(), _bar)
+            return _bid, _ask
+
+        _bid_c, _ask_c_ser = _nbbo_series(call_pick, "call_px")
+        _bid_p, _ask_p_ser = _nbbo_series(put_pick, "put_px")
+        if _bid_c is not None:
+            merged["call_px"] = _bid_c.values
+        if _bid_p is not None:
+            merged["put_px"] = _bid_p.values
+        merged["total"] = merged["call_px"] + merged["put_px"]
+
+    # Base de costo de entrada: 'open' del bar (default), el ASK del NBBO al minuto de entrada
+    # (entry_at_ask / Fase 1 → pagás la oferta), o el ASK de la línea NBBO (Fase 2, fila 0).
     # Si el ask no está cacheado, se pide al vuelo; si no hay NBBO, cae al 'open'.
-    def _entry_prem(pick):
-        if entry_at_ask and (pick.opening_premium or 0) > 0:
+    def _entry_prem(pick, ask_ser=None):
+        # Comprás al INICIO del minuto de entrada → ask PUNTUAL en start_ts (igual que Fase 1).
+        # nbbo_timeline también implica entrada al ask. El ask de la línea (fin del minuto) es
+        # solo fallback si el point-quote falla.
+        if (entry_at_ask or nbbo_timeline) and (pick.opening_premium or 0) > 0:
             ask = pick.ask
             if ask is None and pick.occ:
                 try:
@@ -1347,9 +1393,13 @@ def _run_one_iteration(
                     ask = None
             if ask and ask > 0:
                 return float(ask)
+            if nbbo_timeline and ask_ser is not None:
+                a0 = float(ask_ser.iloc[0])
+                if a0 and a0 > 0:
+                    return a0
         return float(pick.opening_premium or 0.0)
-    call_entry = _entry_prem(call_pick)
-    put_entry = _entry_prem(put_pick)
+    call_entry = _entry_prem(call_pick, _ask_c_ser)
+    put_entry = _entry_prem(put_pick, _ask_p_ser)
 
     # Cálculo de % por leg. Si la pierna fue "skip" (opening_premium == 0),
     # forzamos pct = 0 para evitar división por cero y para que no contamine
@@ -1476,7 +1526,9 @@ def _run_one_iteration(
         _exi, exit_reason, _rroi, _rval, _rinv, _events = _simulate_refuerzo(
             merged["call_px"].values, merged["put_px"].values, call_entry, put_entry,
             invest_call, invest_put, exit_threshold_pct, float(refuerzo_loss_threshold_pct),
-            int(refuerzo_max_count), stop_thr=float(stop_loss_pct))
+            int(refuerzo_max_count), stop_thr=float(stop_loss_pct),
+            call_buy_px=(_ask_c_ser.values if _ask_c_ser is not None else None),
+            put_buy_px=(_ask_p_ser.values if _ask_p_ser is not None else None))
         merged = merged.iloc[: _exi + 1].reset_index(drop=True)
         merged["total"] = merged["call_px"] + merged["put_px"]
         merged["ref_roi"] = _rroi
@@ -1515,10 +1567,11 @@ def _run_one_iteration(
         else:
             merged = merged.reset_index(drop=True)
 
-    # exit_at_bid: la venta se realiza al BID del NBBO al minuto de salida (lo que
-    # REALMENTE cobrás), no al precio del bar. Ajusta SOLO la última fila (la salida);
-    # el resto de la serie queda en precio de bar (el trigger ya se detectó arriba).
-    if exit_at_bid and not merged.empty:
+    # exit_at_bid (Fase 1): la venta se realiza al BID del NBBO al minuto de salida (lo que
+    # REALMENTE cobrás), no al precio del bar. Ajusta SOLO la última fila (la salida); el resto
+    # de la serie queda en precio de bar (el trigger ya se detectó arriba). Bajo nbbo_timeline
+    # (Fase 2) NO se aplica: toda la serie YA es el bid → la última fila ya es el bid.
+    if exit_at_bid and not nbbo_timeline and not merged.empty:
         _exit_ts = merged["timestamp"].iloc[-1]
         _last = merged.index[-1]
         for _col, _pick in (("call_px", call_pick), ("put_px", put_pick)):
