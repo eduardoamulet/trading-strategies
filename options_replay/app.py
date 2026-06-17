@@ -480,11 +480,14 @@ def render_batch_totals(
     day_runs: list,
     total_days: int,
     title: str = "💼 Totales del backtest",
+    show_risk: bool = False,
 ) -> None:
     """Renderiza el panel de 5 métricas + caption de razones de salida.
     Pensado para ser llamado tanto en vivo durante el batch (con day_runs
     parcial) como en el render final (con day_runs completo). Definida aquí
-    arriba porque el batch loop la llama antes del bloque de render."""
+    arriba porque el batch loop la llama antes del bloque de render.
+    `show_risk`=True añade el panel de riesgo/cola + charts (solo en el render
+    final; en vivo queda False para no recalcular/parpadear en cada update)."""
     successful = [r for r in day_runs if r.get("iteration") is not None]
     # "Ganancia total" = SUMATORIA de los ROI ($) de todas las iteraciones — es decir,
     # el valor FINAL de la columna "ROI ($) acumulado" de la tabla de días (cum_gain).
@@ -540,6 +543,88 @@ def render_batch_totals(
         f"**{n_trig}** umbral · **{n_stop}** stop loss · **{n_eod}** cierre de sesión  ·  "
         f"💹 **Ganancia total** = suma de los ROI ($) de todas las iteraciones"
     )
+
+    if show_risk and len(successful) >= 2:
+        _render_risk_panel(successful, key_prefix="risk_batch")
+
+
+def _fecha_of(it) -> str:
+    """Fecha (YYYY-MM-DD) de una iteración para ordenar/mostrar en el panel de riesgo."""
+    sd = getattr(it, "start_dt", None)
+    try:
+        return sd.strftime("%Y-%m-%d")
+    except Exception:
+        return str(sd or "")
+
+
+def _render_risk_panel(successful: list, key_prefix: str = "risk") -> None:
+    """Panel de RIESGO/COLA: lo que el win rate esconde (drawdown, peor día, días a −100%,
+    profit factor, Sortino) + curva de equity e histograma de ROI diario. Crítico para
+    martingalas. `successful` = day_runs con iteración (no None). `key_prefix` evita colisión
+    de keys de plotly cuando el panel de rango y el de señales conviven en un mismo rerun."""
+    import numpy as np
+    import analytics as _an
+    rows = [{"fecha": _fecha_of(r["iteration"]),
+             "gain": float(r["iteration"].gain_total),
+             "invest": float(r["iteration"].invest_total),
+             "roi": (float(r["iteration"].gain_total) / float(r["iteration"].invest_total)
+                     if r["iteration"].invest_total else 0.0)}
+            for r in successful]
+    m = _an.backtest_risk_metrics(rows)
+    if m.get("n", 0) < 2:
+        return
+
+    st.markdown("#### ⚠️ Riesgo y cola — lo que el win rate esconde")
+    rc = st.columns(6)
+    _pf = m["profit_factor"]
+    rc[0].metric("Profit factor", "∞" if _pf == float("inf") else f"{_pf:.2f}",
+                 help="Σ ganancias / Σ pérdidas ($). >1 rentable; <1.3 es frágil. No depende del win rate.")
+    rc[1].metric("Max drawdown", f"−${m['max_drawdown']:,.0f}",
+                 help=f"Mayor caída pico-a-valle de la P&L acumulada = {m['max_drawdown_x']:.1f}× "
+                      f"una apuesta promedio (${m['avg_invest']:,.0f}/día).")
+    rc[2].metric("Peor día", f"{m['worst_roi']:+.0%}",
+                 help=f"{m['worst_fecha']} · ${m['worst_gain']:+,.0f}. En martingala, el día que se "
+                      f"come muchas ganancias chicas.")
+    rc[3].metric("Días ≤ −90%", f"{m['n_catastrophic']}",
+                 help="Días de (cuasi) ruina. Invisibles en el win rate.")
+    rc[4].metric("Racha perdedora", f"{m['max_losing_streak']}",
+                 help="Máximo de días perdedores consecutivos.")
+    _so = m["sortino"]
+    rc[5].metric("Sortino (diario)", "∞" if _so == float("inf") else f"{_so:.2f}",
+                 help="Retorno medio / desviación a la baja. Penaliza solo la volatilidad mala. Mayor = mejor.")
+
+    p = m["pcts"]
+    st.caption(
+        f"Expectativa **${m['expectancy']:+,.0f}/día** · ROI diario: p5 **{p[5]:+.0%}** · "
+        f"mediana **{p[50]:+.0%}** · p95 **{p[95]:+.0%}**  ·  "
+        f"Σ ganancias **${m['wins_sum']:,.0f}** / Σ pérdidas **${m['losses_sum']:,.0f}** · "
+        f"Sharpe diario **{m['sharpe']:.2f}**"
+    )
+
+    g1, g2 = st.columns(2)
+    with g1:
+        _eq = np.array(m["equity_curve"], dtype=float)
+        _peak = np.maximum.accumulate(_eq)
+        _x = m["fechas"] if all(m["fechas"]) else list(range(1, m["n"] + 1))
+        _fig = go.Figure()
+        _fig.add_trace(go.Scatter(x=_x, y=_peak, line=dict(width=0), hoverinfo="skip",
+                                  showlegend=False))
+        _fig.add_trace(go.Scatter(x=_x, y=_eq, fill="tonexty", name="P&L acum.",
+                                  fillcolor="rgba(183,28,28,0.10)",
+                                  line=dict(color="#1f77b4", width=2)))
+        _fig.add_hline(y=0, line_color="#aaa", line_dash="dot")
+        _fig.update_layout(title="Curva de equity (P&L acumulada $) · sombra = drawdown",
+                           height=270, margin=dict(l=10, r=10, t=40, b=10), showlegend=False,
+                           yaxis_title="P&L $")
+        st.plotly_chart(_fig, use_container_width=True, key=f"{key_prefix}_equity")
+    with g2:
+        _fig2 = go.Figure(go.Histogram(x=[r * 100 for r in m["rois"]], nbinsx=30,
+                                       marker_color="#1f77b4"))
+        _fig2.add_vline(x=0, line_color="#888", line_dash="dash")
+        _fig2.update_layout(title="Distribución de ROI diario (%)", height=270,
+                            margin=dict(l=10, r=10, t=40, b=10), bargap=0.05,
+                            xaxis_title="ROI %", yaxis_title="días")
+        st.plotly_chart(_fig2, use_container_width=True, key=f"{key_prefix}_hist")
 
 
 # ============================================================================
@@ -743,6 +828,10 @@ def _render_sig_results(results, elapsed, partial=False):
             "ROI %": st.column_config.NumberColumn("ROI %", format="%.0f%%"),
         },
     )
+    if not partial:
+        _succ = [r for r in results if r.get("iteration") is not None]
+        if len(_succ) >= 2:
+            _render_risk_panel(_succ, key_prefix="risk_sig")
 
 
 # Señales handed-off desde Alertas (una sola vez): siembran el editor y lo abren.
@@ -3320,6 +3409,7 @@ if _mode == "range":
         day_runs,
         total_days=len(day_runs),
         title="💼 Totales del backtest",
+        show_risk=True,
     )
     _n_skipped = int(replay_state.get("skipped_no0dte", 0))
     if _n_skipped:
