@@ -28,12 +28,16 @@ Gate = Callable[[Contract], bool]
 class SelectionParams:
     """Parámetros de selección. `premium_min/max` = rango de prima por acción (ASK).
     `window_min` = ventana de búsqueda en minutos (0 = un solo intento). `max_strikes` =
-    cuántos strikes cercanos a ATM probar. `mode` = 'itm' (1-ITM, Opción 1) o 'atm'."""
+    cuántos strikes cercanos a ATM probar. `mode` = 'itm' (1-ITM) o 'atm' (desempate de
+    Opción 1). `criterion`:
+      - 'spread'    (Opción 1): menor spread en rango, con compuerta `gate`.
+      - 'itm_first' (Opción 2): el 1-ITM, IGNORANDO compuerta y rango de prima."""
     premium_min: float
     premium_max: float
     window_min: float = 0.0
     max_strikes: int = 25
     mode: str = "itm"
+    criterion: str = "spread"
 
 
 def make_range_gate(premium_min: float, premium_max: float,
@@ -51,13 +55,27 @@ def make_range_gate(premium_min: float, premium_max: float,
 
 def _best_leg_at(market: MarketData, ticker: str, expiry: str, right: Right,
                  at: Any, params: SelectionParams, gate: Gate) -> Optional[Contract]:
-    """Mejor contrato del lado `right` AS-OF `at`: entre los `max_strikes` más cercanos a
-    ATM que pasan `gate`, el de menor spread → 1-ITM → mayor liquidez (Opción 1 canónica
-    de strategy_core.selection_key). None si ninguno pasa."""
+    """Mejor contrato del lado `right` AS-OF `at`, según `params.criterion`:
+      - 'spread'    (Opción 1): entre los más cercanos a ATM que pasan `gate`, el de menor
+                    spread → 1-ITM → mayor liquidez (strategy_core.selection_key).
+      - 'itm_first' (Opción 2): el más cercano a 1-ITM con quote válido, IGNORANDO `gate`
+                    y rango de prima.
+    None si ninguno califica."""
     spot = market.underlying_price(ticker, at)
     if spot is None:
         return None
     chain = [c for c in market.chain(ticker, expiry, at) if c.right == right]
+
+    if params.criterion == "itm_first":   # Opción 2: 1-ITM, sin compuerta ni rango
+        chain.sort(key=lambda c: strategy_core.itm_rank(
+            strategy_core.itm_depth(c.strike, spot, right.value)))
+        for c in chain[: params.max_strikes]:
+            q = market.quote(c.occ, at)
+            if q.ask is not None and q.ask > 0:
+                return dataclasses.replace(c, quote=q)
+        return None
+
+    # Opción 1 ('spread'): compuerta + clave de selección
     chain.sort(key=lambda c: abs(c.strike - spot))
     cands: List[Contract] = []
     for c in chain[: params.max_strikes]:

@@ -93,12 +93,15 @@ python trading_core/tests/test_decoupling.py
 - ✅ **Fase A (hecha):** puertos + dominio (selección con ventana + ejecución straddle) +
   adapters de backtest (`PolygonBacktestData`, `SimulatedBroker`) + test de desacople.
   El `options_replay/engine.py` actual sigue intacto y funcionando.
-- ✅ **Fase B (parcial — hecho):** `run_refuerzo` (MARTINGALA por pierna: refuerza la que
-  más pierde con otra tranche del mismo `occ`, tope total) y `run_single` (Sólo CALL/PUT).
-  `Position` multi-tranche en el dominio. `run_straddle` = `run_refuerzo(refuerzo_max=0)`.
-  Test `tests/test_refuerzo.py` (la PUT cae −64% → se refuerza → take_profit; el straddle
-  simple no dispara). _Pendiente de Fase B:_ variantes 'plus' (salida forzada por hora) y
-  Opción 2/3 de selección (la `Gate` inyectable y la `Position` ya lo soportan).
+- ✅ **Fase B (hecha):** toda la familia de modos intradía sobre los puertos —
+  `run_refuerzo` (martingala por pierna), `run_single` (Sólo CALL/PUT), `run_both_plus`
+  (salida forzada por hora), `run_call_or_put` (sale al +100% de cualquier pierna),
+  `run_call_or_put_plus` (banca la 1ª, recupera con la 2ª), y **Opción 2** (`criterion=
+  'itm_first'`: elige el 1-ITM ignorando compuerta y rango). `Position` multi-tranche;
+  `run_straddle` = `run_refuerzo(refuerzo_max=0)`. Tests: `test_refuerzo.py`,
+  `test_variants.py`. Paridad verificada contra el motor (refuerzo TSLA: +32.0% vs +32.9%).
+  _Único pendiente:_ **Opción 3** (overnight 1DTE) — es otra estructura de tiempo (compra
+  hoy, vende al vencimiento del día siguiente), no un modo intradía; va con Fase C/D.
 - ⬜ **Fase C:** adapter `TradierMarketData` + wrapper `TradierBroker` → correr la MISMA
   estrategia en paper (sandbox) y comparar contra el backtest.
 - ⬜ **Fase D:** mover `live_trader/core/models.py` a `trading_core/domain.py` (unificar los

@@ -12,7 +12,8 @@ La MISMA lógica (selection + execution) corre en backtest, paper y vivo: solo c
 adapters inyectados. Ver README.md."""
 from .domain import (Contract, Fill, Leg, NoContractError, OrderRequest, OrderSide,
                      Position, Quote, Right, TradeResult)
-from .execution import run_refuerzo, run_single, run_straddle
+from .execution import (run_both_plus, run_call_or_put, run_call_or_put_plus,
+                        run_refuerzo, run_single, run_straddle)
 from .ports import Broker, Clock, MarketData
 from .selection import (Gate, SelectionParams, make_range_gate, select_single,
                         select_straddle)
