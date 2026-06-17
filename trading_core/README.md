@@ -93,9 +93,12 @@ python trading_core/tests/test_decoupling.py
 - ✅ **Fase A (hecha):** puertos + dominio (selección con ventana + ejecución straddle) +
   adapters de backtest (`PolygonBacktestData`, `SimulatedBroker`) + test de desacople.
   El `options_replay/engine.py` actual sigue intacto y funcionando.
-- ⬜ **Fase B:** portar el resto de la lógica del engine a esta capa — martingala/refuerzo
-  (otro tranche al mismo `occ`), variantes 'plus', salida por pierna, Opción 2/3. La
-  estructura (`Leg.qty` mutable, marca por tick, gate inyectable) ya lo soporta.
+- ✅ **Fase B (parcial — hecho):** `run_refuerzo` (MARTINGALA por pierna: refuerza la que
+  más pierde con otra tranche del mismo `occ`, tope total) y `run_single` (Sólo CALL/PUT).
+  `Position` multi-tranche en el dominio. `run_straddle` = `run_refuerzo(refuerzo_max=0)`.
+  Test `tests/test_refuerzo.py` (la PUT cae −64% → se refuerza → take_profit; el straddle
+  simple no dispara). _Pendiente de Fase B:_ variantes 'plus' (salida forzada por hora) y
+  Opción 2/3 de selección (la `Gate` inyectable y la `Position` ya lo soportan).
 - ⬜ **Fase C:** adapter `TradierMarketData` + wrapper `TradierBroker` → correr la MISMA
   estrategia en paper (sandbox) y comparar contra el backtest.
 - ⬜ **Fase D:** mover `live_trader/core/models.py` a `trading_core/domain.py` (unificar los

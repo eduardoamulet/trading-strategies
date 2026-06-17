@@ -11,16 +11,16 @@ Arquitectura de PUERTOS Y ADAPTADORES (hexagonal):
 La MISMA lógica (selection + execution) corre en backtest, paper y vivo: solo cambian los
 adapters inyectados. Ver README.md."""
 from .domain import (Contract, Fill, Leg, NoContractError, OrderRequest, OrderSide,
-                     Quote, Right, TradeResult)
-from .execution import run_straddle
+                     Position, Quote, Right, TradeResult)
+from .execution import run_refuerzo, run_single, run_straddle
 from .ports import Broker, Clock, MarketData
 from .selection import (Gate, SelectionParams, make_range_gate, select_single,
                         select_straddle)
 
 __all__ = [
     "Contract", "Quote", "Right", "OrderSide", "OrderRequest", "Fill", "Leg",
-    "TradeResult", "NoContractError",
+    "Position", "TradeResult", "NoContractError",
     "MarketData", "Broker", "Clock",
     "SelectionParams", "Gate", "make_range_gate", "select_straddle", "select_single",
-    "run_straddle",
+    "run_straddle", "run_refuerzo", "run_single",
 ]

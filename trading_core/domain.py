@@ -104,6 +104,40 @@ class Leg:
 
 
 @dataclass
+class Position:
+    """Una posición = varias piernas/tranches. Cada refuerzo agrega un Leg (otro tranche)
+    al MISMO contrato (occ) → soporta martingala sin re-arquitecturar. Las piernas se
+    agrupan por `Right` (CALL/PUT) para el ROI por pierna."""
+    legs: List[Leg] = field(default_factory=list)
+    reinforcements: List[dict] = field(default_factory=list)   # [{ts, right, price, qty}, …]
+
+    def add(self, leg: Leg) -> None:
+        self.legs.append(leg)
+
+    def rights(self) -> set:
+        return {l.contract.right for l in self.legs}
+
+    def cost(self) -> float:
+        return sum(l.cost() for l in self.legs)
+
+    def cost_of(self, right: "Right") -> float:
+        return sum(l.cost() for l in self.legs if l.contract.right == right)
+
+    def value_of(self, right: "Right", mark: float) -> float:
+        """Valor de liquidación de TODAS las tranches de `right` a la prima `mark`."""
+        return sum(l.value_at(mark) for l in self.legs if l.contract.right == right)
+
+    def qty_of(self, right: "Right") -> int:
+        return sum(l.qty for l in self.legs if l.contract.right == right)
+
+    def contract_of(self, right: "Right") -> Optional[Contract]:
+        for l in self.legs:
+            if l.contract.right == right:
+                return l.contract
+        return None
+
+
+@dataclass
 class TradeResult:
     """Resultado de una operación completa (entrada → salida)."""
     underlying: str
@@ -113,7 +147,8 @@ class TradeResult:
     entry_cost: float
     exit_proceeds: float
     exit_reason: str          # 'take_profit' | 'stop_loss' | 'session_end'
-    marks: List[float] = field(default_factory=list)   # ROI(%) por tick (para gráficos)
+    marks: List[float] = field(default_factory=list)        # ROI(%) por tick (para gráficos)
+    reinforcements: List[dict] = field(default_factory=list)  # eventos de refuerzo (martingala)
 
     @property
     def pnl(self) -> float:
