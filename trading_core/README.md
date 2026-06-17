@@ -102,7 +102,25 @@ python trading_core/tests/test_decoupling.py
   `test_variants.py`. Paridad verificada contra el motor (refuerzo TSLA: +32.0% vs +32.9%).
   _Único pendiente:_ **Opción 3** (overnight 1DTE) — es otra estructura de tiempo (compra
   hoy, vende al vencimiento del día siguiente), no un modo intradía; va con Fase C/D.
-- ⬜ **Fase C:** adapter `TradierMarketData` + wrapper `TradierBroker` → correr la MISMA
-  estrategia en paper (sandbox) y comparar contra el backtest.
-- ⬜ **Fase D:** mover `live_trader/core/models.py` a `trading_core/domain.py` (unificar los
-  modelos) y que el daemon en vivo use `execution.run_straddle`.
+- ✅ **Fase C (hecha):** `TradierMarketData` + `TradierBroker` (`adapters/tradier_live.py`)
+  envuelven el broker de Tradier de `live_trader` (inyectado, duck-typed) y traducen sus
+  modelos a los del dominio. `LiveClock` (ticks en tiempo real). Test `test_tradier_adapter.py`:
+  el MISMO `run_refuerzo` corre por los adapters de Tradier contra un broker FALSO en memoria
+  (sin red ni credenciales) → take_profit. Migrar de backtest a paper = inyectar estos adapters.
+- ✅ **Fase D (hecha — integración):** `live_runner.py` corre la MISMA `run_refuerzo` en VIVO
+  contra Tradier **SANDBOX** (`run_paper_refuerzo`), cableando los adapters reales. Guard de
+  seguridad `assert_sandbox`: se NIEGA a correr si `LIVE_TRADING_ENABLED=True` (probado).
+  Sandbox/paper únicamente; el token va en `live_trader/secrets.py` (no acá). _Limpieza
+  opcional restante:_ unificar `live_trader/core/models.py` en `trading_core/domain.py` (hoy
+  los adapters ya traducen entre ambos, así que NO es bloqueante).
+
+## Correr en paper (Tradier sandbox)
+
+Con el token de sandbox en `live_trader/secrets.py` y `LIVE_TRADING_ENABLED=False`:
+
+```python
+from trading_core.live_runner import run_paper_refuerzo
+res = run_paper_refuerzo(ticker="QQQ", invest_call=1000, invest_put=1000,
+                         umbral_pct=10, stop_pct=-100, refuerzo_max=0, max_spread=0.05)
+```
+El runner se niega a arrancar si el modo real está habilitado. No mueve dinero real.
