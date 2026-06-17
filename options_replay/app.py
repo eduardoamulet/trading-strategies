@@ -2385,14 +2385,18 @@ if btn_iniciar:
                             _live_rows = []
                             for _r in _ordered:
                                 _it = _r.get("iteration")
-                                _hs = _r.get("day_start_ts")
+                                _hs = _r.get("day_start_ts")   # horario de orden ESPECIFICADO
                                 if _it is not None:
                                     _roi = (_it.gain_total / _it.invest_total) if _it.invest_total else 0.0
                                     _live_rows.append({
                                         "Fecha": _r.get("date"),
-                                        "Hora entrada": _hs.strftime("%H:%M") if _hs is not None else "",
-                                        "Hora salida": (_it.end_dt.strftime("%H:%M")
-                                                        if getattr(_it, "end_dt", None) is not None else ""),
+                                        # Hora REAL en que se compró (start_dt = 1er minuto de la
+                                        # operación). Con ventana de búsqueda puede ser POSTERIOR al
+                                        # horario especificado (_hs), porque entró cuando el contrato
+                                        # pasó Opción 1, no necesariamente a la hora pedida.
+                                        "Hora de entrada": _it.start_dt.strftime("%H:%M"),
+                                        "Hora de salida": (_it.end_dt.strftime("%H:%M")
+                                                           if getattr(_it, "end_dt", None) is not None else ""),
                                         "Ganancia": _it.gain_total,
                                         "ROI %": _roi * 100.0,
                                         "Razón": (_REASON_ICONS.get(_it.exit_reason, "") + " "
@@ -2401,8 +2405,9 @@ if btn_iniciar:
                                 else:
                                     _live_rows.append({
                                         "Fecha": _r.get("date", "?"),
-                                        "Hora entrada": _hs.strftime("%H:%M") if _hs is not None else "",
-                                        "Hora salida": "",
+                                        # Sin resultado → no hubo compra; mostramos la hora intentada.
+                                        "Hora de entrada": _hs.strftime("%H:%M") if _hs is not None else "",
+                                        "Hora de salida": "",
                                         "Ganancia": None, "ROI %": None,
                                         "Razón": _r.get("error") or "error",
                                     })
@@ -2410,7 +2415,7 @@ if btn_iniciar:
                             # "Ganancia acumulada" = suma corrida de la Ganancia (los días
                             # sin resultado suman 0). Va a la derecha de ROI %.
                             _ldf["Ganancia acumulada"] = _ldf["Ganancia"].fillna(0.0).cumsum()
-                            _ldf = _ldf[["Fecha", "Hora entrada", "Hora salida", "Ganancia", "ROI %",
+                            _ldf = _ldf[["Fecha", "Hora de entrada", "Hora de salida", "Ganancia", "ROI %",
                                          "Ganancia acumulada", "Razón"]]
 
                             def _live_row_color(_row):
@@ -3543,8 +3548,8 @@ if _mode == "range":
 
                 rows.append({
                     "Fecha": r["date"],
-                    "Entrada": it.start_dt.strftime("%H:%M"),
-                    "Salida": it.end_dt.strftime("%H:%M"),
+                    "Hora de entrada": it.start_dt.strftime("%H:%M"),   # hora REAL de compra (post-ventana)
+                    "Hora de salida": it.end_dt.strftime("%H:%M"),
                     "Razón": _reason_cell,
                     "Refuerzos": (it.refuerzo["n"] if getattr(it, "refuerzo", None) else 0),
                     # === Columnas nuevas de Predicción Apertura ===
