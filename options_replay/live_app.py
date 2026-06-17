@@ -119,6 +119,7 @@ lc1.toggle("🔴 Captura en vivo", key="live_capture",
            help="Prende la actualización automática de la tabla de strikes (y la posición) a "
                 "intervalos. Apagado = estático; tomá la data a demanda con «🔄 Actualizar ahora».")
 if lc2.button("🔄 Actualizar ahora", use_container_width=True):
+    st.session_state["live_fetch_once"] = True   # fuerza UNA captura puntual a demanda
     if st.session_state.get("live_src") == "Replay / demo":
         st.session_state["sim_min"] = min(380, int(st.session_state.get("sim_min", 0)) + 1)
 
@@ -131,14 +132,17 @@ if st.session_state.get("live_closed"):
         st.session_state.pop("live_closed", None)
         st.rerun()
 
-# Solo auto-refresca si la "Captura en vivo" está prendida; si no, run_every=None (estático,
-# se actualiza a demanda con el botón). El fragment aislado = no bloquea el resto de la pantalla.
-_refresh = (("1.5s" if st.session_state.get("live_src") == "Replay / demo" else "3s")
-            if st.session_state.get("live_capture") else None)
+# run_every SIEMPRE con valor: cambiarlo de None→valor NO reinicia el timer del fragment en
+# Streamlit (por eso la captura no arrancaba). El fragment aislado no bloquea el resto; el
+# TRABAJO (avanzar reloj + pegarle a los quotes) se gatea según la captura, ADENTRO.
+_refresh = "1.5s" if st.session_state.get("live_src") == "Replay / demo" else "3s"
 
 
 @st.fragment(run_every=_refresh)
 def live_view():
+    _replay = st.session_state.get("live_src") == "Replay / demo"
+    _cap = bool(st.session_state.get("live_capture", False))
+    _once = bool(st.session_state.pop("live_fetch_once", False))
     built = _build_source()
     if built is None:
         return
@@ -149,9 +153,16 @@ def live_view():
     pos = st.session_state.get("live_pos")
     if pos is None:
         # ---------- PRE-ENTRADA: la cadena PRIMERO + candidatos + comprar ----------
-        cand = lc.candidates(market, p["ticker"], expiry, now, p)
-        df, spot = lc.chain_df(market, p["ticker"], expiry, now, cand)
-        st.markdown(f"#### 📈 Strikes en vivo · spot ≈ {spot:.2f}" if spot else "#### 📈 Strikes")
+        # Trae quotes SOLO con la captura prendida, a demanda, o si no hay snapshot todavía; si
+        # no, re-renderiza el último snapshot (no pega a la API → on-demand de verdad).
+        if _cap or _once or "live_chain" not in st.session_state:
+            _cand = lc.candidates(market, p["ticker"], expiry, now, p)
+            _df, _spot = lc.chain_df(market, p["ticker"], expiry, now, _cand)
+            st.session_state["live_chain"] = {"df": _df, "spot": _spot, "cand": _cand, "now": str(now)[11:16]}
+        _snap = st.session_state.get("live_chain", {"df": pd.DataFrame(), "spot": None, "cand": {}, "now": ""})
+        cand, df, spot = _snap["cand"], _snap["df"], _snap["spot"]
+        st.markdown((f"#### 📈 Strikes en vivo · spot ≈ {spot:.2f}" if spot else "#### 📈 Strikes")
+                    + (f"  ·  🕐 {_snap['now']}" if _snap["now"] else ""))
         if df.empty:
             st.warning("Sin cadena para este ticker/fecha (¿0DTE disponible?).")
         else:
@@ -177,26 +188,33 @@ def live_view():
                         {"hora": str(now)[11:16], "occ": l["occ"], "lado": "BUY",
                          "qty": l["qty"], "precio": l["entry_price"]}
                         for l in st.session_state["live_pos"]["legs"]]
+                    st.session_state["live_fetch_once"] = True
+                    st.session_state.pop("live_m", None)
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error(f"No se pudo comprar: {e}")
         else:
             st.info("Esperando un contrato candidato que pase Opción 1 (prima en rango + spread). "
-                    "En Replay, dejá correr el reloj.")
+                    "Prendé **🔴 Captura en vivo** o tocá **🔄 Actualizar ahora**.")
     else:
         # ---------- POSICIÓN ABIERTA: métricas en vivo + pestañas ----------
-        m = lc.mark(market, pos, now)
-        marks = st.session_state.setdefault("live_marks", [])
-        marks.append({"ts": str(now)[11:16], "ROI %": round(m["roi"], 1),
-                      "Combined %": round(m["combined"], 1),
-                      **{f"{r.value} %": round(d["pct"], 1) for r, d in m["per"].items()}})
+        if _cap or _once or "live_m" not in st.session_state:
+            _m = lc.mark(market, pos, now)
+            st.session_state["live_m"] = _m
+            st.session_state["live_m_now"] = str(now)[11:16]
+            st.session_state.setdefault("live_marks", []).append(
+                {"ts": str(now)[11:16], "ROI %": round(_m["roi"], 1), "Combined %": round(_m["combined"], 1),
+                 **{f"{r.value} %": round(d["pct"], 1) for r, d in _m["per"].items()}})
+        m = st.session_state.get("live_m") or lc.mark(market, pos, now)
+        marks = st.session_state.get("live_marks", [])
         sig = strategy_core.exit_decision(m["roi"], pos["umbral"], pos["stop"])
         head = ("🎯 Umbral alcanzado" if sig == "take_profit"
                 else "🛑 Stop alcanzado" if sig == "stop_loss" else "⏳ En posición")
         arrow = "▲" if m["pnl"] >= 0 else "▼"
         _nr = len(pos.get("reinforcements", []))
         st.markdown(f"#### {arrow} {head} · {pos['tipo']} · entró {pos['entry_ts'][11:16]} → "
-                    f"{str(now)[11:16]}" + (f" · ➕{_nr} refuerzo(s)" if _nr else ""))
+                    f"{st.session_state.get('live_m_now', str(now)[11:16])}"
+                    + (f" · ➕{_nr} refuerzo(s)" if _nr else ""))
         g = st.columns(6)
         g[0].metric("Inversión", f"${m['cost']:,.2f}")
         for i, r in enumerate((Right.CALL, Right.PUT)):
@@ -224,6 +242,7 @@ def live_view():
                         {"hora": str(now)[11:16],
                          "occ": next(l["occ"] for l in pos["legs"] if l["right"] == rcand.value),
                          "lado": "BUY (refuerzo)", "qty": ev["qty"], "precio": ev["price"]})
+                    st.session_state["live_fetch_once"] = True
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error(f"No se pudo reforzar: {e}")
@@ -238,6 +257,9 @@ def live_view():
                          "qty": qty, "precio": f.price})
             st.session_state["live_closed"] = {"roi": m["roi"], "pnl": m["pnl"], "razon": sig or "manual"}
             st.session_state["live_pos"] = None
+            st.session_state.pop("live_m", None)
+            st.session_state.pop("live_chain", None)
+            st.session_state["live_fetch_once"] = True
             st.rerun()
 
         t1, t2, t3, t4 = st.tabs(["📑 Operaciones", "Strikes", "📈 Gráfico", "📋 Tabla minuto a minuto"])
@@ -262,8 +284,9 @@ def live_view():
         with t4:
             st.dataframe(pd.DataFrame(marks), hide_index=True, use_container_width=True)
 
-    # Avanzar el reloj de Replay solo si la captura en vivo está prendida (auto-play).
-    if st.session_state.get("live_src") == "Replay / demo" and st.session_state.get("live_capture"):
+    # Avanzar el reloj de Replay SOLO con la captura prendida (auto-play). Al final, para que
+    # el próximo tick del fragment muestre un minuto nuevo.
+    if _replay and _cap:
         st.session_state["sim_min"] = min(380, int(st.session_state.get("sim_min", 0)) + 1)
 
 
