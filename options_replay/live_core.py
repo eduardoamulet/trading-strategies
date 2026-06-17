@@ -60,6 +60,28 @@ def chain_df(market, ticker: str, expiry: str, now: Any, cand: dict, n: int = 8)
     return pd.DataFrame(rows), spot
 
 
+def chain_style(df, spot: float):
+    """Styler de la tabla de cadena: colorea ITM (verde) vs OTM (gris) por LADO, según el
+    strike vs el spot. CALL está ITM si strike < spot; PUT está ITM si strike > spot. El
+    strike más cercano (ATM) se deja neutro. Devuelve un pandas Styler (lo renderiza
+    st.dataframe). rgba con alpha → anda en tema claro y oscuro."""
+    ITM = "background-color: rgba(33,195,84,0.18)"     # verde suave
+    OTM = "background-color: rgba(130,130,130,0.12)"   # gris suave
+    nearest = min(df["Strike"], key=lambda k: abs(k - spot)) if not df.empty else None
+
+    def _row(row):
+        k = row["Strike"]
+        s = {c: "" for c in df.columns}
+        if k != nearest:                       # ATM neutro
+            for c in ("C bid", "C ask"):
+                s[c] = ITM if k < spot else OTM       # CALL ITM si strike < spot
+            for c in ("P bid", "P ask"):
+                s[c] = ITM if k > spot else OTM       # PUT ITM si strike > spot
+        return pd.Series(s)
+
+    return df.style.apply(_row, axis=1)
+
+
 def invest_split(p: dict) -> Dict[Right, float]:
     """Inversión por pierna según el Tipo (single-leg = 100% a esa pierna; dual = call_pct)."""
     rights = RIGHTS.get(p["tipo"], (Right.CALL, Right.PUT))

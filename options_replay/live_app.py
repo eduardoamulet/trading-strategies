@@ -155,12 +155,14 @@ def live_view():
         if df.empty:
             st.warning("Sin cadena para este ticker/fecha (¿0DTE disponible?).")
         else:
-            st.dataframe(df, hide_index=True, use_container_width=True, column_config={
-                "C bid": st.column_config.NumberColumn("C bid", format="$%.2f"),
-                "C ask": st.column_config.NumberColumn("C ask", format="$%.2f"),
-                "P bid": st.column_config.NumberColumn("P bid", format="$%.2f"),
-                "P ask": st.column_config.NumberColumn("P ask", format="$%.2f"),
-                "Strike": st.column_config.NumberColumn("Strike", format="%.0f")})
+            st.dataframe(lc.chain_style(df, spot), hide_index=True, use_container_width=True,
+                         column_config={
+                             "C bid": st.column_config.NumberColumn("C bid", format="$%.2f"),
+                             "C ask": st.column_config.NumberColumn("C ask", format="$%.2f"),
+                             "P bid": st.column_config.NumberColumn("P bid", format="$%.2f"),
+                             "P ask": st.column_config.NumberColumn("P ask", format="$%.2f"),
+                             "Strike": st.column_config.NumberColumn("Strike", format="%.0f")})
+            st.caption("🟩 In the money · ⬜ Out of the money · ◀ ATM · ✅ candidato del sistema")
         need = lc.RIGHTS.get(p["tipo"], ())
         ok = all(cand.get(r) is not None for r in need)
         prop = " · ".join(f"{r.value} {cand[r].strike:.0f} @ ${cand[r].quote.ask:.2f}"
@@ -243,9 +245,12 @@ def live_view():
             st.dataframe(pd.DataFrame(st.session_state.get("live_fills", [])),
                          hide_index=True, use_container_width=True)
         with t2:
-            df2, _ = lc.chain_df(market, pos["ticker"], pos["expiry"], now,
-                                 {r: None for r in (Right.CALL, Right.PUT)})
-            st.dataframe(df2, hide_index=True, use_container_width=True)
+            df2, spot2 = lc.chain_df(market, pos["ticker"], pos["expiry"], now,
+                                     {r: None for r in (Right.CALL, Right.PUT)})
+            st.dataframe(lc.chain_style(df2, spot2) if not df2.empty else df2,
+                         hide_index=True, use_container_width=True)
+            if not df2.empty:
+                st.caption("🟩 In the money · ⬜ Out of the money · ◀ ATM")
         with t3:
             if len(marks) > 1:
                 mdf = pd.DataFrame(marks)
