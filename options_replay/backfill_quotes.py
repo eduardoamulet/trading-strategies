@@ -138,7 +138,7 @@ def main() -> int:
 
     rate_per = max(1, args.rate // args.procs)
     done = empty = errc = 0
-    t0 = _t.time()
+    t0 = _t.monotonic()   # monotónico: inmune a cambios de hora del sistema / hibernación
     print(f"  arrancando {args.procs} procesos · {rate_per}/min c/u ({rate_per * args.procs}/min total)...",
           flush=True)
     with ProcessPoolExecutor(max_workers=args.procs, initializer=_init_worker,
@@ -152,14 +152,14 @@ def main() -> int:
                 if errc <= 20:
                     print(f"  ERR {err}", flush=True)
             if i % 200 == 0 or i == miss:
-                el = _t.time() - t0
+                el = _t.monotonic() - t0
                 rate = i / el * 60 if el else 0
                 eta = (miss - i) / (i / el) / 60 if (el and i) else 0
                 print(f"  [{i:6d}/{miss}] {rate:.0f}/min · {empty} sin quotes · {errc} err"
                       f" · {el / 60:.1f}min · ETA {eta:.1f}min", flush=True)
 
     print(f"== listo: {done} procesados ({empty} sin quotes, {errc} errores) en"
-          f" {(_t.time() - t0) / 60:.1f} min ==", flush=True)
+          f" {(_t.monotonic() - t0) / 60:.1f} min ==", flush=True)
     return 0
 
 
