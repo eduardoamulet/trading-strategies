@@ -548,6 +548,57 @@ def render_batch_totals(
         _render_risk_panel(successful, key_prefix="risk_batch")
 
 
+def render_grouped_totals(successful: list, group_of, group_col: str) -> None:
+    """Tabla de totales RECALCULADOS por grupo. `group_of(run)` → clave del grupo. Mismas
+    métricas que el panel general (días procesados, inversión, ganancia, capital final,
+    ganadores/perdedores, win rate), una fila por grupo + una fila TOTAL. Cada grupo refleja
+    SOLO sus runs (período o ticker(s) de ese grupo)."""
+    _groups: dict = {}
+    for _r in successful:
+        _groups.setdefault(group_of(_r), []).append(_r)
+    _rows = []
+    for _k in sorted(_groups, key=str):
+        _rs = _groups[_k]
+        _inv = sum(x["iteration"].invest_total for x in _rs)
+        _gain = sum(x["iteration"].gain_total for x in _rs)
+        _nw = sum(1 for x in _rs if x["iteration"].gain_total > 0)
+        _nl = sum(1 for x in _rs if x["iteration"].gain_total < 0)
+        _dec = _nw + _nl
+        _rows.append({
+            group_col: _k, "Días proc.": len(_rs),
+            "Inversión": _inv, "Ganancia": _gain, "Capital final": _inv + _gain,
+            "Ganadores": _nw, "Perdedores": _nl,
+            "Win rate %": (_nw / _dec * 100.0) if _dec else 0.0,
+        })
+    if not _rows:
+        return
+    # Fila TOTAL (agregado de todos los grupos). Se calcula sobre las filas de grupo.
+    _ti = sum(r["Inversión"] for r in _rows)
+    _tg = sum(r["Ganancia"] for r in _rows)
+    _tw = sum(r["Ganadores"] for r in _rows)
+    _tl = sum(r["Perdedores"] for r in _rows)
+    _tdp = sum(r["Días proc."] for r in _rows)
+    _td = _tw + _tl
+    _rows.append({group_col: "— TODOS —", "Días proc.": _tdp,
+                  "Inversión": _ti, "Ganancia": _tg, "Capital final": _ti + _tg,
+                  "Ganadores": _tw, "Perdedores": _tl,
+                  "Win rate %": (_tw / _td * 100.0) if _td else 0.0})
+    _df = pd.DataFrame(_rows)
+
+    def _gcol(v):
+        if not isinstance(v, (int, float)) or pd.isna(v):
+            return ""
+        return ("background-color: #c8e6c9" if v > 0
+                else ("background-color: #ffcdd2" if v < 0 else ""))
+
+    _styled = (_df.style
+               .map(_gcol, subset=["Ganancia"])
+               .format({"Inversión": "${:,.0f}", "Ganancia": "${:+,.0f}",
+                        "Capital final": "${:,.0f}", "Win rate %": "{:.0f}%"}))
+    st.dataframe(_styled, use_container_width=True, hide_index=True,
+                 height=min(460, 40 + 35 * max(1, len(_rows))))
+
+
 def _fecha_of(it) -> str:
     """Fecha (YYYY-MM-DD) de una iteración para ordenar/mostrar en el panel de riesgo."""
     sd = getattr(it, "start_dt", None)
@@ -3488,6 +3539,31 @@ if _mode == "range":
         title="💼 Totales del backtest",
         show_risk=True,
     )
+
+    # --- Totales AGRUPADOS: recalcula las métricas por semana / ticker / grupo (sector). ---
+    if successful:
+        _grp_by = st.radio(
+            "📂 Agrupar totales por",
+            ["General", "Por semana", "Por ticker", "Por grupo (sector)"],
+            horizontal=True, key="batch_group_by",
+            help="Recalcula días procesados, inversión, ganancia, capital final, "
+                 "ganadores/perdedores y win rate para cada grupo (semana, ticker o sector).",
+        )
+        if _grp_by == "Por semana":
+            render_grouped_totals(
+                successful,
+                lambda r: "Sem. " + pd.Timestamp(r["date"]).to_period("W").start_time.strftime("%Y-%m-%d"),
+                "Semana (lun)")
+        elif _grp_by == "Por ticker":
+            render_grouped_totals(successful, lambda r: r.get("ticker", "—"), "Ticker")
+        elif _grp_by == "Por grupo (sector)":
+            _ti_grp = load_ticker_info()
+
+            def _grp_of(r):
+                _i = _ti_grp.get((r.get("ticker") or "").upper().strip()) or {}
+                return _i.get("bloque_sector") or _i.get("indice") or "Otros"
+
+            render_grouped_totals(successful, _grp_of, "Grupo")
     _n_skipped = int(replay_state.get("skipped_no0dte", 0))
     if _n_skipped:
         st.caption(
