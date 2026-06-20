@@ -270,15 +270,35 @@ with st.expander("ⓘ ¿Cómo exporto el CSV desde TradingView? · formato esper
         "donde *Signal CALL* o *Signal PUT* = 1 y armá las columnas de arriba (o subí el export tal cual "
         "y elegí el ticker abajo).")
 
-up = st.file_uploader("📤 Subí el CSV de señales", type=["csv"], key="tv_csv")
+up = st.file_uploader("📤 Subí el CSV o XLSX de señales (export de TradingView)",
+                      type=["csv", "xlsx"], key="tv_csv")
 default_ticker = st.text_input("Ticker por defecto (si el CSV no trae columna Acción)", value="QQQ",
                                help="Se usa solo si el CSV no tiene columna de ticker/acción.").strip()
 
 if up is not None:
+    _name, _data = up.name.lower(), up.getvalue()
     try:
-        raw = pd.read_csv(io.BytesIO(up.getvalue()), sep=None, engine="python")
+        if _name.endswith(".xlsx"):
+            # Export de TradingView: workbook con varias hojas → buscar la de operaciones.
+            _sheets = pd.read_excel(io.BytesIO(_data), sheet_name=None)
+            raw, _src = None, None
+            for _sn in sorted(_sheets, key=lambda n: 0 if any(
+                    k in n.lower() for k in ("trade", "operac", "lista")) else 1):
+                try:
+                    if not parse_signals_csv(_sheets[_sn], default_ticker)[0].empty:
+                        raw, _src = _sheets[_sn], _sn
+                        break
+                except Exception:  # noqa: BLE001 — hoja sin señales (Performance, etc.) → siguiente
+                    continue
+            if raw is None:
+                st.error(f"No encontré una hoja con operaciones en el XLSX. Hojas: {list(_sheets)}. "
+                         "Probá abrir el Excel, ir a la hoja de trades y guardarla como CSV.")
+                st.stop()
+            st.caption(f"📄 Leído de la hoja «{_src}» del XLSX.")
+        else:
+            raw = pd.read_csv(io.BytesIO(_data), sep=None, engine="python")
     except Exception as e:  # noqa: BLE001
-        st.error(f"No pude leer el CSV: {e}")
+        st.error(f"No pude leer el archivo: {e}")
         st.stop()
     try:
         sig_df, warns = parse_signals_csv(raw, default_ticker)
