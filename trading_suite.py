@@ -5,7 +5,8 @@ Flujo:
      usuarios → crea el primer admin. Frena la app hasta entrar.
   2) Menú según rol: la sección Administración (👥 Usuarios) solo la ven los admin.
 
-Menú: 🏠 Dashboard · 🔔 Alertas · 🎯 Estrategias · 📈 Activos · 👤 Perfil · ❓ Ayuda
+Menú: 🏠 Dashboard · 🎯 Estrategias · 📈 Activos · 👤 Perfil · ❓ Ayuda
+Alertas: 🔔 Alertas Investep Academy IA · 📈 Trading view (en construcción)
 Herramientas: 🔬 Backtesting · 🟢 Live · 📓 Registro · 🔄 Datos   ·   Administración (admin): 👥 Usuarios
 
 Correr desde la raíz (Traiding/):  py -m streamlit run trading_suite.py
@@ -61,8 +62,10 @@ user = auth.require_login()   # frena si no hay sesión / crea el primer admin
 # ── 2) Páginas ───────────────────────────────────────────────────────────────
 dashboard = st.Page("options_replay/dashboard_app.py", title="Dashboard", icon="🏠",
                     url_path="dashboard", default=True)
-alertas = st.Page("options_replay/signals_app.py", title="Alertas", icon="🔔",
-                  url_path="alertas")
+alertas = st.Page("options_replay/signals_app.py", title="Alertas Investep Academy IA",
+                  icon="🔔", url_path="alertas")
+trading_view = st.Page("options_replay/trading_view_app.py", title="Trading view", icon="📈",
+                       url_path="trading_view")
 estrategias = st.Page("options_replay/estrategias_app.py", title="Estrategias", icon="🎯",
                       url_path="estrategias")
 activos = st.Page("options_replay/activos_app.py", title="Activos", icon="📈",
@@ -85,7 +88,8 @@ usuarios = st.Page("options_replay/usuarios_app.py", title="Usuarios", icon="�
 
 # ── 3) Navegación según rol ──────────────────────────────────────────────────
 nav = {
-    "Menú": [dashboard, alertas, estrategias, activos, perfil, ayuda],
+    "Menú": [dashboard, estrategias, activos, perfil, ayuda],
+    "Alertas": [alertas, trading_view],
     "Herramientas": [backtesting, live, registro, datos, tareas, configuracion],
 }
 if user.get("rol") == "admin":
