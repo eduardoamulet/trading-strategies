@@ -1,0 +1,507 @@
+//@version=6
+// =============================================================
+// STRATEGY (EXPORT): Trend Reversal Up & Down BB 15m
+// Version strategy() del indicador: MISMA logica de senales, pero cada senal abre un trade
+// simulado (CALL=long, PUT=short) que se cierra al fin de la sesion -> para exportar la
+// "List of Trades" del Strategy Tester a CSV (1 fila por senal, con fecha/hora exactas).
+// OJO: el P&L de aqui es del SUBYACENTE, no de las opciones (el backtest real lo hace la app).
+//
+// 🎯 ESTRATEGIA: Cambio de tendencia (CALL + PUT) en 15min
+//                (Para operar apenas abra el mercado)
+//
+// Combina las dos direcciones en un solo indicador:
+//
+//   UP (CALL): cambio bajista/lateral -> alcista en apertura
+//     - Linea BAJISTA (resistance, pivots highs descendentes, roja)
+//     - Senal ▲ verde "U" cuando gap UP rompe linea + midpoint
+//
+//   DOWN (PUT): cambio alcista/lateral -> bajista en apertura
+//     - Linea ALCISTA (support, pivots lows ascendentes, lima)
+//     - Senal ▼ rojo "D" cuando gap DOWN rompe linea + midpoint
+//
+// Las 4 reglas se aplican simetricamente:
+//   R1: Tendencia previa apropiada (no opuesta a la senal)
+//   R2: Trendline activa en su direccion
+//   R3: Gap en apertura rompe midpoint + trendline en su direccion
+//   R4: Volatilidad en la apertura (compartida)
+// =============================================================
+
+strategy("Trend Reversal Up & Down BB 15m - EXPORT", shorttitle="TR-UD-15m-EXP",
+     overlay=true,
+     max_lines_count=500,
+     max_labels_count=500,
+     process_orders_on_close=true,
+     default_qty_type=strategy.fixed, default_qty_value=1,
+     initial_capital=10000,
+     commission_type=strategy.commission.percent, commission_value=0)
+
+// =============================================================
+// IDIOMA / LANGUAGE
+// =============================================================
+grpLang = "Idioma / Language"
+lang    = input.string("Espanol", "Idioma / Language", options=["Espanol", "English"], group=grpLang,
+     tooltip="ES: Selecciona idioma para textos del chart (tooltips, tabla, alertas). Los nombres de inputs siempre se muestran en espanol por limitacion de Pine Script (no soporta texto dinamico en inputs).\n\nEN: Select language for chart text (tooltips, table, alerts). Input names always shown in Spanish due to Pine Script limitation (no dynamic input text supported).")
+
+isES = lang == "Espanol"
+
+// Traducciones / Translations (solo afectan textos del chart)
+t_strategy_up = isES ? "      CAMBIO DE TENDENCIA AL ALZA\nEN 15 MINUTOS CON BOLLINGER BANDS" : "      BULLISH TREND REVERSAL\nIN 15 MINUTES WITH BOLLINGER BANDS"
+t_strategy_dn = isES ? "    CAMBIO DE TENDENCIA A LA BAJA\nEN 15 MINUTOS CON BOLLINGER BANDS" : "      BEARISH TREND REVERSAL\nIN 15 MINUTES WITH BOLLINGER BANDS"
+// Nota: los mensajes de alertcondition deben ser const strings (limitacion de Pine).
+// Los textos t_alert_* se eliminaron - el mensaje queda fijo bilingue en alertcondition.
+t_off        = "OFF"
+t_yes        = isES ? "SI" : "YES"
+t_no         = isES ? "no" : "no"
+t_open       = isES ? "APER" : "OPEN"
+t_intra      = isES ? "intra" : "intra"
+t_rule1      = isES ? "1. Tend. previa"        : "1. Previous trend"
+t_rule2      = isES ? "2. Trendline activa"    : "2. Active trendline"
+t_rule3      = isES ? "3. Gap rompe mid+linea" : "3. Gap breaks mid+line"
+t_rule4      = isES ? "4. Volatilidad apertura": "4. Opening volatility"
+t_signals    = isES ? "Senales" : "Signals"
+t_opening    = isES ? "Vela apertura" : "Opening bar"
+
+// =============================================================
+// INPUTS
+// =============================================================
+
+// Direccion (toggles para activar UP/DOWN independientemente)
+grpDir     = "Direccion (CALL / PUT)"
+enableUp   = input.bool(true, "Activar senales UP (CALL)",   group=grpDir,
+     tooltip="Detecta gap UP en apertura que rompe linea bajista + midpoint. Genera ▲ verde 'CALL'.")
+enableDown = input.bool(true, "Activar senales DOWN (PUT)", group=grpDir,
+     tooltip="Detecta gap DOWN en apertura que rompe linea alcista + midpoint. Genera ▼ rojo 'PUT'.")
+
+// Bollinger Bands
+grpBB  = "Bollinger Bands"
+bbLen  = input.int(20,  "Periodo BB", group=grpBB, minval=2)
+bbMult = input.float(2.0, "Desviacion BB", group=grpBB, minval=0.1, step=0.1)
+
+// Linea de tendencia auto-detectada (compartido)
+grpLine        = "Linea de tendencia (auto-detectada)"
+pivotLen       = input.int(3, "Pivot strength (left/right)", group=grpLine, minval=1, maxval=20,
+     tooltip="Velas a cada lado para confirmar pivot. Default 3 para 15m.")
+maxBarsForward = input.int(20, "Extension forward (bars)", group=grpLine, minval=5, maxval=100,
+     tooltip="Cuantas velas adelante se extiende la linea desde el ultimo pivot. Default 20 = 5 horas en 15m.")
+maxLinesKeep   = input.int(30, "Max lineas dibujadas (por direccion)", group=grpLine, minval=5, maxval=200)
+
+// Rango del dia anterior
+grpPrev        = "Rango del dia anterior"
+showPrevLevels = input.bool(true, "Mostrar high/low/midpoint del dia anterior", group=grpPrev,
+     tooltip="Dibuja lineas horizontales en el high, low y midpoint (50%) del dia anterior. El midpoint es la referencia clave de la Regla 3.")
+midpointPct    = input.float(0.5, "Midpoint (% del rango)", group=grpPrev, minval=0.0, maxval=1.0, step=0.05,
+     tooltip="Posicion del midpoint dentro del rango del dia anterior. 0.5 = 50% (default).")
+
+// Regla 1 - Tendencia previa
+grpR1            = "Regla 1 - Tendencia previa"
+lateralLookback  = input.int(20, "Bars hacia atras (15m)", group=grpR1, minval=5, maxval=100,
+     tooltip="Cuantos bars de 15m hacia atras para medir la pendiente del basis. Default 20 = 5 horas atras.")
+lateralThreshold = input.float(0.5, "Maxima pendiente opuesta permitida (%)", group=grpR1, minval=0.0, step=0.1,
+     tooltip="Para UP: basis no puede subir mas de X% (debe ser bajista o lateral). Para DOWN: basis no puede caer mas de X% (debe ser alcista o lateral). Default 0.5%.")
+
+// Regla 4 - Volatilidad en la apertura (compartida)
+grpR4         = "Regla 4 - Volatilidad apertura"
+useVolFilter  = input.bool(true, "Activar filtro de volatilidad", group=grpR4)
+volMultATR    = input.float(1.0, "Rango minimo / ATR(14)", group=grpR4, minval=0.1, step=0.1,
+     tooltip="El rango (high - low) de la vela de apertura debe ser >= X * ATR(14). Default 1.0.")
+
+// Activacion de reglas (debug)
+grpToggles    = "Activacion de reglas (para pruebas)"
+useRule1      = input.bool(true, "Activar Regla 1 (tendencia previa)", group=grpToggles)
+useRule2      = input.bool(true, "Activar Regla 2 (trendline)", group=grpToggles)
+useRule3      = input.bool(true, "Activar Regla 3 (gap rompe midpoint+linea)", group=grpToggles)
+useRule4      = input.bool(true, "Activar Regla 4 (volatilidad)", group=grpToggles)
+showPrePostSignals = input.bool(false, "Mostrar senales en premarket/postmarket", group=grpToggles,
+     tooltip="OFF (default): la senal solo dispara en la primera vela de la sesion REGULAR (9:30 AM ET para US stocks). ON: tambien dispara en la apertura del premarket (~4:00 AM ET) o cualquier otra apertura de sesion.")
+
+// Visualizacion
+grpViz          = "Visualizacion"
+showLines       = input.bool(true,  "Mostrar lineas de tendencia",       group=grpViz)
+onlySignalLines = input.bool(true,  "Solo lineas que dispararon senal",  group=grpViz,
+     tooltip="ON: solo se conservan lineas que dispararon senal + la actual de cada direccion. OFF: todas las lineas detectadas.")
+showPivots      = input.bool(false, "Mostrar marcadores de pivots",      group=grpViz)
+showTable       = input.bool(false, "Mostrar tabla de reglas",           group=grpViz)
+showBBLabels    = input.bool(false, "Mostrar etiquetas BB en la escala", group=grpViz)
+showTooltip     = input.bool(false, "Tooltips por vela (ultimas 500)",   group=grpViz)
+
+// =============================================================
+// BOLLINGER BANDS
+// =============================================================
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+bbDisplay = showBBLabels ? display.all : display.pane + display.status_line + display.data_window
+plot(basis, "BB basis", color=color.orange, linewidth=2, display=bbDisplay)
+p1 = plot(upper, "BB upper", color=color.new(color.gray, 50), display=bbDisplay)
+p2 = plot(lower, "BB lower", color=color.new(color.gray, 50), display=bbDisplay)
+fill(p1, p2, color=color.new(color.gray, 92))
+
+// =============================================================
+// RANGO DEL DIA ANTERIOR
+// =============================================================
+[prevHigh, prevLow] = request.security(syminfo.tickerid, "D",
+     [high[1], low[1]], lookahead=barmerge.lookahead_off)
+
+prevMidpoint = prevLow + (prevHigh - prevLow) * midpointPct
+
+plot(showPrevLevels ? prevHigh     : na, "Prev Day High", color=color.new(color.gray,  20), linewidth=1, style=plot.style_circles)
+plot(showPrevLevels ? prevLow      : na, "Prev Day Low",  color=color.new(color.gray,  20), linewidth=1, style=plot.style_circles)
+plot(showPrevLevels ? prevMidpoint : na, "Midpoint",      color=color.new(color.yellow, 0), linewidth=1, style=plot.style_circles)
+
+// =============================================================
+// DETECCION DE PRIMERA VELA DE APERTURA
+// =============================================================
+isOpeningBar = showPrePostSignals ? (ta.change(time("D")) != 0) : session.isfirstbar_regular
+
+// =============================================================
+// REGLA 1 - Tendencia previa (por direccion)
+// =============================================================
+basisChangePct = (basis - basis[lateralLookback]) / basis[lateralLookback] * 100
+ruleUp1 = basisChangePct <= lateralThreshold
+ruleDn1 = basisChangePct >= -lateralThreshold
+
+// =============================================================
+// REGLA 2 (UP) - Trendline BAJISTA (pivots HIGHS descendentes)
+// =============================================================
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+
+var float prevHighUp = na
+var int   prevBarUp  = na
+
+var float upLineStartPrice = na
+var int   upLineStartBar   = na
+var float upLineSlope      = na
+var int   upLineEndBar     = na
+
+var line  upCurrentLine     = na
+var bool  upCurrentHadSignal = false
+var array<line> upVisualLines = array.new<line>()
+
+if not na(ph)
+    chU = ph
+    cbU = bar_index - pivotLen
+
+    if not na(prevHighUp) and chU < prevHighUp
+        bdU = cbU - prevBarUp
+        slU = (chU - prevHighUp) / float(bdU)
+        fbU = cbU + maxBarsForward
+        fpU = chU + slU * maxBarsForward
+
+        upLineStartPrice := prevHighUp
+        upLineStartBar   := prevBarUp
+        upLineSlope      := slU
+        upLineEndBar     := fbU
+
+        if showLines and enableUp
+            if not na(upCurrentLine)
+                if upCurrentHadSignal or not onlySignalLines
+                    array.push(upVisualLines, upCurrentLine)
+                    if array.size(upVisualLines) > maxLinesKeep
+                        oldL = array.shift(upVisualLines)
+                        line.delete(oldL)
+                else
+                    line.delete(upCurrentLine)
+
+            upCurrentLine     := line.new(prevBarUp, prevHighUp, fbU, fpU,
+                 extend=extend.none, color=color.new(color.red, 0),
+                 width=2, style=line.style_dashed)
+            upCurrentHadSignal := false
+
+    prevHighUp := chU
+    prevBarUp  := cbU
+
+// =============================================================
+// REGLA 2 (DOWN) - Trendline ALCISTA (pivots LOWS ascendentes)
+// =============================================================
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+var float prevLowDn = na
+var int   prevBarDn = na
+
+var float dnLineStartPrice = na
+var int   dnLineStartBar   = na
+var float dnLineSlope      = na
+var int   dnLineEndBar     = na
+
+var line  dnCurrentLine     = na
+var bool  dnCurrentHadSignal = false
+var array<line> dnVisualLines = array.new<line>()
+
+if not na(pl)
+    clD = pl
+    cbD = bar_index - pivotLen
+
+    if not na(prevLowDn) and clD > prevLowDn
+        bdD = cbD - prevBarDn
+        slD = (clD - prevLowDn) / float(bdD)
+        fbD = cbD + maxBarsForward
+        fpD = clD + slD * maxBarsForward
+
+        dnLineStartPrice := prevLowDn
+        dnLineStartBar   := prevBarDn
+        dnLineSlope      := slD
+        dnLineEndBar     := fbD
+
+        if showLines and enableDown
+            if not na(dnCurrentLine)
+                if dnCurrentHadSignal or not onlySignalLines
+                    array.push(dnVisualLines, dnCurrentLine)
+                    if array.size(dnVisualLines) > maxLinesKeep
+                        oldL = array.shift(dnVisualLines)
+                        line.delete(oldL)
+                else
+                    line.delete(dnCurrentLine)
+
+            dnCurrentLine     := line.new(prevBarDn, prevLowDn, fbD, fpD,
+                 extend=extend.none, color=color.new(color.lime, 0),
+                 width=2, style=line.style_dashed)
+            dnCurrentHadSignal := false
+
+    prevLowDn := clD
+    prevBarDn := cbD
+
+plotshape(showPivots and not na(ph), title="Pivot High",
+     style=shape.circle, location=location.abovebar,
+     color=color.new(color.yellow, 0), size=size.tiny, offset=-pivotLen)
+plotshape(showPivots and not na(pl), title="Pivot Low",
+     style=shape.circle, location=location.belowbar,
+     color=color.new(color.aqua, 0), size=size.tiny, offset=-pivotLen)
+
+upTrendlineActive = not na(upLineStartPrice) and not na(upLineEndBar) and bar_index <= upLineEndBar
+upTrendlineNow    = upTrendlineActive ? upLineStartPrice + upLineSlope * (bar_index - upLineStartBar) : na
+
+dnTrendlineActive = not na(dnLineStartPrice) and not na(dnLineEndBar) and bar_index <= dnLineEndBar
+dnTrendlineNow    = dnTrendlineActive ? dnLineStartPrice + dnLineSlope * (bar_index - dnLineStartBar) : na
+
+ruleUp2 = upTrendlineActive
+ruleDn2 = dnTrendlineActive
+
+// =============================================================
+// REGLA 3 - Gap en apertura que rompe midpoint Y trendline
+// =============================================================
+upGapBreaksMid  = not na(prevMidpoint) and open > prevMidpoint
+upGapBreaksLine = not na(upTrendlineNow) and open > upTrendlineNow
+ruleUp3 = isOpeningBar and upGapBreaksMid and upGapBreaksLine
+
+dnGapBreaksMid  = not na(prevMidpoint) and open < prevMidpoint
+dnGapBreaksLine = not na(dnTrendlineNow) and open < dnTrendlineNow
+ruleDn3 = isOpeningBar and dnGapBreaksMid and dnGapBreaksLine
+
+// =============================================================
+// REGLA 4 - Volatilidad en la apertura (compartida)
+// =============================================================
+atr14   = ta.atr(14)
+barRng  = high - low
+rule4   = (not useVolFilter) or (barRng >= volMultATR * atr14)
+
+// =============================================================
+// SENAL COMPLETA por direccion
+// =============================================================
+effUp1 = (not useRule1) or ruleUp1
+effUp2 = (not useRule2) or ruleUp2
+effUp3 = (not useRule3) or ruleUp3
+effUp4 = (not useRule4) or rule4
+
+effDn1 = (not useRule1) or ruleDn1
+effDn2 = (not useRule2) or ruleDn2
+effDn3 = (not useRule3) or ruleDn3
+effDn4 = (not useRule4) or rule4
+
+fullSignalUp = enableUp   and effUp1 and effUp2 and effUp3 and effUp4
+fullSignalDn = enableDown and effDn1 and effDn2 and effDn3 and effDn4
+
+breakoutUp = fullSignalUp and not fullSignalUp[1]
+breakoutDn = fullSignalDn and not fullSignalDn[1]
+
+if breakoutUp
+    upCurrentHadSignal := true
+if breakoutDn
+    dnCurrentHadSignal := true
+
+// =============================================================
+// STRATEGY: 1 operacion por senal -> para exportar "List of Trades" a CSV
+// =============================================================
+// CALL = long, PUT = short (solo para que cada senal sea un trade con su timestamp de entrada;
+// el P&L de aqui NO es el de opciones). process_orders_on_close=true -> la entrada cae en la
+// vela de la senal (09:30). Se cierra al final de la sesion regular -> cada senal = 1 trade.
+if breakoutUp
+    strategy.entry("CALL", strategy.long)
+if breakoutDn
+    strategy.entry("PUT", strategy.short)
+if session.islastbar_regular
+    strategy.close_all(comment="EOD")
+
+// =============================================================
+// CONTADORES por direccion
+// =============================================================
+var int countUp1   = 0
+var int countUp2   = 0
+var int countUp3   = 0
+var int countUp4   = 0
+var int countUpSig = 0
+
+var int countDn1   = 0
+var int countDn2   = 0
+var int countDn3   = 0
+var int countDn4   = 0
+var int countDnSig = 0
+
+if ruleUp1 and not ruleUp1[1]
+    countUp1 += 1
+if ruleUp2 and not ruleUp2[1]
+    countUp2 += 1
+if ruleUp3 and not ruleUp3[1]
+    countUp3 += 1
+if rule4 and not rule4[1]
+    countUp4 += 1
+if breakoutUp
+    countUpSig += 1
+
+if ruleDn1 and not ruleDn1[1]
+    countDn1 += 1
+if ruleDn2 and not ruleDn2[1]
+    countDn2 += 1
+if ruleDn3 and not ruleDn3[1]
+    countDn3 += 1
+if rule4 and not rule4[1]
+    countDn4 += 1
+if breakoutDn
+    countDnSig += 1
+
+// =============================================================
+// PLOTSHAPES y ALERTAS
+// =============================================================
+plotshape(breakoutUp, title="UP Signal",
+     style=shape.triangleup, location=location.belowbar,
+     color=color.new(color.lime, 0), size=size.small)
+
+plotshape(breakoutDn, title="DOWN Signal",
+     style=shape.triangledown, location=location.abovebar,
+     color=color.new(color.red, 0), size=size.small)
+
+// Texto "U"/"D" via label.new para soportar tooltip nativo en hover.
+// El tooltip se traduce segun el idioma seleccionado.
+// UP: tooltip "CAMBIO DE TENDENCIA AL ALTA..." / "BULLISH..."
+// DN: tooltip "CAMBIO DE TENDENCIA A LA BAJA..." / "BEARISH..."
+if breakoutUp
+    label.new(bar_index, low, "UP",
+         yloc=yloc.belowbar,
+         style=label.style_none,
+         textcolor=color.new(color.lime, 0),
+         size=size.small,
+         tooltip=t_strategy_up)
+if breakoutDn
+    label.new(bar_index, high, "DW",
+         yloc=yloc.abovebar,
+         style=label.style_none,
+         textcolor=color.new(color.red, 0),
+         size=size.small,
+         tooltip=t_strategy_dn)
+
+// NOTA: alertcondition requiere const string en message (limitacion de Pine).
+// Por eso el mensaje queda fijo en bilingue, no depende del dropdown.
+alertcondition(breakoutUp, title="CALL opening signal", message="TR-UD-15m CALL apertura / opening {{ticker}} @ {{close}}")
+alertcondition(breakoutDn, title="PUT opening signal",  message="TR-UD-15m PUT apertura / opening {{ticker}} @ {{close}}")
+
+// =============================================================
+// EXPORT A CSV (para backtesting fuera de TradingView)
+// =============================================================
+// plotshape/alertcondition NO se exportan con "Export chart data" (solo plot()).
+// Estas 2 series ponen 1 en la vela donde dispara la senal -> en el CSV exportado salen
+// como columnas "Signal CALL" / "Signal PUT". display.data_window = no ensucian el chart.
+plot(breakoutUp ? 1 : na, "Signal CALL", display=display.data_window)
+plot(breakoutDn ? 1 : na, "Signal PUT",  display=display.data_window)
+
+// =============================================================
+// TABLA DE REGLAS (4 columnas: Concepto | UP | DOWN | Counts)
+// =============================================================
+f_check(bool b) => b ? "[X]" : "[ ]"
+f_bg(bool b)    => b ? color.new(color.green, 60) : color.new(color.gray, 70)
+
+var table tbl = na
+if showTable and barstate.islast
+    table.delete(tbl)
+    tbl := table.new(position.top_right, 4, 8,
+         bgcolor=color.new(color.black, 20),
+         border_color=color.new(color.gray, 50), border_width=1)
+
+    table.cell(tbl, 0, 0, "TR-UD-15m",
+         text_color=color.white, bgcolor=color.new(color.blue, 30), text_halign=text.align_left)
+    table.cell(tbl, 1, 0, "UP",
+         text_color=color.white, bgcolor=color.new(color.green, 50))
+    table.cell(tbl, 2, 0, "DOWN",
+         text_color=color.white, bgcolor=color.new(color.red, 50))
+    table.cell(tbl, 3, 0, "U/D",
+         text_color=color.white, bgcolor=color.new(color.blue, 30))
+
+    table.cell(tbl, 0, 1, syminfo.ticker,
+         text_color=color.gray, bgcolor=color.new(color.black, 50), text_halign=text.align_left)
+    table.cell(tbl, 1, 1, enableUp ? (isOpeningBar ? t_open : t_intra) : t_off,
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+    table.cell(tbl, 2, 1, enableDown ? (isOpeningBar ? t_open : t_intra) : t_off,
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+    table.cell(tbl, 3, 1, "",
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+
+    table.cell(tbl, 0, 2, t_rule1,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 2, f_check(ruleUp1), text_color=color.white, bgcolor=f_bg(ruleUp1))
+    table.cell(tbl, 2, 2, f_check(ruleDn1), text_color=color.white, bgcolor=f_bg(ruleDn1))
+    table.cell(tbl, 3, 2, str.tostring(countUp1) + "/" + str.tostring(countDn1),
+         text_color=color.white)
+
+    table.cell(tbl, 0, 3, t_rule2,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 3, f_check(ruleUp2), text_color=color.white, bgcolor=f_bg(ruleUp2))
+    table.cell(tbl, 2, 3, f_check(ruleDn2), text_color=color.white, bgcolor=f_bg(ruleDn2))
+    table.cell(tbl, 3, 3, str.tostring(countUp2) + "/" + str.tostring(countDn2),
+         text_color=color.white)
+
+    table.cell(tbl, 0, 4, t_rule3,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 4, f_check(ruleUp3), text_color=color.white, bgcolor=f_bg(ruleUp3))
+    table.cell(tbl, 2, 4, f_check(ruleDn3), text_color=color.white, bgcolor=f_bg(ruleDn3))
+    table.cell(tbl, 3, 4, str.tostring(countUp3) + "/" + str.tostring(countDn3),
+         text_color=color.white)
+
+    table.cell(tbl, 0, 5, t_rule4,
+         text_color=color.white, text_halign=text.align_left)
+    table.cell(tbl, 1, 5, f_check(rule4), text_color=color.white, bgcolor=f_bg(rule4))
+    table.cell(tbl, 2, 5, f_check(rule4), text_color=color.white, bgcolor=f_bg(rule4))
+    table.cell(tbl, 3, 5, str.tostring(countUp4),
+         text_color=color.white)
+
+    table.cell(tbl, 0, 6, t_signals,
+         text_color=color.white, bgcolor=color.new(color.blue, 50), text_halign=text.align_left)
+    table.cell(tbl, 1, 6, str.tostring(countUpSig),
+         text_color=color.white, bgcolor=color.new(color.green, 30))
+    table.cell(tbl, 2, 6, str.tostring(countDnSig),
+         text_color=color.white, bgcolor=color.new(color.red, 30))
+    table.cell(tbl, 3, 6, str.tostring(countUpSig + countDnSig),
+         text_color=color.white, bgcolor=color.new(color.blue, 30))
+
+    table.cell(tbl, 0, 7, t_opening,
+         text_color=color.gray, bgcolor=color.new(color.black, 50), text_halign=text.align_left)
+    table.cell(tbl, 1, 7, isOpeningBar ? t_yes : t_no,
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+    table.cell(tbl, 2, 7, isOpeningBar ? t_yes : t_no,
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+    table.cell(tbl, 3, 7, "",
+         text_color=color.gray, bgcolor=color.new(color.black, 50))
+
+// =============================================================
+// TOOLTIP POR VELA
+// =============================================================
+if showTooltip
+    midStr   = na(prevMidpoint)    ? "n/a" : str.tostring(prevMidpoint,    "#.##")
+    upStr    = na(upTrendlineNow)  ? "n/a" : str.tostring(upTrendlineNow,  "#.##")
+    dnStr    = na(dnTrendlineNow)  ? "n/a" : str.tostring(dnTrendlineNow,  "#.##")
+    openStr  = isOpeningBar ? t_yes : t_no
+    upBlock  = "UP: line=" + upStr + " R1=" + f_check(ruleUp1) + " R2=" + f_check(ruleUp2) + " R3=" + f_check(ruleUp3) + " SIG=" + f_check(fullSignalUp)
+    dnBlock  = "DN: line=" + dnStr + " R1=" + f_check(ruleDn1) + " R2=" + f_check(ruleDn2) + " R3=" + f_check(ruleDn3) + " SIG=" + f_check(fullSignalDn)
+    txt      = str.format_time(time, "yyyy-MM-dd HH:mm") + " open=" + str.tostring(open, "#.##") + " mid=" + midStr + " opening=" + openStr + " R4=" + f_check(rule4) + "\n" + upBlock + "\n" + dnBlock
+    label.new(bar_index, high, "", tooltip=txt, yloc=yloc.abovebar,
+         color=color.new(color.gray, 70), style=label.style_circle, size=size.tiny,
+         textcolor=color.new(color.white, 100))
