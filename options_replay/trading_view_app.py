@@ -71,21 +71,46 @@ def _canon_tipo(v) -> str | None:
         return "CALL"
     if t in {"put", "p", "venta", "baja", "down", "sell", "short", "rojo", "red", "d", "dw"}:
         return "PUT"
-    if "call" in t:
+    if "call" in t or "long" in t:
         return "CALL"
-    if "put" in t:
+    if "put" in t or "short" in t:
         return "PUT"
     return None
+
+
+# Valores típicos de la columna "Type" del "List of Trades" de TradingView (para filtrar entradas).
+_ENTRY_EXIT = {"entry long", "exit long", "entry short", "exit short", "entry", "exit",
+               "entrada", "salida"}
+# Headers de una columna fecha+hora combinada (TradingView exporta "Date/Time").
+_DT_NAMES = {"date/time", "datetime", "fecha/hora", "fecha y hora", "timestamp", "date time"}
 
 
 def parse_signals_csv(df: pd.DataFrame, default_ticker: str = "") -> tuple[pd.DataFrame, list[str]]:
     """CSV crudo → DataFrame normalizado [ticker, fecha, hora, estrategia, tipo, _extra...].
     Devuelve (df_norm, warnings). Tolera columnas faltantes/extra."""
     warns: list[str] = []
+    df = df.reset_index(drop=True).copy()
+
+    # (A) Formato "List of Trades" de TradingView: una columna trae Entry/Exit por trade
+    #     (2 filas por operación). La detectamos POR VALOR y nos quedamos solo con las entradas.
+    for c in df.columns:
+        v = df[c].astype(str).map(_norm)
+        if v.isin(_ENTRY_EXIT).mean() > 0.6:
+            keep = v.str.contains("entry") | v.str.contains("entrada")
+            drop = int((~keep).sum())
+            df = df[keep].reset_index(drop=True)
+            if drop:
+                warns.append(f"Detecté formato «List of Trades» de TradingView → me quedé con "
+                             f"{int(keep.sum())} entradas (descarté {drop} fila(s) de salida).")
+            break
+
     m = _map_columns(df.columns)
-    if "fecha" not in m or "hora" not in m or "tipo" not in m:
-        faltan = [f for f in ("fecha", "hora", "tipo") if f not in m]
-        raise ValueError(f"Faltan columnas obligatorias: {', '.join(faltan)}. "
+    dt_col = next((c for c in df.columns if _norm(c) in _DT_NAMES), None)  # "Date/Time" combinada
+
+    have_date = ("fecha" in m) or (dt_col is not None)
+    have_time = ("hora" in m) or (dt_col is not None) or ("fecha" in m)
+    if not have_date or not have_time or "tipo" not in m:
+        raise ValueError("Faltan columnas obligatorias (fecha, hora y tipo de señal). "
                          f"Detecté: {df.columns.tolist()}")
 
     out = pd.DataFrame(index=df.index)   # mismo índice que el CSV → los scalars se propagan a todas las filas
@@ -98,26 +123,25 @@ def parse_signals_csv(df: pd.DataFrame, default_ticker: str = "") -> tuple[pd.Da
         out["ticker"] = default_ticker.strip().upper()
         warns.append(f"Sin columna de ticker → uso «{default_ticker.upper()}» para todas las filas.")
 
-    # Fecha → YYYY-MM-DD
-    out["fecha"] = pd.to_datetime(df[m["fecha"]], errors="coerce").dt.strftime("%Y-%m-%d")
-    # Hora → HH:MM (acepta '09:30', '9:30:00', timestamps completos)
-    _h = df[m["hora"]].astype(str).str.strip()
-    _ht = pd.to_datetime(_h, errors="coerce", format="mixed")
-    out["hora"] = _ht.dt.strftime("%H:%M")
-    # Si la hora vino vacía pero la fecha era un timestamp completo, intentar de ahí
-    _fdt = pd.to_datetime(df[m["fecha"]], errors="coerce")
-    out.loc[out["hora"].isna(), "hora"] = _fdt[out["hora"].isna()].dt.strftime("%H:%M")
+    # Fecha + Hora — de columnas separadas (formato limpio) o de un datetime combinado (TradingView).
+    _src = pd.to_datetime(df[m["fecha"]] if "fecha" in m else df[dt_col], errors="coerce")
+    out["fecha"] = _src.dt.strftime("%Y-%m-%d")
+    if "hora" in m:
+        _ht = pd.to_datetime(df[m["hora"]].astype(str).str.strip(), errors="coerce", format="mixed")
+        out["hora"] = _ht.dt.strftime("%H:%M")
+        out.loc[out["hora"].isna(), "hora"] = _src.dt.strftime("%H:%M")[out["hora"].isna()]
+    else:  # sin columna de hora → de la fecha/datetime combinado
+        out["hora"] = (pd.to_datetime(df[dt_col], errors="coerce") if dt_col else _src).dt.strftime("%H:%M")
 
     out["estrategia"] = (df[m["estrategia"]].astype(str).str.strip() if "estrategia" in m else "")
     out["tipo_senal"] = df[m["tipo"]].map(_canon_tipo)
 
     # Columnas extra (las que no mapeamos) → se preservan con prefijo, sin afectar el motor.
-    mapped_reals = set(m.values())
+    mapped_reals = set(m.values()) | ({dt_col} if dt_col else set())
     for c in df.columns:
         if c not in mapped_reals:
             out[f"extra::{c}"] = df[c].values
 
-    # Filtrar filas inválidas
     bad = out["fecha"].isna() | out["hora"].isna() | out["tipo_senal"].isna()
     if bad.any():
         warns.append(f"Descarté {int(bad.sum())} fila(s) sin fecha/hora/tipo válidos.")
