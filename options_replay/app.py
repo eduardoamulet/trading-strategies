@@ -1257,7 +1257,9 @@ st.sidebar.markdown(
 tickers = st.sidebar.multiselect(
     "Ticker",
     options=TICKER_OPTIONS,
-    default=[TICKER_OPTIONS[_default_idx]] if TICKER_OPTIONS else [],
+    default=([t for t in ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META",
+                          "MSFT", "GOOG", "AAPL"] if t in TICKER_OPTIONS]
+             or ([TICKER_OPTIONS[_default_idx]] if TICKER_OPTIONS else [])),
     key="tickers_select",
     format_func=_ticker_label,
     label_visibility="collapsed",
@@ -3505,6 +3507,53 @@ if _mode == "range":
         [r.get("iteration") for r in day_runs],
         entrada=replay_state["order_time"], chart_key="temporal_chart_range",
     )
+
+    # --- Resumen COMBINADO por día (solo con >1 ticker): la ganancia de cada día
+    #     sumando TODOS los tickers seleccionados (1 fila por fecha). ---
+    _tk_list = replay_state.get("tickers") or [replay_state.get("ticker")]
+    if len(_tk_list) > 1 and successful:
+        _by_day: dict = {}
+        for r in successful:
+            _it = r["iteration"]
+            _e = _by_day.setdefault(r["date"], {"gain": 0.0, "invest": 0.0, "n": 0, "win": 0, "tks": []})
+            _e["gain"] += _it.gain_total
+            _e["invest"] += _it.invest_total
+            _e["n"] += 1
+            _e["win"] += 1 if _it.gain_total > 0 else 0
+            _e["tks"].append(r.get("ticker", ""))
+        _drows, _cum = [], 0.0
+        for _d in sorted(_by_day):
+            _e = _by_day[_d]
+            _cum += _e["gain"]
+            _drows.append({
+                "Fecha": _d, "Ops": _e["n"],
+                "Ganancia": _e["gain"],
+                "ROI %": (_e["gain"] / _e["invest"] * 100.0) if _e["invest"] else 0.0,
+                "Ganadores": f"{_e['win']}/{_e['n']}",
+                "Ganancia acumulada": _cum,
+                "Tickers": ", ".join(_e["tks"]),
+            })
+        _ddf = pd.DataFrame(_drows)
+
+        def _gcol(v):
+            if not isinstance(v, (int, float)) or pd.isna(v):
+                return ""
+            return ("background-color: #c8e6c9" if v > 0
+                    else ("background-color: #ffcdd2" if v < 0 else ""))
+
+        with st.expander(f"📅 Resumen combinado por día ({len(_drows)} días · {len(_tk_list)} tickers)",
+                         expanded=True):
+            st.caption("Ganancia de cada día **sumando todos los tickers** seleccionados. "
+                       "1 fila por fecha; ordenado cronológicamente.")
+            _styled_day = (_ddf.style
+                           .map(_gcol, subset=["Ganancia", "Ganancia acumulada"])
+                           .format({"Ganancia": "${:+,.0f}", "ROI %": "{:+.1f}%",
+                                    "Ganancia acumulada": "${:+,.0f}"}))
+            st.dataframe(
+                _styled_day, use_container_width=True, hide_index=True,
+                height=min(440, 38 + 35 * max(1, len(_drows))),
+                column_config={"Tickers": st.column_config.TextColumn("Tickers", width="large")},
+            )
 
     # ------------------------------------------------------------------
     # Días con resultados — tabla + descargas dentro de un expander
