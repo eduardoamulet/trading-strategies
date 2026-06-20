@@ -1254,15 +1254,19 @@ st.sidebar.markdown(
     "</p>",
     unsafe_allow_html=True,
 )
-ticker = st.sidebar.selectbox(
+tickers = st.sidebar.multiselect(
     "Ticker",
     options=TICKER_OPTIONS,
-    index=_default_idx,
-    key="ticker_select",
-    on_change=_on_ticker_change,
+    default=[TICKER_OPTIONS[_default_idx]] if TICKER_OPTIONS else [],
+    key="tickers_select",
     format_func=_ticker_label,
     label_visibility="collapsed",
+    help="Uno o varios. Con varios tickers, el backtest corre todos (× fecha o rango de fechas) "
+         "y muestra los resultados COMBINADOS (totales/riesgo agregados + columna Ticker).",
 )
+# El PRIMER ticker manda para la Info/Rango/Horario del panel lateral (que son por-ticker).
+# La CORRIDA usa la lista completa `tickers`; cada ticker aplica su propio rango de prima.
+ticker = tickers[0] if tickers else TICKER_OPTIONS[_default_idx]
 
 # Aviso si el ticker elegido solo vence Lun/Mié/Vie — evita el error
 # "No 0 DTE option ..." al elegir un martes o jueves.
@@ -1381,6 +1385,18 @@ if _tinfo and _tinfo.get("min") is not None and _tinfo.get("max") is not None:
 else:
     ext_premium_min = premium_min
     ext_premium_max = premium_max
+
+
+def _ranges_for(_tk):
+    """(premium_min, premium_max, ext_min, ext_max) por ticker. El PRIMERO usa lo editado en
+    el panel; el resto, sus defaults del JSON (cada ticker tiene su propio rango de prima)."""
+    if _tk == ticker:
+        return float(premium_min), float(premium_max), float(ext_premium_min), float(ext_premium_max)
+    _pmn, _pmx = _defaults_for(_tk)
+    _ti = _ticker_info_all.get(_tk.upper().strip())
+    if _ti and _ti.get("min") is not None and _ti.get("max") is not None:
+        return float(_pmn), float(_pmx), float(_ti["min"]) / 100.0, float(_ti["max"]) / 100.0
+    return float(_pmn), float(_pmx), float(_pmn), float(_pmx)
 
 
 # Default = ayer, ajustado al último día hábil de mercado (si ayer fue sábado,
@@ -2132,9 +2148,12 @@ def _validate_form() -> bool:
 
 if btn_iniciar:
     if _validate_form():
+        if not tickers:
+            st.error("Elegí al menos un ticker.")
+            st.stop()
         dl = get_downloader(api_key)
-        if not is_range:
-            # ---------- Single-day mode (comportamiento original) ----------
+        if not is_range and len(tickers) == 1:
+            # ---------- Single-day mode (1 ticker, comportamiento original) ----------
             with st.spinner(f"Bajando datos de Polygon para {ticker} {sel_date} y corriendo iteración 1..."):
                 try:
                     # DTE=1: el día de COMPRA no necesita 0DTE (el vencimiento es D+1).
@@ -2208,7 +2227,7 @@ if btn_iniciar:
             # Placeholders para actualización en vivo: primero el panel de
             # totales preliminares, luego la barra de progreso.
             totals_placeholder = st.empty()
-            progress = st.progress(0.0, text=f"Backtest {ticker} sobre {len(day_list)} días...")
+            progress = st.progress(0.0, text=f"Backtest {len(tickers)} ticker(s) sobre {len(day_list)} días...")
             # Modo rango: usamos los MISMOS Parámetros por iteración VISIBLES del
             # panel (Inversión $, CALL%/PUT%, Modo, Umbral ROI, Stop loss) para TODOS
             # los días. Son editables a mano: lo que se ve es lo que se aplica.
@@ -2225,56 +2244,55 @@ if btn_iniciar:
                 "put_alloc": _b_put_alloc, "roi_threshold": _b_roi_pct_int,
             }
 
-            # Días de semana con 0DTE para este ticker → permite SALTAR SIN llamar al
-            # API los días que de antemano no tienen 0DTE (clave para weekly como SOXL:
-            # solo viernes; mwf: Lun/Mié/Vie). Si no se puede inferir, se chequea cada
-            # día como antes (un nearest_expiry por día no cacheado).
-            _tier = _zerodte_map.get(ticker)
-            if _tier == "daily":
-                _valid_wd = {0, 1, 2, 3, 4}
-            elif _tier == "mwf":
-                _valid_wd = {0, 2, 4}
-            else:
-                # Inferir de la cache: los días de semana frecuentes en los chains
-                # cacheados (ej. SOXL → solo viernes). Los feriados corridos (1 jueves)
-                # caen por debajo del umbral, pero igual se procesan vía "chain cacheado".
+            # Días de semana con 0DTE POR TICKER → permite SALTAR sin API los días que de
+            # antemano no tienen 0DTE para ese ticker (weekly como SOXL: solo viernes; mwf:
+            # Lun/Mié/Vie). Si no se puede inferir, se chequea cada día (nearest_expiry).
+            def _valid_wd_for(_tk):
+                _t = _zerodte_map.get(_tk)
+                if _t == "daily":
+                    return {0, 1, 2, 3, 4}
+                if _t == "mwf":
+                    return {0, 2, 4}
                 from collections import Counter as _Counter
                 _cd = [p.stem.split("_", 1)[1]
-                       for p in (DATA_DIR / "chain").glob(f"{ticker}_*.parquet")]
+                       for p in (DATA_DIR / "chain").glob(f"{_tk}_*.parquet")]
                 if _cd:
                     _c = _Counter(pd.Timestamp(x).weekday() for x in _cd)
                     _thr = max(2, len(_cd) * 0.2)
-                    _valid_wd = {wd for wd, n in _c.items() if n >= _thr} or None
-                else:
-                    _valid_wd = None   # sin info → chequear todos (comportamiento previo)
+                    return {wd for wd, n in _c.items() if n >= _thr} or None
+                return None
 
             _skipped_no0dte = 0
             _skipped_1dte = 0   # DTE=1: días sin "día hábil siguiente" con datos
 
-            # Pre-skip RÁPIDO (sin API) en el hilo principal: días cuyo día de semana
-            # no tiene 0DTE para este ticker y sin chain cacheado. No se encolan.
-            _payloads = []  # (date_str, order_ts, day_end_ts)
-            for d in day_list:
-                date_str = d.isoformat()
-                if (dte != 1
-                        and _valid_wd is not None and d.weekday() not in _valid_wd
-                        and not (DATA_DIR / "chain" / f"{ticker}_{date_str}.parquet").exists()):
-                    _skipped_no0dte += 1
-                    continue
-                _day_end_ts = _to_ts(date_str, horario_salida) - pd.Timedelta(minutes=1)
-                _order_ts = _to_ts(date_str, hora_orden)
-                _payloads.append((date_str, _order_ts, _day_end_ts))
+            # Pre-skip RÁPIDO (sin API) + payloads por (TICKER × día). Cada ticker con su
+            # propio rango de prima (_ranges_for) y su propio calendario de 0DTE.
+            _payloads = []  # (ticker, date_str, order_ts, day_end_ts, pmin, pmax, ext_min, ext_max)
+            for _tk in tickers:
+                _vwd = _valid_wd_for(_tk)
+                _r_pmn, _r_pmx, _r_emn, _r_emx = _ranges_for(_tk)
+                for d in day_list:
+                    date_str = d.isoformat()
+                    if (dte != 1
+                            and _vwd is not None and d.weekday() not in _vwd
+                            and not (DATA_DIR / "chain" / f"{_tk}_{date_str}.parquet").exists()):
+                        _skipped_no0dte += 1
+                        continue
+                    _day_end_ts = _to_ts(date_str, horario_salida) - pd.Timedelta(minutes=1)
+                    _order_ts = _to_ts(date_str, hora_orden)
+                    _payloads.append((_tk, date_str, _order_ts, _day_end_ts,
+                                      _r_pmn, _r_pmx, _r_emn, _r_emx))
 
-            def _run_one_day(date_str, order_ts, day_end_ts):
+            def _run_one_day(ticker_arg, date_str, order_ts, day_end_ts, pmin, pmax, emn, emx):
                 """Worker (corre en un hilo). NO llama a st.* — solo computa y devuelve
                 un dict con 'status' y, si aplica, el 'run' (día) para `day_runs`. El
-                Downloader es thread-safe (lock por archivo)."""
+                Downloader es thread-safe (lock por archivo). Cada run lleva su 'ticker'."""
                 try:
                     # DTE=1: el día de COMPRA no necesita 0DTE; el vencimiento es D+1.
-                    expiry = None if dte == 1 else validate_0dte_session(dl, ticker, date_str)
+                    expiry = None if dte == 1 else validate_0dte_session(dl, ticker_arg, date_str)
                     it = run_next_iteration(
-                        dl, ticker, date_str,
-                        float(premium_min), float(premium_max),
+                        dl, ticker_arg, date_str,
+                        float(pmin), float(pmax),
                         float(invest_call), float(invest_put),
                         order_ts, day_end_ts,
                         exit_threshold_pct=float(exit_threshold_pct),
@@ -2284,7 +2302,7 @@ if btn_iniciar:
                         mode=engine_mode,
                         refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
                         refuerzo_max_count=int(refuerzo_max),
-                        ext_min=float(ext_premium_min), ext_max=float(ext_premium_max),
+                        ext_min=float(emn), ext_max=float(emx),
                         check_step_min=int(sell_check_min),
                         call_exit_threshold_pct=float(call_exit_threshold_pct),
                         call_stop_loss_pct=float(call_stop_loss_pct),
@@ -2303,14 +2321,14 @@ if btn_iniciar:
                     )
                     _exp = it.end_dt.strftime("%Y-%m-%d") if dte == 1 else expiry
                     return {"status": "ok", "run": {
-                        "date": date_str, "expiry": _exp,
+                        "ticker": ticker_arg, "date": date_str, "expiry": _exp,
                         "day_start_ts": order_ts, "day_end_ts": day_end_ts,
                         "iteration": it, "error": None,
                         "prediction": _pred_info, "day_params": _params_info,
                     }}
                 except NoMatchError as e:
                     return {"status": "error", "run": {
-                        "date": date_str, "expiry": None,
+                        "ticker": ticker_arg, "date": date_str, "expiry": None,
                         "day_start_ts": order_ts, "day_end_ts": day_end_ts,
                         "iteration": None, "error": f"NoMatch: {e}",
                         "prediction": _pred_info, "day_params": _params_info}}
@@ -2321,20 +2339,21 @@ if btn_iniciar:
                     if "No 0 DTE option" in _msg:
                         return {"status": "skip_no0dte"}     # weekly sin 0DTE ese día
                     return {"status": "error", "run": {
-                        "date": date_str, "expiry": None,
+                        "ticker": ticker_arg, "date": date_str, "expiry": None,
                         "day_start_ts": order_ts, "day_end_ts": day_end_ts,
                         "iteration": None, "error": str(e),
                         "prediction": _pred_info, "day_params": _params_info}}
                 except Exception as e:
                     return {"status": "error", "run": {
-                        "date": date_str, "expiry": None,
+                        "ticker": ticker_arg, "date": date_str, "expiry": None,
                         "day_start_ts": order_ts, "day_end_ts": day_end_ts,
                         "iteration": None, "error": str(e),
                         "prediction": _pred_info, "day_params": _params_info}}
 
             def _sort_key(r):
                 _ts = r.get("day_start_ts")
-                return (r.get("date") or "", _ts.strftime("%H:%M") if _ts is not None else "")
+                return (r.get("date") or "", r.get("ticker") or "",
+                        _ts.strftime("%H:%M") if _ts is not None else "")
 
             # Ejecución EN PARALELO: los hilos computan; el hilo principal consume los
             # resultados a medida que terminan, refresca la tabla "en vivo" (ordenada
@@ -2394,6 +2413,7 @@ if btn_iniciar:
                                 if _it is not None:
                                     _roi = (_it.gain_total / _it.invest_total) if _it.invest_total else 0.0
                                     _live_rows.append({
+                                        "Ticker": _r.get("ticker", ""),
                                         "Fecha": _r.get("date"),
                                         # Hora REAL en que se compró (start_dt = 1er minuto de la
                                         # operación). Con ventana de búsqueda puede ser POSTERIOR al
@@ -2409,6 +2429,7 @@ if btn_iniciar:
                                     })
                                 else:
                                     _live_rows.append({
+                                        "Ticker": _r.get("ticker", ""),
                                         "Fecha": _r.get("date", "?"),
                                         # Sin resultado → no hubo compra; mostramos la hora intentada.
                                         "Hora de entrada": _hs.strftime("%H:%M") if _hs is not None else "",
@@ -2420,8 +2441,8 @@ if btn_iniciar:
                             # "Ganancia acumulada" = suma corrida de la Ganancia (los días
                             # sin resultado suman 0). Va a la derecha de ROI %.
                             _ldf["Ganancia acumulada"] = _ldf["Ganancia"].fillna(0.0).cumsum()
-                            _ldf = _ldf[["Fecha", "Hora de entrada", "Hora de salida", "Ganancia", "ROI %",
-                                         "Ganancia acumulada", "Razón"]]
+                            _ldf = _ldf[["Ticker", "Fecha", "Hora de entrada", "Hora de salida", "Ganancia",
+                                         "ROI %", "Ganancia acumulada", "Razón"]]
 
                             def _live_row_color(_row):
                                 # Colorea la FILA por el signo de la Ganancia: verde claro
@@ -2452,7 +2473,8 @@ if btn_iniciar:
             totals_placeholder.empty()
             live_ph.empty()
             st.session_state["replay"] = {
-                "ticker": ticker,
+                "tickers": tickers,
+                "ticker": tickers[0] if tickers else ticker,   # compat con renders single-ticker
                 "mode": "range",
                 "date_start": sel_start.isoformat(),
                 "date_end": sel_end.isoformat(),
@@ -3429,7 +3451,8 @@ if replay_state.get("mode") == "signals":
     _render_signals_session(replay_state)
     st.stop()
 
-ticker_str = replay_state["ticker"]
+ticker_str = (", ".join(replay_state["tickers"])
+              if replay_state.get("tickers") else replay_state["ticker"])
 _mode = replay_state.get("mode", "single")
 
 if _mode == "range":
@@ -3552,6 +3575,7 @@ if _mode == "range":
                     _put_mm = "—"
 
                 rows.append({
+                    "Ticker": r.get("ticker", ""),
                     "Fecha": r["date"],
                     "Hora de entrada": it.start_dt.strftime("%H:%M"),   # hora REAL de compra (post-ventana)
                     "Hora de salida": it.end_dt.strftime("%H:%M"),
