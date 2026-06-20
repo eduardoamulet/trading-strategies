@@ -385,6 +385,15 @@ alertcondition(breakoutUp, title="CALL opening signal", message="TR-UD-15m CALL 
 alertcondition(breakoutDn, title="PUT opening signal",  message="TR-UD-15m PUT apertura / opening {{ticker}} @ {{close}}")
 
 // =============================================================
+// EXPORT A CSV (para backtesting fuera de TradingView)
+// =============================================================
+// plotshape/alertcondition NO se exportan con "Export chart data" (solo plot()).
+// Estas 2 series ponen 1 en la vela donde dispara la senal -> en el CSV exportado salen
+// como columnas "Signal CALL" / "Signal PUT". display.data_window = no ensucian el chart.
+plot(breakoutUp ? 1 : na, "Signal CALL", display=display.data_window)
+plot(breakoutDn ? 1 : na, "Signal PUT",  display=display.data_window)
+
+// =============================================================
 // TABLA DE REGLAS (4 columnas: Concepto | UP | DOWN | Counts)
 // =============================================================
 f_check(bool b) => b ? "[X]" : "[ ]"
