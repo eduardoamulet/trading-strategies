@@ -182,18 +182,22 @@ def _op_tipo(signal: str, modo: str) -> str:
     return "CALL" if signal == "CALL" else "PUT"
 
 
-def run_backtest(sig_df: pd.DataFrame, cfg: dict) -> dict:
-    """Corre run_one por cada señal (en paralelo). Devuelve {results, skipped}."""
+def run_backtest(iters_df: pd.DataFrame, cfg: dict) -> dict:
+    """Corre run_one por cada fila SELECCIONADA (✓), respetando Tipo/Criterio/Fills POR FILA
+    (igual que el panel de Backtesting). En paralelo. Devuelve {results, skipped}."""
     dl = _downloader()
     dl.resolution = cfg["resolution"]
-    f1, f2 = _FILL_FLAGS[cfg["fills"]]
-    crit = _CRIT_KEY[cfg["criterio"]]
+    sel = iters_df[iters_df["✓"] == True] if "✓" in iters_df.columns else iters_df  # noqa: E712
 
     specs = []
-    for _, r in sig_df.iterrows():
-        specs.append({"ticker": r["ticker"], "fecha": r["fecha"], "hora": r["hora"],
-                      "tipo": _op_tipo(r["tipo_senal"], cfg["modo_op"]),
-                      "estrategia": r.get("estrategia", ""), "senal": r["tipo_senal"]})
+    for _, r in sel.iterrows():
+        _fl = str(r.get("Fills", "(default)"))
+        _fl = _fl if _fl in _FILL_FLAGS else cfg["fills_default"]      # "(default)" → global
+        f1, f2 = _FILL_FLAGS[_fl]
+        crit = _CRIT_KEY.get(str(r.get("Criterio", "")), "spread")
+        specs.append({"ticker": str(r["Ticker"]).upper(), "fecha": str(r["Fecha"]),
+                      "hora": str(r["Hora"]), "tipo": str(r["Tipo"]),
+                      "estrategia": str(r.get("Estrategia", "")), "f1": f1, "f2": f2, "crit": crit})
 
     def _run(idx_spec):
         i, s = idx_spec
@@ -201,10 +205,10 @@ def run_backtest(sig_df: pd.DataFrame, cfg: dict) -> dict:
             r = sbt.run_one(dl, {"ticker": s["ticker"], "fecha": s["fecha"], "hora": s["hora"],
                                  "tipo": s["tipo"]},
                             inversion=cfg["inv"], umbral_pct=cfg["umbral"], stop_pct=cfg["stop"],
-                            iteration_idx=i + 1, entry_at_ask=f1, exit_at_bid=f1,
-                            selection_criterion=crit, refuerzo_loss_pct=cfg["ref_loss"],
+                            iteration_idx=i + 1, entry_at_ask=s["f1"], exit_at_bid=s["f1"],
+                            selection_criterion=s["crit"], refuerzo_loss_pct=cfg["ref_loss"],
                             refuerzo_max=cfg["ref_max"], call_pct=cfg["call_pct"],
-                            nbbo_timeline=f2, search_window_min=cfg["search"])
+                            nbbo_timeline=s["f2"], search_window_min=cfg["search"])
             r["_spec"] = s
             return r
         except Exception as e:  # noqa: BLE001
@@ -226,9 +230,8 @@ def _result_rows(results: list) -> list[dict]:
         inv = it.invest_total
         s = r["_spec"]
         rows.append({
-            "Fecha": s["fecha"], "Hora salida": str(getattr(it, "start_dt", ""))[11:16],
-            "Ticker": s["ticker"], "Señal": s["senal"], "Operación": s["tipo"],
-            "Estrategia": s.get("estrategia", ""),
+            "Fecha": s["fecha"], "Hora": str(getattr(it, "start_dt", ""))[11:16],
+            "Ticker": s["ticker"], "Tipo": s["tipo"], "Estrategia": s.get("estrategia", ""),
             "Ganancia $": round(it.gain_total, 2), "Inversión $": round(inv, 2),
             "ROI %": round((it.gain_total / inv * 100) if inv else 0.0, 1),
             "Salida": getattr(it, "exit_reason", ""),
@@ -315,42 +318,63 @@ if up is not None:
 
     st.success(f"✅ {len(sig_df)} señales importadas "
                f"({(sig_df['tipo_senal'] == 'CALL').sum()} CALL · {(sig_df['tipo_senal'] == 'PUT').sum()} PUT).")
-    _show = sig_df[[c for c in sig_df.columns if not c.startswith("extra::")]]
-    st.dataframe(_show, use_container_width=True, height=240)
-    st.session_state["tv_sig_df"] = sig_df
+    # Sembrar la tabla de iteraciones con el MISMO formato que el panel de Backtesting.
+    # Solo al subir un archivo NUEVO (para no pisar ediciones del usuario en cada rerun).
+    _fid = f"{up.name}:{len(_data)}"
+    if st.session_state.get("tv_fid") != _fid:
+        st.session_state["tv_fid"] = _fid
+        st.session_state["tv_iters"] = pd.DataFrame({
+            "✓": True, "Ticker": sig_df["ticker"], "Fecha": sig_df["fecha"], "Hora": sig_df["hora"],
+            "Tipo": sig_df["tipo_senal"], "Criterio": "Opción 1 — Menor spread", "Fills": "(default)",
+            "% Cumpl.": [float("nan")] * len(sig_df), "Estrategia": sig_df["estrategia"].astype(str),
+        }).reset_index(drop=True)
+        st.session_state.pop("tv_iters_editor", None)
 
-# ─────────────────── Configuración (igual que Backtesting) ───────────────────
-if "tv_sig_df" in st.session_state:
+# ───────── Tabla de iteraciones (MISMO formato que Backtesting) + parámetros globales ─────────
+if "tv_iters" in st.session_state:
     st.divider()
-    st.subheader("⚙️ Configuración del backtest")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        modo_op = st.selectbox("Cómo operar cada señal",
-                               ["Direccional según la señal", "Straddle (CALL y PUT)", "Straddle + Refuerzo"],
-                               help="Direccional: CALL→compra CALL, PUT→compra PUT. Straddle: CALL+PUT en toda señal.")
-        inv = st.number_input("Inversión ($)", min_value=100.0, value=1000.0, step=100.0)
-        call_pct = st.number_input("Inversión CALL (%)", min_value=0.0, max_value=100.0, value=50.0, step=5.0)
-    with c2:
-        umbral = st.number_input("Umbral ROI (%)", value=10.0, step=5.0)
-        stop = st.number_input("Stop loss (%)", value=-100.0, step=10.0)
-        search = st.number_input("Ventana de búsqueda (min)", min_value=0.0, value=4.0, step=1.0)
-    with c3:
-        fills = st.selectbox("Modelo de fills", list(_FILL_FLAGS.keys()), index=2)
-        criterio = st.selectbox("Criterio de selección", list(_CRIT_KEY.keys()))
-        resolution = {"1 min": "1min", "30 seg": "30s", "15 seg": "15s"}[
-            st.selectbox("Resolución de barras", ["1 min", "30 seg", "15 seg"])]
-    ref_loss, ref_max = 0.50, 2
-    if modo_op == "Straddle + Refuerzo":
-        rc1, rc2 = st.columns(2)
-        ref_loss = rc1.number_input("Umbral pérdida refuerzo (%)", value=50.0, step=10.0) / 100.0
-        ref_max = int(rc2.number_input("Nº de veces a reforzar", min_value=0, value=4, step=1))
+    st.subheader("🔎 Señales a backtestear")
+    st.caption("Mismo formato que el panel de Backtesting. Editá **Tipo / Criterio / Fills** por fila; "
+               "destildá ✓ para excluir una señal.")
+    _TIPOS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (Refuerzo)", "CALL y PUT (plus)",
+              "CALL o PUT", "CALL o PUT (plus)"]
+    edited = st.data_editor(
+        st.session_state["tv_iters"], key="tv_iters_editor", use_container_width=True, height=340,
+        column_config={
+            "✓": st.column_config.CheckboxColumn("✓", default=True),
+            "Ticker": st.column_config.TextColumn("Ticker"),
+            "Fecha": st.column_config.TextColumn("Fecha"),
+            "Hora": st.column_config.TextColumn("Hora"),
+            "Tipo": st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True),
+            "Criterio": st.column_config.SelectboxColumn("Criterio", options=list(_CRIT_KEY.keys()),
+                                                         required=True),
+            "Fills": st.column_config.SelectboxColumn("Fills", options=["(default)"] + list(_FILL_FLAGS.keys()),
+                                                      required=True),
+            "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", disabled=True, format="%.0f"),
+            "Estrategia": st.column_config.TextColumn("Estrategia", disabled=True),
+        })
+
+    st.subheader("⚙️ Parámetros globales")
+    g1, g2, g3 = st.columns(3)
+    inv = g1.number_input("Inversión ($)", min_value=100.0, value=1000.0, step=100.0)
+    call_pct = g1.number_input("Inversión CALL (%)", min_value=0.0, max_value=100.0, value=50.0, step=5.0)
+    umbral = g2.number_input("Umbral ROI (%)", value=10.0, step=5.0)
+    stop = g2.number_input("Stop loss (%)", value=-100.0, step=10.0)
+    fills_default = g3.selectbox("Modelo de fills (por defecto · para filas en «(default)»)",
+                                 list(_FILL_FLAGS.keys()), index=2)
+    search = g3.number_input("Ventana de búsqueda (min)", min_value=0.0, value=4.0, step=1.0)
+    r1, r2, r3 = st.columns(3)
+    ref_loss = r1.number_input("Umbral pérdida refuerzo (%)", value=50.0, step=10.0) / 100.0
+    ref_max = int(r2.number_input("Nº de veces a reforzar", min_value=0, value=4, step=1))
+    resolution = {"1 min": "1min", "30 seg": "30s", "15 seg": "15s"}[
+        r3.selectbox("Resolución de barras", ["1 min", "30 seg", "15 seg"])]
 
     if st.button("▶ Correr backtest", type="primary"):
         cfg = {"inv": inv, "call_pct": call_pct, "umbral": umbral, "stop": stop, "search": search,
-               "fills": fills, "criterio": criterio, "resolution": resolution, "modo_op": modo_op,
-               "ref_loss": ref_loss, "ref_max": ref_max, "workers": 8}
+               "fills_default": fills_default, "ref_loss": ref_loss, "ref_max": ref_max,
+               "resolution": resolution, "workers": 8}
         with st.spinner("Backtesteando señales…"):
-            st.session_state["tv_replay"] = run_backtest(st.session_state["tv_sig_df"], cfg)
+            st.session_state["tv_replay"] = run_backtest(edited, cfg)
 
 # ──────────────────────────────── Resultados ────────────────────────────────
 if "tv_replay" in st.session_state:
