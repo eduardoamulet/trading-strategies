@@ -282,6 +282,10 @@ if breakoutEvent
 
 alertcondition(breakoutEvent, title="PUT opening signal", message="DR-15m PUT apertura / opening {{ticker}} @ {{close}}")
 
+// EXPORT A CSV: plotshape/alertcondition NO se exportan con "Export chart data" (solo plot()).
+// Esta serie pone 1 en la vela de la senal -> columna "Signal PUT" en el CSV. data_window = no ensucia el chart.
+plot(breakoutEvent ? 1 : na, "Signal PUT", display=display.data_window)
+
 // =============================================================
 // TABLA DE REGLAS
 // =============================================================

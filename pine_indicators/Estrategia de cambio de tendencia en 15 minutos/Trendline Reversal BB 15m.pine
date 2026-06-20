@@ -287,6 +287,10 @@ if breakoutEvent
 
 alertcondition(breakoutEvent, title="CALL opening signal", message="TR-15m CALL apertura / opening {{ticker}} @ {{close}}")
 
+// EXPORT A CSV: plotshape/alertcondition NO se exportan con "Export chart data" (solo plot()).
+// Esta serie pone 1 en la vela de la senal -> columna "Signal CALL" en el CSV. data_window = no ensucia el chart.
+plot(breakoutEvent ? 1 : na, "Signal CALL", display=display.data_window)
+
 // =============================================================
 // TABLA DE REGLAS
 // =============================================================
