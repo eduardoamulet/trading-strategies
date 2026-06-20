@@ -81,8 +81,10 @@ def _canon_tipo(v) -> str | None:
 # Valores típicos de la columna "Type" del "List of Trades" de TradingView (para filtrar entradas).
 _ENTRY_EXIT = {"entry long", "exit long", "entry short", "exit short", "entry", "exit",
                "entrada", "salida"}
-# Headers de una columna fecha+hora combinada (TradingView exporta "Date/Time").
-_DT_NAMES = {"date/time", "datetime", "fecha/hora", "fecha y hora", "timestamp", "date time"}
+# Headers de una columna fecha+hora combinada (TradingView XLSX exporta "Date and time";
+# el "Export chart data"/CSV usa "Date/Time"). Normalizados (sin acentos, minúsculas).
+_DT_NAMES = {"date and time", "date/time", "datetime", "date time", "fecha y hora",
+             "fecha/hora", "fecha hora", "timestamp"}
 
 
 def parse_signals_csv(df: pd.DataFrame, default_ticker: str = "") -> tuple[pd.DataFrame, list[str]]:
