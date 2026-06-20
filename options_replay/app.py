@@ -2242,7 +2242,7 @@ if btn_iniciar:
                 "sample_size": 0, "reason": "",
             }
             _params_info = {
-                "mode": engine_mode, "call_alloc": _b_call_alloc,
+                "mode": engine_mode, "tipo": _straddle_mode, "call_alloc": _b_call_alloc,
                 "put_alloc": _b_put_alloc, "roi_threshold": _b_roi_pct_int,
             }
 
@@ -3599,7 +3599,9 @@ if _mode == "range":
                     f"{int(_pred_prob)}% {_pred_label}"
                     if _pred_prob is not None else "—"
                 )
-                _mode_str = {
+                # Tipo de operación COMPLETO (ej. "CALL y PUT (Refuerzo)"); fallback al modo
+                # base para runs viejos sin la key "tipo".
+                _mode_str = _params.get("tipo") or {
                     "call_only": "Sólo CALL",
                     "put_only":  "Sólo PUT",
                     "both":      "CALL+PUT",
@@ -3632,7 +3634,7 @@ if _mode == "range":
                     "Refuerzos": (it.refuerzo["n"] if getattr(it, "refuerzo", None) else 0),
                     # === Columnas nuevas de Predicción Apertura ===
                     "Predicción": _pred_str,
-                    "Mode": _mode_str,
+                    "Operación": _mode_str,
                     "CALL %": _params.get("call_alloc", 50),
                     "PUT %": _params.get("put_alloc", 50),
                     "Umbral ROI": _params.get("roi_threshold", 10),
