@@ -31,6 +31,8 @@ from predictor import (  # noqa: E402
     load_config as load_predictor_config,
 )
 import signals_backtest as sbt  # noqa: E402
+from portfolio_exit import apply_collective_exit  # noqa: E402
+import batch_runner as brunner  # noqa: E402   # batch desde Excel (modo «Cargar backtesting file»)
 
 DATA_DIR = HERE / "data"
 TICKER_INFO_PATH = HERE / "ticker_info.json"
@@ -46,6 +48,10 @@ _REASON_LABELS = {
     "stop_loss": "Exit por STOP LOSS",
     "session_end": "Sin trigger — corre hasta cierre",
     "overnight_1dte": "Venta overnight (1 DTE, día hábil siguiente)",
+    "wrong_direction": "Señal en sentido del movimiento equivocado",
+    "weak_confirmation": "Confirmación débil (vela doji, sin convicción)",
+    "collective_roi": "Cierre por ROI colectivo (cartera)",
+    "collective_stop": "Cierre por Stop loss colectivo (cartera)",
 }
 
 
@@ -65,6 +71,10 @@ _REASON_ICONS = {
     "stop_loss": "🛑",
     "session_end": "🕓",
     "overnight_1dte": "🌙",
+    "wrong_direction": "🧭",
+    "weak_confirmation": "〰️",
+    "collective_roi": "🟰",
+    "collective_stop": "🟥",
 }
 
 
@@ -179,6 +189,21 @@ def _last_open_market_day(d: date_cls) -> date_cls:
             return cur
         cur = cur - timedelta(days=1)
     return d  # fallback al original si algo extraño pasa
+
+
+def _non_trading_reason(date_str: str):
+    """Si `date_str` (YYYY-MM-DD) NO es día hábil de mercado US, devuelve el motivo
+    ('fin de semana' / 'feriado'); si es operable, None. Para AVISAR antes de correr el backtest
+    (esas señales se saltean por no tener sesión / 0DTE ese día)."""
+    try:
+        _d = pd.Timestamp(date_str).date()
+    except Exception:
+        return None
+    if _d.weekday() >= 5:
+        return "fin de semana"
+    if _d.isoformat() in _US_MARKET_HOLIDAYS:
+        return "feriado"
+    return None
 
 
 def _to_ts(date_str: str, t: time_cls) -> pd.Timestamp:
@@ -495,9 +520,12 @@ def render_batch_totals(
     total_gain = sum(r["iteration"].gain_total for r in successful)
     final_capital = total_invested + total_gain
     roi = total_gain / total_invested if total_invested else 0.0
-    n_trig = sum(1 for r in successful if r["iteration"].exit_reason == "100%_threshold")
-    n_stop = sum(1 for r in successful if r["iteration"].exit_reason == "stop_loss")
-    n_eod = sum(1 for r in successful if r["iteration"].exit_reason == "session_end")
+    # Conteo de TODOS los motivos de salida (antes solo contaba 3 → las salidas por ROI colectivo,
+    # confirmación o flip "desaparecían" del resumen y el total no cerraba con la cantidad de señales).
+    _reason_cnt: dict = {}
+    for r in successful:
+        _er = r["iteration"].exit_reason
+        _reason_cnt[_er] = _reason_cnt.get(_er, 0) + 1
     n_winning = sum(1 for r in successful if r["iteration"].gain_total > 0)
     n_losing = sum(1 for r in successful if r["iteration"].gain_total < 0)
     # Win rate = ganadores / (ganadores + perdedores). Excluye días con
@@ -505,8 +533,13 @@ def render_batch_totals(
     _decisive = n_winning + n_losing
     win_rate = (n_winning / _decisive) if _decisive else 0.0
 
-    st.markdown(f"### {title}")
-    tc = st.columns(6)
+    # En el render FINAL (show_risk=True, nivel superior) los Totales van en un expander
+    # EXPANDIDO. En la vista preliminar en vivo (show_risk=False) NO, porque corre dentro
+    # del expander "🔬 Backtest de señales / iteraciones" y Streamlit no anida expanders.
+    _box = st.expander(title, expanded=True) if show_risk else st
+    if not show_risk:
+        _box.markdown(f"### {title}")
+    tc = _box.columns(6)
     tc[0].metric("Días procesados", f"{len(successful)} / {total_days}")
     tc[1].metric("Inversión total", f"${total_invested:,.2f}")
 
@@ -538,9 +571,18 @@ def render_batch_totals(
         ),
     )
 
-    st.caption(
-        f"📊 Razones de salida: "
-        f"**{n_trig}** umbral · **{n_stop}** stop loss · **{n_eod}** cierre de sesión  ·  "
+    # Base (siempre visible, aunque sea 0) + cualquier otro motivo con conteo > 0 (ROI colectivo,
+    # confirmación, flip, overnight). Así el resumen siempre suma la cantidad total de señales.
+    _RS_SHORT = {"100%_threshold": "umbral", "stop_loss": "stop loss", "session_end": "cierre de sesión",
+                 "collective_roi": "ROI colectivo", "collective_stop": "stop colectivo",
+                 "wrong_direction": "dirección equivocada",
+                 "weak_confirmation": "confirmación débil", "overnight_1dte": "overnight"}
+    _rs_base = ["100%_threshold", "stop_loss", "session_end"]
+    _rs_parts = [f"**{_reason_cnt.get(_k, 0)}** {_RS_SHORT[_k]}" for _k in _rs_base]
+    _rs_parts += [f"**{_v}** {_RS_SHORT.get(_k, _k)}"
+                  for _k, _v in _reason_cnt.items() if _k not in _rs_base and _v > 0]
+    _box.caption(
+        f"📊 Razones de salida: {' · '.join(_rs_parts)}  ·  "
         f"💹 **Ganancia total** = suma de los ROI ($) de todas las iteraciones"
     )
 
@@ -625,8 +667,8 @@ def _render_risk_panel(successful: list, key_prefix: str = "risk") -> None:
     if m.get("n", 0) < 2:
         return
 
-    st.markdown("#### ⚠️ Riesgo y cola — lo que el win rate esconde")
-    rc = st.columns(6)
+    _box2 = st.expander("⚠️ Riesgo y cola — lo que el win rate esconde", expanded=False)
+    rc = _box2.columns(6)
     _pf = m["profit_factor"]
     rc[0].metric("Profit factor", "∞" if _pf == float("inf") else f"{_pf:.2f}",
                  help="Σ ganancias / Σ pérdidas ($). >1 rentable; <1.3 es frágil. No depende del win rate.")
@@ -647,14 +689,14 @@ def _render_risk_panel(successful: list, key_prefix: str = "risk") -> None:
     p = m["pcts"]
     # OJO: st.caption usa markdown → los `$` SIN escapar se interpretan como LaTeX y
     # mezclan el texto entre dos signos. Escapamos cada `$` como `\$` (literal).
-    st.caption(
+    _box2.caption(
         f"Expectativa **\\${m['expectancy']:+,.0f}/día** · ROI diario: p5 **{p[5]:+.0%}** · "
         f"mediana **{p[50]:+.0%}** · p95 **{p[95]:+.0%}**  ·  "
         f"Σ ganancias **\\${m['wins_sum']:,.0f}** / Σ pérdidas **\\${m['losses_sum']:,.0f}** · "
         f"Sharpe diario **{m['sharpe']:.2f}**"
     )
 
-    g1, g2 = st.columns(2)
+    g1, g2 = _box2.columns(2)
     with g1:
         _eq = np.array(m["equity_curve"], dtype=float)
         _peak = np.maximum.accumulate(_eq)
@@ -687,7 +729,7 @@ def _render_risk_panel(successful: list, key_prefix: str = "risk") -> None:
 # set_page_config ya se llamó en el entry → ignoramos el error de doble llamada.
 try:
     st.set_page_config(
-        page_title="Options Replay — 0 DTE",
+        page_title="Options Replay",
         layout="wide",
         initial_sidebar_state="expanded",
     )
@@ -729,7 +771,7 @@ st.markdown(
     }
 
 
-    /* Pegar el título 'Options Replay — Intraday 0 DTE' al extremo superior
+    /* Pegar el título 'Options Replay' al extremo superior
        sin solaparlo con el header de Streamlit (que contiene Deploy / menú). */
     .main .block-container,
     [data-testid="stMainBlockContainer"],
@@ -819,7 +861,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-st.title("Options Replay — Intraday 0 DTE")
+st.title("Options Replay")
 st.caption(
     "Reproducción minuto a minuto de un Call + Put 0 DTE cuyo premium de apertura "
     "cae dentro del rango definido por el usuario, y entre esos el más cercano a ATM."
@@ -864,6 +906,15 @@ def _render_sig_results(results, elapsed, partial=False):
                 "Strike": None, "Prima ent.": None, "Prima sal.": None,
                 "Ganancia": None, "ROI %": None, "Razón": f"⚠ {r.get('error', 'error')}",
             })
+    if partial:
+        # Totales preliminares EN VIVO — mismo helper que el render final.
+        _succ_live = [r for r in results if r.get("iteration") is not None]
+        render_batch_totals(_succ_live, total_days=len(results),
+                            title="💼 Totales del backtest (preliminar)", show_risk=False)
+        if st.session_state.get("sig_coll_exit"):
+            st.caption("⏳ _El corte por **ROI colectivo** se aplica al TERMINAR la corrida (necesita "
+                       "el timeline completo del día) → recién en el resultado FINAL vas a ver "
+                       "«Cierre por ROI colectivo» en los días donde la cartera cruzó el umbral._")
     if not partial:
         _m1, _m2, _m3, _m4 = st.columns(4)
         _m1.metric("Iteraciones", len(results))
@@ -890,6 +941,11 @@ def _render_sig_results(results, elapsed, partial=False):
 # Señales handed-off desde Alertas (una sola vez): siembran el editor y lo abren.
 _handoff = st.session_state.pop("bt_signals_handoff", None)
 if _handoff:
+    # Llegando desde Alertas → arrancar LIMPIO: borrar los resultados de cualquier backtest
+    # previo (manual o de señales) para que la derecha no muestre nada renderizado antes.
+    st.session_state.pop("replay", None)
+    st.session_state.pop("_confirm_new_sim", None)
+
     def _norm_hora(h):
         # Alertas de antes de las 09:00 (pre-market) → entrada por defecto a 09:30
         # (apertura), así el backtest 0DTE tiene datos. Las demás quedan igual.
@@ -906,13 +962,19 @@ if _handoff:
          "Fecha": str(s.get("fecha") or ""), "Hora": _norm_hora(s.get("hora")),
          "Tipo": str(s.get("tipo") or "").upper(),
          "% Cumpl.": s.get("prob"),
-         "Estrategia": str(s.get("estrategia") or "")} for s in _handoff]
+         "Estrategia": str(s.get("estrategia") or ""),
+         # Criterio/Fills opcionales (los manda Trading view; Investep no → defaults del panel).
+         **({"Criterio": s["criterio"]} if s.get("criterio") else {}),
+         **({"Fills": s["fills"]} if s.get("fills") else {})} for s in _handoff]
     st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del data_editor
     st.session_state["_iters_sel_seed"] = True       # nuevo handoff → todas seleccionadas
     st.session_state["bt_iters_open"] = True
 
 _iters_seed = st.session_state.get("bt_iters")   # None / [] si no hay iteraciones cargadas
-_iters_open = bool(st.session_state.pop("bt_iters_open", False)) or bool(st.session_state.get("sig_bt"))
+# El expander se QUEDA ABIERTO mientras haya iteraciones cargadas. Antes "bt_iters_open" era un
+# flag de un solo uso (se .pop()-eaba) → en cada rerun (p.ej. al tocar un dropdown) se cerraba solo.
+_one_shot = bool(st.session_state.pop("bt_iters_open", False))
+_iters_open = bool(_iters_seed) or _one_shot or bool(st.session_state.get("sig_bt"))
 
 
 def _has_0dte_on(dl, ticker: str, date: str) -> bool:
@@ -927,154 +989,575 @@ def _has_0dte_on(dl, ticker: str, date: str) -> bool:
         return True
 
 
-def _render_iters_panel(_iters_seed):
-    st.caption(
-        "Cada fila = 1 iteración, configurable por fila: **Tipo** = modo (CALL/PUT una pierna · "
-        "CALL y PUT · CALL o PUT + variantes 'plus' · Refuerzo; los de dos piernas reparten "
-        "50/50) · **Criterio** = selección de contrato (Opción 1 menor spread · Opción 2 cerca "
-        "de ITM) · **Fills** = modelo de fills ('(default)' usa el selector global de abajo, o "
-        "Barra/Fase 1/Fase 2 por fila) · mismo día (sale 16:00). Editá, agregá o borrá filas. "
-        "Las señales de **Alertas** llegan acá."
-    )
-    _seed_df = pd.DataFrame(_iters_seed)
-    for _c in ("Ticker", "Fecha", "Hora", "Tipo", "Estrategia"):
-        if _c not in _seed_df.columns:
-            _seed_df[_c] = ""
-    if "% Cumpl." not in _seed_df.columns:
-        _seed_df["% Cumpl."] = None
-    _seed_df["% Cumpl."] = pd.to_numeric(_seed_df["% Cumpl."], errors="coerce")
-    # Tipo = modo del motor. Una pierna = "CALL"/"PUT" (= lo que viene en la alerta, así
-    # ese es el DEFAULT). Compat: si quedó "Sólo CALL/PUT" de antes, se mapea a CALL/PUT.
-    _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (Refuerzo)", "CALL y PUT (plus)",
-                  "CALL o PUT", "CALL o PUT (plus)"]
-    _seed_df["Tipo"] = _seed_df["Tipo"].apply(
-        lambda v: str(v).strip() if str(v).strip() in _TIPO_OPTS
-        else {"SÓLO CALL": "CALL", "SOLO CALL": "CALL",
-              "SÓLO PUT": "PUT", "SOLO PUT": "PUT"}.get(str(v).strip().upper(), "CALL"))
-    # Criterio de selección de contrato POR FILA: Opción 1 (menor spread, default) /
-    # Opción 2 (primer contrato cerca de ITM = 1-ITM; ignora spread y rango de prima).
-    _CRIT_OPTS = ["Opción 1 — Menor spread", "Opción 2 — Primer contrato cerca de ITM"]
-    _CRIT_KEY = {"Opción 1 — Menor spread": "spread",
-                 "Opción 2 — Primer contrato cerca de ITM": "itm_first"}
-    if "Criterio" not in _seed_df.columns:
-        _seed_df["Criterio"] = _CRIT_OPTS[0]
-    _seed_df["Criterio"] = _seed_df["Criterio"].apply(
-        lambda v: str(v).strip() if str(v).strip() in _CRIT_OPTS else _CRIT_OPTS[0])
-    # Modelo de fills POR FILA. "(default)" = usa el selector global de abajo; o un modo
-    # concreto (Barra / Fase 1 / Fase 2) que SOBRESCRIBE el default para esa fila.
-    _FILL_ROW_OPTS = ["(default)"] + _FILL_MODES
-    if "Fills" not in _seed_df.columns:
-        _seed_df["Fills"] = "(default)"
-    _seed_df["Fills"] = _seed_df["Fills"].apply(
-        lambda v: str(v).strip() if str(v).strip() in _FILL_ROW_OPTS else "(default)")
-    # Columna ✓ (1ª, a la izquierda) para elegir qué filas backtestear. Por defecto TODAS
-    # marcadas; los botones marcan/desmarcan todas (re-siembran el editor).
-    _bsa, _bsn, _ = st.columns([1.7, 1.7, 5])
-    if _bsa.button("☑ Seleccionar todas", use_container_width=True, key="iters_sel_all"):
-        st.session_state["_iters_sel_seed"] = True
-        st.session_state.pop("bt_iters_editor", None)
-        st.rerun()
-    if _bsn.button("☐ Quitar todas", use_container_width=True, key="iters_sel_none"):
-        st.session_state["_iters_sel_seed"] = False
-        st.session_state.pop("bt_iters_editor", None)
-        st.rerun()
-    _seed_df.insert(0, "✓", bool(st.session_state.get("_iters_sel_seed", True)))
-    _seed_df["✓"] = _seed_df["✓"].astype(bool)
-    # Centrar los VALORES (text-align en celdas vía Styler; los headers no se pueden
-    # centrar — limitación del grid de Glide, igual que en la tabla de resultados).
-    _ed = st.data_editor(
-        _seed_df[["✓", "Ticker", "Fecha", "Hora", "Tipo", "Criterio", "Fills", "% Cumpl.", "Estrategia"]].style.set_properties(
-            **{"text-align": "center"}),
-        num_rows="dynamic",
-        use_container_width=True, hide_index=True, key="bt_iters_editor",
-        disabled=["% Cumpl.", "Estrategia"],
-        column_config={
-            "✓": st.column_config.CheckboxColumn(
-                "✓", default=True, help="Marcá las filas a backtestear (todas por defecto)."),
-            "Ticker": st.column_config.TextColumn("Ticker"),
-            "Fecha": st.column_config.TextColumn("Fecha (YYYY-MM-DD)"),
-            "Hora": st.column_config.TextColumn("Hora (HH:MM)"),
-            "Tipo": st.column_config.SelectboxColumn("Tipo", options=_TIPO_OPTS, required=True),
-            "Criterio": st.column_config.SelectboxColumn(
-                "Criterio", options=_CRIT_OPTS, required=True, width="medium",
-                help="Cómo se elige el contrato. Opción 1: menor spread en el rango (con "
-                     "compuerta de spread). Opción 2: el primer contrato dentro del dinero "
-                     "(1-ITM), ignorando spread y rango de prima."),
-            "Fills": st.column_config.SelectboxColumn(
-                "Fills", options=_FILL_ROW_OPTS, required=True, width="medium",
-                help="Modelo de fills POR FILA. '(default)' usa el selector global de abajo. "
-                     "Barra = precio del bar (optimista). Fase 1 = ASK al entrar/BID al salir "
-                     "(parche en la salida). Fase 2 = bid por barra, el más realista."),
-            "% Cumpl.": st.column_config.NumberColumn("% Cumpl.", format="%.0f%%",
-                                                      help="Probabilidad de la señal (informativo)."),
-            "Estrategia": st.column_config.TextColumn(
-                "Estrategia", width="large",
-                help="Estrategia que generó la señal (informativo; llega desde Alertas)."),
-        },
-    )
-    _sp1, _sp2, _sp3, _sp4, _sp5, _sp6 = st.columns(6)
-    _sig_inv = float(_sp1.number_input("Inversión ($)", min_value=1.0, value=1000.0,
-                                       step=100.0, key="sig_inv"))
-    _sig_call_pct = float(_sp2.number_input(
-        "Inversión CALL (%)", value=50.0, min_value=0.0, max_value=100.0, step=5.0, key="sig_call_pct",
-        help="% de la inversión que va a la pierna CALL; el resto va a la PUT. 50 = 50/50."))
-    _sig_umb = float(_sp3.number_input("Umbral ROI (%)", value=10.0, step=5.0, key="sig_umb"))
-    _sig_stop = float(_sp4.number_input("Stop loss (%)", value=-100.0, step=10.0, key="sig_stop"))
-    _sig_refuerzo = float(_sp5.number_input(
-        "Umbral pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0, step=5.0,
-        key="sig_refuerzo", help="Solo para filas 'CALL y PUT (Refuerzo)'. % de pérdida de una pierna "
-                                 "que dispara reforzar la pierna que más pierde (mismo tipo).")) / 100.0
-    _sig_refuerzo_max = int(_sp6.number_input(
-        "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
-        help="Solo para filas 'CALL y PUT (Refuerzo)'. Máximo de refuerzos por iteración (en total, sumando ambas piernas)."))
+_WD_ES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 
-    # Modelo de fills POR DEFECTO del batch. Las filas con Fills="(default)" usan ESTE valor;
-    # las filas con un modo concreto en la columna «Fills» lo sobrescriben.
-    _sig_fill_default = st.selectbox(
-        "Modelo de fills (por defecto · sobrescribible por fila en la columna «Fills»)",
-        _FILL_MODES, index=0, key="fill_mode_sig", help=_FILL_MODE_HELP)
-    _sig_search = float(st.number_input(
-        "Ventana de búsqueda (min)", min_value=0.0, max_value=30.0, value=0.0, step=1.0, key="sig_search",
-        help="Desde el horario de entrada, repregunta Opción 1 cada minuto hasta encontrar un contrato "
-             "que pase TODO (espera a que el spread de la subasta de 09:30 se cierre). Entra en ese "
-             "momento. 0 = un solo intento. Las acciones ilíquidas siguen sin match (spread persistente)."))
 
-    def _eff_fills(label) -> str:
-        _l = str(label or "(default)").strip()
-        return _l if _l in _FILL_MODES else _sig_fill_default
-
-    _specs = []
-    for _, _r in _ed.iterrows():
-        if not bool(_r.get("✓", False)):   # solo las filas MARCADAS
-            continue
-        _tk = str(_r.get("Ticker") or "").strip()
-        if not _tk:
-            continue
-        _specs.append({"ticker": _tk, "fecha": str(_r.get("Fecha") or "").strip(),
-                       "hora": str(_r.get("Hora") or "").strip(),
-                       "tipo": str(_r.get("Tipo") or "").upper().strip(),
-                       "criterio": _CRIT_KEY.get(str(_r.get("Criterio") or "").strip(), "spread"),
-                       "fills": _eff_fills(_r.get("Fills"))})
-
-    # Resolución (señales): 30s/15s solo si TODOS los tickers marcados tienen la data fina.
+def _venc_label(dl, ticker: str, fecha: str) -> str:
+    """Etiqueta del vencimiento del 0DTE/contrato más cercano para (ticker, fecha):
+    «mismo día» (0DTE, el contrato vence ESE día), «Vie (+3)» (vence el viernes, +3 días corridos
+    desde la señal), «—» si no se puede determinar. Usa nearest_expiry (memoizado en el downloader)."""
+    _tk, _fc = str(ticker or "").strip().upper(), str(fecha or "").strip()
+    if not _tk or not _fc:
+        return ""
     try:
-        import json as _json
-        _avail = set(_json.loads((Path(__file__).resolve().parent / "data" /
-                     "resolutions_available.json").read_text(encoding="utf-8")).get("tickers", []))
-    except Exception:
-        _avail = set()
-    _sig_res_ok = bool(_specs) and {s["ticker"] for s in _specs}.issubset(_avail)
-    _sig_res_opts = ["1 min"] + (["30 seg", "15 seg"] if _sig_res_ok else [])
-    if st.session_state.get("sig_res_lbl") not in _sig_res_opts:
-        st.session_state.pop("sig_res_lbl", None)
-    _sig_res_lbl = st.selectbox(
-        "Resolución de barras", _sig_res_opts, index=0, key="sig_res_lbl",
-        help="30s/15s solo si TODAS las señales marcadas son de tickers con data fina descargada.")
-    _sig_resolution = {"1 min": "1min", "30 seg": "30s", "15 seg": "15s"}[_sig_res_lbl]
-    if _specs and not _sig_res_ok:
-        _noav = sorted({s["ticker"] for s in _specs} - _avail)
-        st.caption(f"⏱️ Solo **1 min** disponible — {', '.join(_noav)} sin 30s/15s descargada.")
+        _exp = dl.nearest_expiry(_tk, _fc)
+        _d0 = pd.to_datetime(_fc).normalize()
+        _d1 = pd.to_datetime(_exp).normalize()
+    except Exception:  # noqa: BLE001
+        return "—"
+    if _exp is None or pd.isna(_d1) or pd.isna(_d0):
+        return "—"
+    _n = int((_d1 - _d0).days)
+    return "mismo día" if _n <= 0 else f"{_WD_ES[_d1.weekday()]} (+{_n})"
 
+
+def _section_rule(text: str) -> None:
+    """Encabezado de sección: texto a la izquierda + línea divisoria a la derecha (regla inline).
+
+    Centraliza el HTML que antes se repetía en cada sub-header (DATOS DE ENTRADA / SALIDA)."""
+    st.markdown(
+        "<div style='display:flex; align-items:center; gap:0.6rem; margin:0.8rem 0 0.3rem 0;'>"
+        f"<span style='font-weight:700; white-space:nowrap;'>{text}</span>"
+        "<hr style='flex:1; border:none; border-top:1px solid rgba(128,128,128,0.35); margin:0;'>"
+        "</div>",
+        unsafe_allow_html=True)
+
+
+def _shift_hhmm(hhmm: str, mins: int) -> str:
+    """Suma `mins` a un horario «HH:MM», topeado a las 16:00 (cierre de mercado).
+
+    La señal de la TR-UD-15m se CONFIRMA al CIERRE de la vela de 15m, pero la «Hora» de cada
+    fila es la APERTURA de esa vela (Pine/TradingView timestampea las barras por su apertura).
+    Entrar en la apertura usaría datos del futuro (el cierre de esa misma vela) → lookahead.
+    Desplazar la entrada al cierre (Hora + timeframe) la hace realista."""
+    try:
+        _h, _m = str(hhmm).strip().split(":")[:2]
+        _tot = min(int(_h) * 60 + int(_m) + int(mins), 16 * 60)
+        return f"{_tot // 60:02d}:{_tot % 60:02d}"
+    except Exception:
+        return hhmm
+
+
+def _render_iters_panel(_iters_seed):
+    # ════════════ 🔁 DATOS DE ITERACIÓN (señales · filtros · tabla editable) ════════════
+    with st.container(border=True):
+        st.markdown("<h5 style='text-align:center;'>🔁 DATOS DE ITERACIÓN</h5>", unsafe_allow_html=True)
+        st.caption(
+            "Cada fila = 1 iteración, configurable por fila: **Tipo** = modo (CALL/PUT una pierna · "
+            "CALL y PUT · CALL o PUT + variantes 'plus' · Refuerzo; los de dos piernas reparten "
+            "50/50) · **Criterio** = selección de contrato (Menor spread en rango óptimo · Primer "
+            "contrato cerca de ITM) · **Fills** = modelo de fills ('(default)' usa el selector global de abajo, o "
+            "Barra/Fase 1/Fase 2 por fila) · mismo día (sale 16:00). Editá, agregá o borrá filas. "
+            "Las señales de **Alertas** llegan acá."
+        )
+        _seed_df = pd.DataFrame(_iters_seed)
+        for _c in ("Ticker", "Fecha", "Hora", "Tipo", "Estrategia"):
+            if _c not in _seed_df.columns:
+                _seed_df[_c] = ""
+        if "% Cumpl." not in _seed_df.columns:
+            _seed_df["% Cumpl."] = None
+        _seed_df["% Cumpl."] = pd.to_numeric(_seed_df["% Cumpl."], errors="coerce")
+        # Tipo = modo del motor. Una pierna = "CALL"/"PUT" (= lo que viene en la alerta, así
+        # ese es el DEFAULT). Compat: si quedó "Sólo CALL/PUT" de antes, se mapea a CALL/PUT.
+        _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (Refuerzo)",
+                      "CALL y PUT (Refuerzo) (End of Day)", "CALL y PUT (plus)",
+                      "CALL o PUT", "CALL o PUT (plus)", "CALL o PUT (End of Day)",
+                      "Sólo CALL (End of Day)", "Sólo PUT (End of Day)"]
+        _TIPO_CI = {t.upper(): t for t in _TIPO_OPTS}   # match case-insensible (el handoff manda en MAYÚS)
+        _seed_df["Tipo"] = _seed_df["Tipo"].apply(
+            lambda v: _TIPO_CI.get(str(v).strip().upper())
+            or {"SÓLO CALL": "CALL", "SOLO CALL": "CALL",
+                "SÓLO PUT": "PUT", "SOLO PUT": "PUT"}.get(str(v).strip().upper(), "CALL"))
+        # Criterio de selección de contrato POR FILA: Opción 1 (menor spread, default) /
+        # Opción 2 (primer contrato cerca de ITM = 1-ITM; ignora spread y rango de prima).
+        _CRIT_OPTS = ["Menor spread en rango óptimo", "Primer contrato cerca de ITM"]
+        _CRIT_KEY = {"Menor spread en rango óptimo": "spread",
+                     "Primer contrato cerca de ITM": "itm_first"}
+        if "Criterio" not in _seed_df.columns:
+            _seed_df["Criterio"] = _CRIT_OPTS[0]
+        _seed_df["Criterio"] = _seed_df["Criterio"].apply(
+            lambda v: str(v).strip() if str(v).strip() in _CRIT_OPTS else _CRIT_OPTS[0])
+        # Modelo de fills POR FILA. "(default)" = usa el selector global de abajo; o un modo
+        # concreto (Barra / Fase 1 / Fase 2) que SOBRESCRIBE el default para esa fila.
+        _FILL_ROW_OPTS = ["(default)"] + _FILL_MODES
+        if "Fills" not in _seed_df.columns:
+            _seed_df["Fills"] = "(default)"
+        _seed_df["Fills"] = _seed_df["Fills"].apply(
+            lambda v: str(v).strip() if str(v).strip() in _FILL_ROW_OPTS else "(default)")
+        # --- 🔎 Filtro de señales: por acción + rango de fechas (desde / hasta). Acota qué
+        #     señales se ven en el editor y, por ende, cuáles se backtestean. Vacío = todas. ---
+        _all_sig_tks = sorted({str(t).strip() for t in _seed_df["Ticker"] if str(t).strip()})
+        _sig_dts_all = pd.to_datetime(_seed_df["Fecha"], errors="coerce")
+        _dmin, _dmax = _sig_dts_all.min(), _sig_dts_all.max()
+        _hr_uniq = sorted({str(h).strip() for h in _seed_df["Hora"] if str(h).strip()})
+        _flt_c1, _flt_c2, _flt_c3, _flt_c4 = st.columns([2, 1, 1, 2])
+        _f_tks = _flt_c1.multiselect(
+            "🔎 Filtrar por acción", _all_sig_tks, default=[], key="sig_flt_tks",
+            help="Vacío = todas las acciones. Elegí una o más para acotar el backtest.")
+        _f_from = _flt_c2.date_input("Fecha desde", value=None, key="sig_flt_from",
+                                     format="YYYY-MM-DD", help="Vacío = sin límite inferior.")
+        _f_to = _flt_c3.date_input("Fecha hasta", value=None, key="sig_flt_to",
+                                   format="YYYY-MM-DD", help="Vacío = sin límite superior.")
+        # Rango de hora (slider). HH:MM ordena bien como string → comparación directa.
+        if len(_hr_uniq) >= 2:
+            if st.session_state.get("_sig_flt_hr_opts") != tuple(_hr_uniq):
+                st.session_state["_sig_flt_hr_opts"] = tuple(_hr_uniq)
+                st.session_state.pop("sig_flt_hr", None)   # re-siembra si cambian las horas disponibles
+            _h_lo, _h_hi = _flt_c4.select_slider(
+                "🕐 Rango de hora", options=_hr_uniq, value=(_hr_uniq[0], _hr_uniq[-1]),
+                key="sig_flt_hr", help="Acota por la hora de la señal (columna Hora).")
+        else:
+            _flt_c4.caption("🕐 Rango de hora")
+            _flt_c4.caption(f"_(única: {_hr_uniq[0]})_" if _hr_uniq else "_(sin horas)_")
+            _h_lo = _hr_uniq[0] if _hr_uniq else ""
+            _h_hi = _hr_uniq[-1] if _hr_uniq else ""
+        _mask = pd.Series(True, index=_seed_df.index)
+        if _f_tks:
+            _mask &= _seed_df["Ticker"].astype(str).str.strip().isin(_f_tks)
+        if _f_from is not None:
+            _mask &= _sig_dts_all >= pd.Timestamp(_f_from)
+        if _f_to is not None:
+            _mask &= _sig_dts_all <= pd.Timestamp(_f_to)
+        if _hr_uniq:
+            _hora_str = _seed_df["Hora"].astype(str).str.strip()
+            _mask &= (_hora_str >= _h_lo) & (_hora_str <= _h_hi)
+        _n_total = len(_seed_df)
+        _seed_df = _seed_df[_mask].reset_index(drop=True)
+        # Orden EN PYTHON (no por header del grid) → la edición de celdas del data_editor sigue
+        # funcionando. Ordenar por header + editar NO conviven en st.data_editor (la edición se pierde).
+        # Además el orden se basa en los datos ORIGINALES, así que editar una celda no hace saltar la fila.
+        _SORT_OPTS = ["(sin ordenar)", "Fecha ↑", "Fecha ↓", "Ticker ↑", "Ticker ↓",
+                      "Hora ↑", "Hora ↓", "Tipo ↑", "Tipo ↓"]
+        _sort_by = st.selectbox(
+            "↕ Ordenar por", _SORT_OPTS, index=0, key="sig_sort_by",
+            help="Ordena la tabla al instante, sin romper la edición de celdas. '(sin ordenar)' = orden "
+                 "de carga. ↑ ascendente · ↓ descendente.")
+        if _sort_by != "(sin ordenar)":
+            _scol = _sort_by.rsplit(" ", 1)[0]
+            if _scol in _seed_df.columns:
+                _seed_df = _seed_df.sort_values(
+                    _scol, ascending=_sort_by.endswith("↑"), kind="stable",
+                    key=lambda s: s.astype(str)).reset_index(drop=True)
+        # Re-siembra el editor cuando cambia el filtro O el orden (descarta el estado viejo del
+        # data_editor). NO toca `bt_iters` (no es destructivo).
+        _flt_sig = (tuple(_f_tks), str(_f_from), str(_f_to), _h_lo, _h_hi, _sort_by)
+        if st.session_state.get("_sig_flt_last") != _flt_sig:
+            st.session_state["_sig_flt_last"] = _flt_sig
+            st.session_state.pop("bt_iters_editor", None)
+        if len(_seed_df) != _n_total:
+            _rng = (f" · disponible {_dmin.date()} → {_dmax.date()}"
+                    if pd.notna(_dmin) and pd.notna(_dmax) else "")
+            st.caption(f"🔎 Filtro activo: **{len(_seed_df)}** de {_n_total} señales{_rng}.")
+        if _seed_df.empty:
+            st.warning("Ninguna señal cumple el filtro. Ajustá la acción o el rango de fechas.")
+        # Columna ✓ (1ª, a la izquierda) para elegir qué filas backtestear. Por defecto TODAS
+        # marcadas; los botones marcan/desmarcan todas (re-siembran el editor).
+        _bsa, _bsn, _ = st.columns([1.7, 1.7, 5])
+        if _bsa.button("☑ Seleccionar todas", use_container_width=True, key="iters_sel_all"):
+            st.session_state["_iters_sel_seed"] = True
+            st.session_state.pop("bt_iters_editor", None)
+            st.rerun()
+        if _bsn.button("☐ Quitar todas", use_container_width=True, key="iters_sel_none"):
+            st.session_state["_iters_sel_seed"] = False
+            st.session_state.pop("bt_iters_editor", None)
+            st.rerun()
+        _seed_df.insert(0, "✓", bool(st.session_state.get("_iters_sel_seed", True)))
+        _seed_df["✓"] = _seed_df["✓"].astype(bool)
+        # Columna "Vencimiento" (informativa, no editable): cuándo vence el 0DTE/contrato más cercano de
+        # cada fila. Refleja el ticker/fecha del SEED (la alerta), no las ediciones en vivo del editor.
+        _dl_venc = get_downloader(api_key)
+        _seed_df["Vencimiento"] = [_venc_label(_dl_venc, _t, _f)
+                                   for _t, _f in zip(_seed_df["Ticker"], _seed_df["Fecha"])]
+        # "0 DTE": ✅ si el ticker tenía opción que vence ESE mismo día (derivado del Vencimiento, sin
+        # llamada extra). True = «mismo día».
+        _seed_df["0 DTE"] = ["✅" if str(_v) == "mismo día" else "" for _v in _seed_df["Vencimiento"]]
+        # "dynamic" → la edición de celdas (Tipo/Criterio/Fills) funciona SIEMPRE. El orden se hace en
+        # Python con el selector "↕ Ordenar por" de arriba, NO por click en el header: ordenar por header
+        # y editar celdas no conviven en st.data_editor (la edición se pierde / la fila salta).
+        _num_rows = "dynamic"
+        # Centrar los VALORES (text-align en celdas vía Styler; los headers no se pueden
+        # centrar — limitación del grid de Glide, igual que en la tabla de resultados).
+        # Editor: SOLO Ticker / Fecha / Hora / Tipo (+ el ✓ de selección). Criterio y Fills ya NO se
+        # eligen por fila → el run los toma por default: Criterio = «Menor spread en rango óptimo»
+        # (_r.get cae a "spread") y Fills = «Modelo de fills (por defecto)» de abajo.
+        _ed = st.data_editor(
+            _seed_df[["✓", "Ticker", "Fecha", "Hora", "Tipo", "Vencimiento", "0 DTE"]].style.set_properties(
+                **{"text-align": "center"}),
+            num_rows=_num_rows,
+            use_container_width=True, hide_index=True, key="bt_iters_editor",
+            column_config={
+                "✓": st.column_config.CheckboxColumn(
+                    "✓", default=True, help="Marcá las filas a backtestear (todas por defecto)."),
+                "Ticker": st.column_config.TextColumn("Ticker", help="Símbolo del subyacente de la señal."),
+                "Fecha": st.column_config.TextColumn(
+                    "Fecha (YYYY-MM-DD)", help="Día de la señal (formato YYYY-MM-DD)."),
+                "Hora": st.column_config.TextColumn(
+                    "Hora (HH:MM)", help="Hora de entrada de la señal (HH:MM). Se usa si el «Horario de "
+                                         "entrada» es «(hora de la alerta)»."),
+                "Tipo": st.column_config.SelectboxColumn(
+                    "Tipo de operación", options=_TIPO_OPTS, required=True,
+                    help="Estrategia de la operación (CALL, PUT, CALL y PUT, y variantes plus / End of Day / Refuerzo)."),
+                "Vencimiento": st.column_config.TextColumn(
+                    "Vencimiento", disabled=True,
+                    help="Cuándo vence el 0DTE/contrato más cercano del ticker en esa fecha: «mismo día» = 0DTE "
+                         "(QQQ/SPY/IWM); «Vie (+3)» = vence el viernes, +3 días corridos (acción sin 0DTE ese "
+                         "día). Informativo (no editable); refleja el ticker/fecha de la alerta, no las ediciones."),
+                "0 DTE": st.column_config.TextColumn(
+                    "0 DTE", disabled=True,
+                    help="✅ = el ticker tenía opción 0DTE ese día (vence el mismo día de la señal). "
+                         "Vacío = el vencimiento más cercano es posterior (ver «Vencimiento»)."),
+            },
+        )
+        # Info por ticker (debajo de la tabla, colapsada): metadata + rangos + calendario de vencimientos.
+        with st.expander("📊 Información de tickers", expanded=False):
+            _tks_tbl = sorted({str(_t).strip().upper() for _t in _ed.get("Ticker", []) if str(_t).strip()})
+            if not _tks_tbl:
+                st.caption("No hay tickers en la tabla.")
+            else:
+                _tinfo_all = load_ticker_info()
+                _exp_by_tk = {}
+                try:
+                    import ticker_prefs as _tp_info
+                    for _, _prr in _tp_info.load().iterrows():
+                        _exp_by_tk[str(_prr["ticker"]).strip().upper()] = _prr
+                except Exception:
+                    pass
+                _info_rows = []
+                for _tk in _tks_tbl:
+                    _v = _tinfo_all.get(_tk, {}) or {}
+                    _pr = _exp_by_tk.get(_tk)
+                    _info_rows.append({
+                        "Ticker": _tk,
+                        "Nombre": _v.get("nombre") or "—",
+                        "Sector": _v.get("bloque_sector") or "—",
+                        "Rango óptimo ($)": _v.get("rango_optimo_text") or "—",
+                        "Rango ext ($)": _v.get("min_max_text") or "—",
+                        "Lun": (_pr["exp_lun"] if _pr is not None else "—"),
+                        "Mar": (_pr["exp_mar"] if _pr is not None else "—"),
+                        "Mié": (_pr["exp_mie"] if _pr is not None else "—"),
+                        "Jue": (_pr["exp_jue"] if _pr is not None else "—"),
+                        "Vie": (_pr["exp_vie"] if _pr is not None else "—"),
+                    })
+                st.dataframe(pd.DataFrame(_info_rows), hide_index=True, use_container_width=True)
+                st.caption("**Rango óptimo / ext** = rangos de prima por contrato (×100) que usa el motor. "
+                           "**Lun–Vie** = vencimiento más temprano entrando ese día (base de §3 en Configuración; "
+                           "«—» = sin datos / recalculá en §3).")
+    # El orden se hace con el selector "↕ Ordenar por" (en Python), para no romper la edición.
+    # --- Inversión: total + split por pierna (CALL%/PUT% y CALL$/PUT$, BIDIRECCIONAL) ---
+    # El run usa `inversion` (total) + `call_pct`; PUT%, CALL$ y PUT$ son vistas equivalentes
+    # del mismo split, sincronizadas entre sí (editás cualquiera y los demás se ajustan).
+    st.session_state.setdefault("sig_inv", 1000.0)
+    st.session_state.setdefault("sig_call_pct", 50.0)
+    st.session_state.setdefault("sig_put_pct", 50.0)
+    st.session_state.setdefault("sig_call_dollars", 500.0)
+    st.session_state.setdefault("sig_put_dollars", 500.0)
+
+    def _sig_sync_total():
+        _t = float(st.session_state["sig_inv"])
+        st.session_state["sig_call_dollars"] = (float(st.session_state["sig_call_pct"]) / 100.0) * _t
+        st.session_state["sig_put_dollars"] = (float(st.session_state["sig_put_pct"]) / 100.0) * _t
+
+    def _sig_sync_call_pct():
+        _t = float(st.session_state["sig_inv"]); _c = float(st.session_state["sig_call_pct"])
+        st.session_state["sig_put_pct"] = 100.0 - _c
+        st.session_state["sig_call_dollars"] = (_c / 100.0) * _t
+        st.session_state["sig_put_dollars"] = ((100.0 - _c) / 100.0) * _t
+
+    def _sig_sync_put_pct():
+        _t = float(st.session_state["sig_inv"]); _p = float(st.session_state["sig_put_pct"])
+        st.session_state["sig_call_pct"] = 100.0 - _p
+        st.session_state["sig_put_dollars"] = (_p / 100.0) * _t
+        st.session_state["sig_call_dollars"] = ((100.0 - _p) / 100.0) * _t
+
+    def _sig_sync_call_d():
+        _t = float(st.session_state["sig_inv"])
+        if _t <= 0:
+            return
+        _cd = min(float(st.session_state["sig_call_dollars"]), _t)
+        st.session_state["sig_call_dollars"] = _cd
+        _c = (_cd / _t) * 100.0
+        st.session_state["sig_call_pct"] = _c
+        st.session_state["sig_put_pct"] = 100.0 - _c
+        st.session_state["sig_put_dollars"] = _t - _cd
+
+    def _sig_sync_put_d():
+        _t = float(st.session_state["sig_inv"])
+        if _t <= 0:
+            return
+        _pd = min(float(st.session_state["sig_put_dollars"]), _t)
+        st.session_state["sig_put_dollars"] = _pd
+        _p = (_pd / _t) * 100.0
+        st.session_state["sig_put_pct"] = _p
+        st.session_state["sig_call_pct"] = 100.0 - _p
+        st.session_state["sig_call_dollars"] = _t - _pd
+
+    # ════════════ 📥 DATOS DE ENTRADA (inversión · horario · contrato · fills) ════════════
+    with st.container(border=True):
+        st.markdown("<h5 style='text-align:center;'>📥 DATOS DE ENTRADA</h5>", unsafe_allow_html=True)
+        _section_rule("Inversión y horario de operación")
+        _si1, _si2, _si3, _si4, _si5 = st.columns(5)
+        _sig_inv = float(_si1.number_input("Inversión ($)", min_value=1.0, step=100.0,
+                                           key="sig_inv", on_change=_sig_sync_total,
+                                           help="Monto TOTAL a invertir por iteración. Se reparte entre "
+                                                "CALL y PUT según los % de al lado (o 100% a una sola "
+                                                "pierna en CALL/PUT solo)."))
+        _sig_call_pct = float(_si2.number_input(
+            "Inversión en CALL (%)", min_value=0.0, max_value=100.0, step=5.0, key="sig_call_pct",
+            on_change=_sig_sync_call_pct,
+            help="% de la inversión que va a la pierna CALL; el resto va a la PUT. 50 = 50/50."))
+        _si3.number_input("Inversión en PUT (%)", min_value=0.0, max_value=100.0, step=5.0,
+                          key="sig_put_pct", on_change=_sig_sync_put_pct,
+                          help="% de la inversión a la pierna PUT (= 100 − CALL%).")
+        _si4.number_input("Inversión en CALL ($)", min_value=0.0, step=100.0, format="%.2f",
+                          key="sig_call_dollars", on_change=_sig_sync_call_d,
+                          help="Monto $ a la pierna CALL (autocalculado = Inversión × CALL%).")
+        _si5.number_input("Inversión en PUT ($)", min_value=0.0, step=100.0, format="%.2f",
+                          key="sig_put_dollars", on_change=_sig_sync_put_d,
+                          help="Monto $ a la pierna PUT (autocalculado = Inversión × PUT%).")
+        # Horario de operación (entrada / salida).
+        _TIMES_SIG = ["09:30", "09:31", "09:32", "09:35", "09:45", "10:00", "10:30", "11:00",
+                      "12:00", "13:00", "14:00", "15:00", "15:30", "15:45", "16:00"]
+        _se2, _se3 = st.columns(2)
+        _sig_entry_lbl = _se2.selectbox(
+            "Horario de entrada", ["(hora de la alerta)"] + _TIMES_SIG, index=0, key="sig_entry_lbl",
+            help="«(hora de la alerta)» usa la Hora de cada fila. Un horario fijo se aplica a TODAS las señales.")
+        _sig_exit_lbl = _se3.selectbox(
+            "Horario de salida", _TIMES_SIG, index=len(_TIMES_SIG) - 1, key="sig_exit_lbl",
+            help="Hora de venta (mismo día con DTE=0; día hábil siguiente con DTE=1).")
+        _section_rule("Criterio de selección de contratos de opciones")
+        # Ventana · Criterio · Modelo de fills — EN UNA SOLA FILA (3 columnas, como Inversión).
+        _sc1, _sc2, _sc3 = st.columns(3)
+        _sig_search = float(_sc1.number_input(
+            "Ventana de búsqueda de contrato (min)", min_value=0.0, max_value=30.0, value=4.0,
+            step=1.0, key="sig_search",
+            help="Desde el horario de entrada, repregunta «Menor spread en rango óptimo» cada minuto "
+                 "hasta encontrar un contrato que pase TODO (espera a que el spread de la subasta de "
+                 "09:30 se cierre). Entra en ese momento. 0 = un solo intento."))
+        _sig_crit_lbl = _sc2.selectbox(
+            "Criterio de selección de contrato", _CRIT_OPTS, index=0, key="sig_crit_global",
+            help="Cómo se elige el contrato. «Menor spread en rango óptimo»: el de menor spread en el "
+                 "rango (con compuerta de spread). «Primer contrato cerca de ITM»: el primer contrato "
+                 "dentro del dinero (1-ITM), ignorando spread y rango de prima.")
+        _sig_fill_default = _sc3.selectbox(
+            "Modelo de fills", _FILL_MODES, index=_FILL_MODES.index(_FILL_MODE_F2),
+            key="fill_mode_sig", help=_FILL_MODE_HELP)
+
+    with st.container(border=True):
+        st.markdown("<h5 style='text-align:center;'>📋 CONDICIONES DE ENTRADA</h5>", unsafe_allow_html=True)
+        # ── Refuerzo (martingala) — aplica a CUALQUIER tipo (CALL / PUT / CALL y PUT) si está activo ──
+        _sig_apply_ref = st.checkbox(
+            "Aplicar refuerzo (martingala) — vale para CALL, PUT o CALL y PUT", value=False,
+            key="sig_apply_ref",
+            help="Cuando una pierna cae a ≤ −«Umbral de pérdida refuerzo», compra MÁS de ESA misma pierna "
+                 "(mismo tipo) con su inversión inicial, hasta «No. de veces a reforzar». Aplica al Tipo de "
+                 "CADA fila: CALL refuerza solo el CALL, PUT solo el PUT, CALL y PUT la pierna que más "
+                 "pierde. (Las filas «CALL y PUT (Refuerzo)» ya refuerzan siempre, sin este check.)")
+        if _sig_apply_ref:
+            _sr1, _sr2 = st.columns(2)
+            _sig_refuerzo = float(_sr1.number_input(
+                "Umbral pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0, step=5.0,
+                key="sig_refuerzo",
+                help="Cuando el ROI de una pierna (CALL o PUT) cae a ≤ −este valor, se refuerza esa pierna "
+                     "(compra más del mismo tipo con su inversión inicial).")) / 100.0
+            _sig_refuerzo_max = int(_sr2.number_input(
+                "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
+                help="Máximo de refuerzos por iteración (en total, sumando las piernas)."))
+        else:
+            _sig_refuerzo = 0.50
+            _sig_refuerzo_max = 2
+
+        # ── Vencimiento DTE (incluye «Auto-DTE» como 3ª opción del dropdown) ──
+        _DTE_AUTO_LBL = ("🗓️ Auto-DTE — si una señal no tiene 0DTE ese día, operar al vencimiento más "
+                         "cercano (en vez de saltarla)")
+        _DTE_OPTS = ["0 — mismo día", "1 — overnight (D+1)", _DTE_AUTO_LBL]
+        _sig_dte_lbl = st.selectbox(
+            "Vencimiento DTE", _DTE_OPTS, index=0, key="sig_dte_lbl",
+            help="**0 — mismo día**: compra y vende el MISMO día (0DTE). · **1 — overnight (D+1)**: compra "
+                 "el día de la señal y vende el día hábil siguiente al Horario de salida. · **🗓️ Auto-DTE**: "
+                 "igual que «0 — mismo día», pero las señales SIN opción venciendo ese mismo día (típico en "
+                 "acciones fuera de viernes) —que normalmente se SALTEAN— se operan al vencimiento más cercano "
+                 "(compra el día de la señal, vende a ese vencimiento). Las que SÍ tienen 0DTE se operan 0DTE "
+                 "igual; QQQ/SPY/IWM no cambian (0DTE diario).")
+        # Mapeo a las variables que usa el run (mismo comportamiento que el checkbox de antes):
+        if _sig_dte_lbl.startswith("1"):
+            _sig_dte, _auto_dte_on = 1, False
+        elif _sig_dte_lbl == _DTE_AUTO_LBL:
+            _sig_dte, _auto_dte_on = 0, True      # = DTE 0 + Auto-DTE ON (como tildar el checkbox)
+        else:                                      # "0 — mismo día"
+            _sig_dte, _auto_dte_on = 0, False
+
+        # --- Anti-lookahead: la señal de la TR-UD-15m se confirma al CIERRE de la vela de 15m, pero la
+        #     «Hora» de cada fila es la APERTURA de esa vela. Entrar en la apertura mira el futuro
+        #     (usa el cierre de esa misma vela). ON desplaza la entrada al cierre (Hora + timeframe). ---
+        _is_alert_hr = (_sig_entry_lbl == "(hora de la alerta)")
+        _nl1, _nl2 = st.columns([3, 1])
+        _sig_no_lookahead = _nl1.checkbox(
+            "⏱️ Entrar al CIERRE de la vela de la señal (sin lookahead)",
+            value=False, key="sig_no_lookahead", disabled=not _is_alert_hr,
+            help="La señal se CONFIRMA cuando la vela de 15m CIERRA, no en su apertura. La «Hora» de cada "
+                 "fila es la APERTURA de esa vela → entrar ahí adelanta la entrada y MIRA EL FUTURO "
+                 "(resultados inflados). ON desplaza la entrada al CIERRE de la vela (Hora + timeframe), "
+                 "que es lo más temprano que en la realidad podrías operar. Solo con «(hora de la alerta)».")
+        _sig_candle_min = int(_nl2.number_input(
+            "Timeframe vela (min)", min_value=1, max_value=60, value=15, step=5, key="sig_candle_min",
+            disabled=(not _sig_no_lookahead) or (not _is_alert_hr),
+            help="Duración de la vela que dispara la señal. TR-UD-15m = 15."))
+        _no_lookahead_on = bool(_sig_no_lookahead) and _is_alert_hr
+
+        def _eff_fills(label) -> str:
+            _l = str(label or "(default)").strip()
+            return _l if _l in _FILL_MODES else _sig_fill_default
+
+        _specs = []
+        for _, _r in _ed.iterrows():
+            if not bool(_r.get("✓", False)):   # solo las filas MARCADAS
+                continue
+            _tk = str(_r.get("Ticker") or "").strip()
+            if not _tk:
+                continue
+            _hora_use = (str(_r.get("Hora") or "").strip()
+                         if _sig_entry_lbl == "(hora de la alerta)" else _sig_entry_lbl)
+            if _no_lookahead_on:   # entrar al CIERRE de la vela de la señal (Hora + timeframe), sin lookahead
+                _hora_use = _shift_hhmm(_hora_use, _sig_candle_min)
+            _specs.append({"ticker": _tk, "fecha": str(_r.get("Fecha") or "").strip(),
+                           "hora": _hora_use,
+                           "tipo": str(_r.get("Tipo") or "").upper().strip(),
+                           "criterio": _CRIT_KEY.get(_sig_crit_lbl, "spread"),
+                           "fills": _eff_fills(_r.get("Fills"))})
+
+        # Resolución (señales): 30s/15s solo si TODOS los tickers marcados tienen la data fina.
+        try:
+            import json as _json
+            _avail = set(_json.loads((Path(__file__).resolve().parent / "data" /
+                         "resolutions_available.json").read_text(encoding="utf-8")).get("tickers", []))
+        except Exception:
+            _avail = set()
+        _sig_res_ok = bool(_specs) and {s["ticker"] for s in _specs}.issubset(_avail)
+        _sig_res_opts = ["1 min"] + (["30 seg", "15 seg"] if _sig_res_ok else [])
+        if st.session_state.get("sig_res_lbl") not in _sig_res_opts:
+            st.session_state.pop("sig_res_lbl", None)
+        _sig_res_lbl = st.selectbox(
+            "Granularidad temporal de las barras", _sig_res_opts, index=0, key="sig_res_lbl",
+            help="30s/15s solo si TODAS las señales marcadas son de tickers con data fina descargada.")
+        _sig_resolution = {"1 min": "1min", "30 seg": "30s", "15 seg": "15s"}[_sig_res_lbl]
+        if _specs and not _sig_res_ok:
+            _noav = sorted({s["ticker"] for s in _specs} - _avail)
+            st.caption(f"⏱️ Solo **1 min** disponible — {', '.join(_noav)} sin 30s/15s descargada.")
+
+    # ───────────────────────── CONDICIONES DE SALIDA ─────────────────────────
+    with st.container(border=True):
+        st.markdown("<h5 style='text-align:center;'>🚪 CONDICIONES DE SALIDA</h5>", unsafe_allow_html=True)
+        _section_rule("🎯 Condiciones para tickers")
+        # ── Salida POR TICKER (umbral ROI / stop loss) — cada una con su checkbox que la activa ──
+        _so1, _so2 = st.columns(2)
+        with _so1:
+            _sig_apply_umb = st.checkbox(
+                "Cerrar si cumple Umbral ROI (%) del ticker", value=True, key="sig_apply_umb",
+                help="Si está activo, cada iteración/pierna cierra en GANANCIA al tocar el Umbral ROI de "
+                     "abajo. Si NO, no hay salida por ganancia (corre hasta stop / cierre / otra condición).")
+            _sig_umb = float(st.number_input(
+                "Umbral ROI (%) del ticker", value=15.0, step=5.0, key="sig_umb",
+                disabled=not _sig_apply_umb,
+                help="ROI(%) al que CADA iteración/pierna cierra en GANANCIA (por contrato del ticker, no la "
+                     "cartera). Ej: 15 = vende al +15%."))
+            if not _sig_apply_umb:
+                _sig_umb = 100000.0   # check OFF → el profit target nunca se alcanza
+        with _so2:
+            _sig_apply_stop = st.checkbox(
+                "Cerrar si cumple Stop loss (%) del ticker", value=True, key="sig_apply_stop",
+                help="Si está activo, cada iteración/pierna CORTA la pérdida al tocar el Stop loss de "
+                     "abajo. Si NO, no hay stop (aguanta hasta cierre / otra condición).")
+            if float(st.session_state.get("sig_stop", -80.0)) > 0:   # el stop SIEMPRE es ≤ 0
+                st.session_state["sig_stop"] = -abs(float(st.session_state["sig_stop"]))
+            _sig_stop = float(st.number_input(
+                "Stop loss (%) del ticker", value=-80.0, step=10.0, key="sig_stop",
+                max_value=0.0, disabled=not _sig_apply_stop,
+                help="ROI(%) NEGATIVO (≤ 0; el campo no acepta positivos) al que CADA iteración/pierna CORTA "
+                     "la pérdida (por contrato del ticker). Ej: −80 = corta al perder 80%; −100 = sin stop efectivo."))
+            if not _sig_apply_stop:
+                _sig_stop = -100000.0   # check OFF → el stop nunca se alcanza
+        # ── Filtro de confirmación de la 1ª vela (gestión POR TICKER: cierra / da vuelta la pierna) ──
+        _cf_left, _cf_right = st.columns(2)
+        with _cf_left:
+            _sig_conf_mode = st.radio(
+                "Filtro de confirmación de la 1ª vela",
+                options=["No filtrar", "Dar vuelta (flip) si va en contra", "Cerrar si va en contra"],
+                index=1, key="sig_conf_mode",
+                help="A los 15 min de la entrada, si la 1ª vela de 15m DESDE la hora de entrada (cualquiera, NO "
+                     "solo las 9:30) cerró EN CONTRA de la señal:\n\n"
+                     "• **No filtrar**: no hace nada (corre hasta su salida normal / cierre).\n\n"
+                     "• **Cerrar si va en contra**: vende ahí (motivo «Señal en sentido del movimiento "
+                     "equivocado»).\n\n"
+                     "• **Dar vuelta (flip)**: reemplaza la señal por la pierna OPUESTA entrando al cierre de la "
+                     "1ª vela (entrada+15m) y la corre hasta el cierre del día (apuesta a que el movimiento "
+                     "adverso continúa, ~60%). Validado 4 años: PF 1.62 vs 1.57 de cortar.\n\n"
+                     "Solo aplica a iteraciones de UNA pierna (Sólo CALL / Sólo PUT).")
+        _sig_confirm = (_sig_conf_mode != "No filtrar")
+        _sig_flip = (_sig_conf_mode == "Dar vuelta (flip) si va en contra")
+        _sig_min_body = 0.0
+        _sig_cut_weak = True
+        if _sig_confirm:
+            with _cf_right:
+                # ¿TODAS las filas marcadas son modos "End of Day"? Esos corren hasta el cierre por diseño →
+                # la salida por vela doji NO aplica (deshabilitamos el checkbox; el motor igual la exime por fila).
+                _all_eod = bool(_specs) and all(
+                    "end of day" in str(_s.get("tipo", "")).lower() for _s in _specs)
+                _sig_cut_weak = st.checkbox(
+                    "Cerrar si confirmación débil (vela doji, sin convicción)",
+                    value=True, key="sig_cut_weak", disabled=_all_eod,
+                    help="Si la 1ª vela es un DOJI (cuerpo dentro de ±anti-doji, sin convicción), corta la "
+                         "operación con motivo «Confirmación débil». Destildá para que el doji NO corte (sigue "
+                         "hasta su salida normal / cierre del día). Los modos «End of Day» (Sólo CALL/PUT End of "
+                         "Day, etc.) la IGNORAN siempre — corren hasta el cierre por diseño.")
+                if _all_eod:
+                    st.caption("↳ _Deshabilitado: las operaciones «End of Day» corren hasta el cierre; "
+                               "el doji no las corta._")
+                _sig_min_body = float(st.number_input(
+                    "↳ Cuerpo mínimo de la vela de confirmación (%) — anti-doji", min_value=0.0,
+                    max_value=1.0, value=0.05, step=0.05, key="sig_min_body",
+                    help="Banda muerta de ±este valor. A FAVOR: si el cuerpo no llega al umbral, no confirma "
+                         "→ corta al cierre de la 1ª vela (entrada+15m). EN CONTRA: el flip SOLO invierte si el "
+                         "movimiento adverso SUPERA el umbral; dentro de ±umbral (ruido tipo −0.01%) corta, no "
+                         "invierte. 0 = comportamiento original (flipea con cualquier negativo). Típico ≤0.10; "
+                         "subilo para exigir velas adversas más grandes antes de flipear."))
+        _section_rule("🌐 Condiciones para colectivo")
+        _cc1, _cc2 = st.columns(2)
+        with _cc1:
+            _sig_coll = st.checkbox(
+                "Cerrar si cumple Umbral de ROI colectivo (%)", value=True, key="sig_coll_exit",
+                help="Salida A NIVEL CARTERA: dentro de cada día, cuando el ROI de CARTERA de las posiciones "
+                     "abiertas (ganancia $ ÷ invertido $ = el TOTAL en pantalla) alcanza el umbral, vende TODAS "
+                     "de golpe (motivo «ROI colectivo»). Las que ya salieron por su umbral/stop no cuentan "
+                     "después. Puede dispararse varias veces por día si entran nuevas señales.")
+            _sig_coll_thr = float(st.number_input(
+                "Umbral de ROI colectivo (%)", value=5.0, step=1.0, key="sig_coll_thr",
+                disabled=not _sig_coll,
+                help="Cuando el ROI de CARTERA de las posiciones abiertas (ganancia ÷ invertido = el TOTAL) "
+                     "≥ este valor, se cierran TODAS en ese minuto, con motivo «ROI colectivo»."))
+        with _cc2:
+            _sig_coll_stop = st.checkbox(
+                "Cerrar si cumple Stop loss (%) del colectivo", value=False, key="sig_coll_stop",
+                help="STOP A NIVEL CARTERA — solo con >1 TICKER abierto: cuando el ROI de CARTERA de las "
+                     "posiciones abiertas cae a ≤ «Stop loss (%) de colectivo» (la pérdida llega a ese %), "
+                     "vende TODAS de golpe (motivo «Stop colectivo»). Con un solo ticker abierto NO aplica "
+                     "(manda su stop individual). En la pasada de cartera gana el PRIMER trigger del día (ROI "
+                     "colectivo o stop colectivo).")
+            if float(st.session_state.get("sig_coll_stop_thr", -80.0)) > 0:   # el stop SIEMPRE es ≤ 0
+                st.session_state["sig_coll_stop_thr"] = -abs(float(st.session_state["sig_coll_stop_thr"]))
+            _sig_coll_stop_thr = float(st.number_input(
+                "Stop loss (%) de colectivo", value=-80.0, step=5.0, key="sig_coll_stop_thr",
+                max_value=0.0, disabled=not _sig_coll_stop,
+                help="ROI(%) NEGATIVO de CARTERA (≤ 0; el campo no acepta positivos). Cuando el ROI de las "
+                     "abiertas (ganancia ÷ invertido = el TOTAL) ≤ este valor y hay >1 ticker abierto, se "
+                     "cierran TODAS (motivo «Stop colectivo»). Ej: −80 = corta si la cartera pierde 80% o más."))
+
+    # Aviso ANTES de correr: señales en días SIN mercado (fin de semana / feriado) → se saltean.
+    _nontrading = [(_s.get("ticker", "?"), _s.get("fecha", ""), _r)
+                   for _s in _specs if (_r := _non_trading_reason(_s.get("fecha", "")))]
+    if _nontrading:
+        _nt_txt = " · ".join(f"{_tk} {_fc} ({_rs})" for _tk, _fc, _rs in _nontrading)
+        st.warning(f"⚠️ **{len(_nontrading)}** señal(es) caen en un día SIN mercado y se "
+                   f"**saltearán** (no hay sesión / 0DTE): {_nt_txt}")
     if st.button(f"▶ Correr backtest de {len(_specs)} iteración(es)", type="primary",
                  disabled=not _specs, key="sig_run"):
         _dl = get_downloader(api_key)
@@ -1084,7 +1567,10 @@ def _render_iters_panel(_iters_seed):
         _skipped = []
         _keep = []
         for _s in _specs:
-            (_keep if _has_0dte_on(_dl, _s["ticker"], _s["fecha"]) else _skipped).append(_s)
+            # Con DTE=0 salteamos las señales SIN 0DTE ese día; con DTE=1 o Auto-DTE NO (se opera
+            # al vencimiento más cercano, no hace falta 0DTE en la fecha de la señal).
+            (_keep if (_sig_dte == 1 or _auto_dte_on or _has_0dte_on(_dl, _s["ticker"], _s["fecha"]))
+             else _skipped).append(_s)
         _specs = _keep
         _n = len(_specs)
         _wk = max(1, min(8, _n)) if _n else 1
@@ -1100,9 +1586,13 @@ def _render_iters_panel(_iters_seed):
                 _f1, _f2 = _fill_flags(s.get("fills", _FILL_MODES[0]))
                 _ef = _f1 or _f2
                 _futs.append(_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
-                                        _ef, _ef, False, s.get("criterio", "spread"), _sig_refuerzo,
+                                        _ef, _ef, _auto_dte_on, s.get("criterio", "spread"), _sig_refuerzo,
                                         _sig_refuerzo_max, call_pct=_sig_call_pct, nbbo_timeline=_f2,
-                                        search_window_min=_sig_search))
+                                        search_window_min=_sig_search, dte=_sig_dte, exit_hora=_sig_exit_lbl,
+                                        confirm_candle=_sig_confirm, confirm_min_body_pct=_sig_min_body,
+                                        flip_on_wrong_direction=_sig_flip,
+                                        apply_refuerzo=_sig_apply_ref,
+                                        cut_weak_confirmation=_sig_cut_weak))
             _dn = 0
             for _f in as_completed(_futs):
                 try:
@@ -1118,6 +1608,18 @@ def _render_iters_panel(_iters_seed):
                     _render_sig_results(_res, _el, partial=True)
         _pr.empty()
         _lv.empty()
+        # Salidas A NIVEL CARTERA (ROI colectivo / Stop colectivo): post-procesan los resultados YA
+        # completos en UNA pasada cronológica por día (gana el primer trigger). El STOP colectivo solo
+        # dispara con >1 ticker abierto. NO se aplica en los renders parciales (timeline incompleto).
+        _profit_frac = (_sig_coll_thr / 100.0) if _sig_coll else None
+        _stop_frac = (-abs(_sig_coll_stop_thr) / 100.0) if _sig_coll_stop else None   # SIEMPRE negativo (guard)
+        if _profit_frac is not None or _stop_frac is not None:
+            try:
+                _ncoll = apply_collective_exit(_res, _profit_frac, _stop_frac, stop_require_multi=True)
+                if _ncoll:
+                    st.toast(f"🟰 Salida colectiva: {_ncoll} posición(es) cerradas a nivel cartera")
+            except Exception as _ce:
+                st.warning(f"Salida colectiva no aplicada: {_ce}")
         # Guardar como el "replay" actual (modo señales) → se renderiza RICO más abajo,
         # igual que un backtest manual (Totales + detalle por iteración con render_iteration).
         st.session_state["replay"] = {
@@ -1149,7 +1651,10 @@ _LOGO_BT_SVG = (
     '<tspan fill="#1f2937">Signal</tspan><tspan fill="#16a34a">Forge</tspan>'
     '<tspan fill="#9ca3af" font-weight="600"> \\ Backtesting</tspan></text></svg>')
 st.logo(_LOGO_BT_SVG)
-st.sidebar.header("Parámetros")
+# "Tendencia del mercado" va acá (arriba de «Parámetros de sesión»), en un contenedor con borde como
+# «CONDICIONES DE ENTRADA». El widget se RENDERIZA dentro de este placeholder más abajo (necesita
+# is_range / manual_prob / _predictor_cfg, que se definen recién en «Parámetros por iteración»).
+_trend_box = st.sidebar.container(border=True)
 
 replay_state = st.session_state.get("replay")
 has_session = replay_state is not None
@@ -1296,7 +1801,11 @@ _ticker_legend = (
     "💾 cacheado&#10;"
     "☁️ sin cache"
 )
-st.sidebar.markdown(
+# El selector "Ticker" + "Granularidad temporal de las barras" viven DENTRO del expander "Parámetros de sesión"
+# (Ticker primero, antes del "Modo de fecha"). Creamos el expander acá y rendeamos en él con
+# `_sesion_exp.X`. La "Info {ticker}" queda como expander SEPARADO después (no se pueden anidar).
+_sesion_exp = st.sidebar.expander("Parámetros de sesión", expanded=True)
+_sesion_exp.markdown(
     "<p style='display:flex; justify-content:space-between; align-items:center; "
     "font-weight:bold; margin: 0.3rem 0 0.3rem 0;'>"
     "<span>Ticker</span>"
@@ -1305,12 +1814,25 @@ st.sidebar.markdown(
     "</p>",
     unsafe_allow_html=True,
 )
-tickers = st.sidebar.multiselect(
+# Default = tickers marcados como PREFERENCIALES en Configuración (tabla ticker_prefs);
+# si la base no está / vacía, cae a los 11 líquidos de siempre.
+try:
+    import ticker_prefs as _tp_pref
+    _PREF_DEF = _tp_pref.preferred_tickers()
+except Exception:
+    _PREF_DEF = []
+_PREF_DEF = _PREF_DEF or ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META",
+                          "MSFT", "GOOG", "AAPL"]
+# Re-sincroniza EN VIVO: si cambiás los preferenciales (Configuración), el multiselect se
+# re-siembra solo. Solo cuando la LISTA de preferenciales cambia → no pisa tu selección manual.
+_valid_pref = ([t for t in _PREF_DEF if t in TICKER_OPTIONS]
+               or ([TICKER_OPTIONS[_default_idx]] if TICKER_OPTIONS else []))
+if st.session_state.get("_pref_sig_bt") != tuple(_valid_pref):
+    st.session_state["_pref_sig_bt"] = tuple(_valid_pref)
+    st.session_state["tickers_select"] = _valid_pref
+tickers = _sesion_exp.multiselect(
     "Ticker",
     options=TICKER_OPTIONS,
-    default=([t for t in ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META",
-                          "MSFT", "GOOG", "AAPL"] if t in TICKER_OPTIONS]
-             or ([TICKER_OPTIONS[_default_idx]] if TICKER_OPTIONS else [])),
     key="tickers_select",
     format_func=_ticker_label,
     label_visibility="collapsed",
@@ -1324,12 +1846,12 @@ ticker = tickers[0] if tickers else TICKER_OPTIONS[_default_idx]
 # Aviso si el ticker elegido solo vence Lun/Mié/Vie — evita el error
 # "No 0 DTE option ..." al elegir un martes o jueves.
 if _zerodte_map.get(ticker) == "mwf":
-    st.sidebar.caption(
+    _sesion_exp.caption(
         f"🟡 **{ticker}** vence **Lun / Mié / Vie** — no hay 0DTE los **Mar / Jue**. "
         f"Para esos días no existe contrato del mismo día."
     )
 elif _zerodte_map.get(ticker) is None:
-    st.sidebar.caption(
+    _sesion_exp.caption(
         f"⚪ **{ticker}** vence **solo los viernes** (weekly) — no hay 0DTE de **Lun a Jue**. "
         f"Para backtestearlo elegí una fecha que sea **viernes**."
     )
@@ -1337,13 +1859,13 @@ elif _zerodte_map.get(ticker) is None:
 # Aviso si el ticker elegido NO tiene cache local — vamos a tener que pegarle
 # a Polygon en vivo (lento) y puede fallar para fechas históricas o feriados.
 if ticker not in _cached_set:
-    st.sidebar.caption(
+    _sesion_exp.caption(
         f"⚠ **{ticker}** no tiene cache local. Cada backtest va a bajar datos "
         f"de Polygon en vivo (lento, consume rate limit)."
     )
 
 
-# ── Resolución de barras (1 min / 30 seg / 15 seg) ──────────────────────────────
+# ── Granularidad temporal de las barras (1 min / 30 seg / 15 seg) ──────────────────────────────
 @st.cache_data(ttl=20)
 def _subsec_tickers() -> set:
     """Tickers con la data fina (30s/15s) PRE-DESCARGADA (options_replay/download_subsecond.py
@@ -1356,19 +1878,9 @@ def _subsec_tickers() -> set:
         return set()
 
 
-_RES_LBL2KEY = {"1 min": "1min", "30 seg": "30s", "15 seg": "15s"}
-_res_ok = ticker in _subsec_tickers()
-_res_opts = ["1 min"] + (["30 seg", "15 seg"] if _res_ok else [])
-if st.session_state.get("bar_res_lbl") not in _res_opts:
-    st.session_state.pop("bar_res_lbl", None)
-_res_lbl = st.sidebar.selectbox(
-    "Resolución de barras", _res_opts, index=0, key="bar_res_lbl",
-    help="Granularidad de la tabla minuto a minuto y de los chequeos de salida/refuerzo. "
-         "30s/15s solo para tickers con la data fina descargada.")
-bar_resolution = _RES_LBL2KEY[_res_lbl]
-if not _res_ok:
-    st.sidebar.caption(f"⏱️ Para **{ticker}** solo hay acceso a información de **1 min** "
-                       f"(30s/15s no descargadas para este ticker).")
+# Granularidad temporal de las barras: ya NO se elige en el manual (se configura por iteración en «Backtest
+# de señales / iteraciones», una vez añadida la iteración). El backtest manual corre a 1 min.
+bar_resolution = "1min"
 get_downloader(api_key).resolution = bar_resolution   # los handlers comparten este downloader
 
 def_premium_min, def_premium_max = _defaults_for(ticker)
@@ -1384,50 +1896,9 @@ if "premium_min_input" not in st.session_state:
 if "premium_max_input" not in st.session_state:
     st.session_state["premium_max_input"] = def_premium_max
 
-with st.sidebar.expander(f"📊 Info {ticker}", expanded=False):
-    if not _tinfo:
-        st.caption(f"_No hay info para {ticker} en el archivo._")
-    else:
-        if _tinfo.get("nombre"):
-            st.markdown(f"**{_tinfo['nombre']}**")
-        _meta_bits = []
-        if _tinfo.get("indice"):
-            _meta_bits.append(f"📍 {_tinfo['indice']}")
-        if _tinfo.get("bloque_sector"):
-            _meta_bits.append(f"🏷️ {_tinfo['bloque_sector']}")
-        if _meta_bits:
-            st.caption(" · ".join(_meta_bits))
-        if _tinfo.get("sectores"):
-            st.caption(f"_{_tinfo['sectores']}_")
-
-    # Rango óptimo Min/Max — debajo del sector
-    _c_pmin, _c_pmax = st.columns(2)
-    premium_min = _c_pmin.number_input(
-        "Rango óptimo Min (USD)", step=0.05, min_value=0.0, format="%.2f",
-        key="premium_min_input",
-    )
-    premium_max = _c_pmax.number_input(
-        "Rango óptimo Max(USD)", step=0.05, min_value=0.0, format="%.2f",
-        key="premium_max_input",
-    )
-
-    if _tinfo:
-        # Min / Max — dos inputs estilo Rango óptimo. Defaults desde JSON / 100.
-        _def_min = (_tinfo.get("min") / 100.0) if _tinfo.get("min") is not None else 0.30
-        _def_max = (_tinfo.get("max") / 100.0) if _tinfo.get("max") is not None else 0.50
-        _c_mn, _c_mx = st.columns(2)
-        mn_val = _c_mn.number_input(
-            "Rango extendido Min (USD)", step=0.05, min_value=0.0, format="%.2f",
-            key=f"min_input_{ticker}",
-            value=_def_min,
-        )
-        mx_val = _c_mx.number_input(
-            "Rango extendido Max (USD)", step=0.05, min_value=0.0, format="%.2f",
-            key=f"max_input_{ticker}",
-            value=_def_max,
-        )
-        if _tinfo.get("fecha_analisis"):
-            st.caption(f"📅 Fecha de análisis: {_tinfo['fecha_analisis']}")
+# «Info {ticker}» del backtest MANUAL ya NO se muestra en el sidebar (manual deprecado). El rango
+# de prima se toma de los defaults del ticker; el resto del código todavía referencia estas vars.
+premium_min, premium_max = def_premium_min, def_premium_max
 
 # Rango EXTENDIDO (Min-Max ÷100) que el motor usa como 2do nivel de la cascada
 # de selección de contratos. Si el usuario editó los inputs MIN/MAX del panel,
@@ -1477,15 +1948,10 @@ default_start_date = _last_open_market_day(
 #     "Fecha fija / Rango de fechas".
 # Como ya no hay form, los botones de abajo son st.button normales (el handler
 # corre cuando se clickean, leyendo el estado actual de todos los widgets).
-with st.sidebar.expander("Parámetros de sesión", expanded=True):
+with _sesion_exp:
     # Inicio/Fin ya NO se ingresan por UI — vienen de market_hours.json
     # (default 09:30–16:00, override por ticker si hace falta).
     t_start, t_end = get_market_hours(ticker)
-    _mkt_tip = (
-        f"Se asume que el mercado abre a las {t_start:%H:%M} "
-        f"y cierra a las {t_end:%H:%M}"
-    )
-    st.caption(_mkt_tip)
     _date_mode = st.radio(
         "Modo de fecha",
         options=["Fecha fija", "Rango de fechas"],
@@ -1551,6 +2017,11 @@ with st.sidebar.expander("Parámetros de sesión", expanded=True):
     # Backward-compat: el resto del código usa `sel_date` para single-day.
     sel_date = sel_start
 
+    # "Estrategia" va acá (debajo de la Fecha, dentro de «Parámetros de sesión»). El selectbox y su
+    # descripción se RENDERIZAN en este placeholder más abajo (necesitan _mode_opts / _MODE_DESC, que
+    # se arman en «Parámetros por iteración»).
+    _estrat_box = st.container()
+
     # "Horario de entrada" y "Horario de salida" LADO A LADO (misma fila), cada uno
     # un componente hora:minuto. Reemplaza el cierre fijo 16:00 en la lógica.
 
@@ -1579,120 +2050,25 @@ with st.sidebar.expander("Parámetros de sesión", expanded=True):
         if _hv is not None and not (_MKT_OPEN <= _hv <= _MKT_CLOSE):
             st.session_state[_hk] = min(max(_hv, _MKT_OPEN), _MKT_CLOSE)
 
-    # --- DTE: 0 = mismo día (intradía) · 1 = overnight (compra D, vende D+1) ---
-    st.markdown(
-        "<p style='font-weight:normal; margin: 0.4rem 0 0.2rem 0;'>DTE</p>",
-        unsafe_allow_html=True,
-    )
-    dte = int(st.selectbox(
-        "DTE", options=[0, 1], index=0, key="dte_param",
-        label_visibility="collapsed",
-        format_func=lambda d: ("0 — mismo día"
-                               if d == 0 else "1 — overnight (vende día hábil siguiente)"),
-        help=("Días al vencimiento del contrato. **0**: compra y venta el MISMO día "
-              "(Horario de entrada y salida = fecha de la iteración). **1**: compra el "
-              "día D un contrato que vence el día hábil siguiente y lo vende ese D+1 → "
-              "Horario de entrada es de D y Horario de salida de D+1."),
-    ))
-    _is_dte1 = dte == 1
+    # --- Config de la corrida: AHORA FIJA. DTE, horarios, criterio de contrato, modelo de
+    #     fills y ventana de búsqueda se configuran en «Backtest de señales / iteraciones»
+    #     (vía el puente «📤 Backtestear con TODAS las funciones →»). El sidebar manual solo
+    #     elige Ticker + Fecha + Resolución + Modo de fecha. ---
+    dte = 0
+    _is_dte1 = False
 
-    # --- Widgets de horario en dos columnas ---
-    _col_ent, _col_sal = st.columns(2)
-    with _col_ent:
-        st.markdown(
-            "<p style='font-weight:normal; margin: 0.4rem 0 0.2rem 0;'>Horario de entrada</p>",
-            unsafe_allow_html=True,
-        )
-        hora_orden = st.time_input(
-            "Horario de entrada", key="horario_entrada", step=60,
-            label_visibility="collapsed",
-            help=("Hora de COMPRA (apertura). Solo 09:30–16:00. Con DTE=1 es la compra "
-                  "del día D."),
-        )
-        if _is_dte1:
-            st.caption("🛒 Compra · día D")
-    with _col_sal:
-        st.markdown(
-            "<p style='font-weight:normal; margin: 0.4rem 0 0.2rem 0;'>Horario de salida</p>",
-            unsafe_allow_html=True,
-        )
-        horario_salida = st.time_input(
-            "Horario de salida", key="horario_salida", step=60,
-            label_visibility="collapsed",
-            help=("Fin de la ventana operativa (default 16:00). Solo 09:30–16:00. Con "
-                  "DTE=1 es la hora de venta del día hábil SIGUIENTE (D+1), por lo que "
-                  "puede ser una hora anterior a la de entrada."),
-        )
-        if _is_dte1:
-            st.caption("🌙 Venta · día hábil siguiente (D+1)")
-
-    # --- Clamps / validaciones (debajo, ancho completo para que se lean bien) ---
-    # Entrada dentro de la ventana operativa (autocorrige, no bloquea).
-    if hora_orden < t_start:
-        st.warning(f"La entrada se ajustó al inicio de la ventana **{t_start:%H:%M}**.")
-        hora_orden = t_start
-    elif hora_orden > t_end:
-        st.warning(f"La entrada se ajustó al fin de la ventana **{t_end:%H:%M}**.")
-        hora_orden = t_end
-    # La salida debe ser posterior a la entrada SOLO con DTE=0 (mismo día). Con DTE=1
-    # la salida es del día hábil siguiente (D+1) → cualquier hora de reloj es válida
-    # (puede ser anterior a la de entrada) → NO se valida.
-    if not _is_dte1 and horario_salida <= hora_orden and t_end > hora_orden:
-        st.warning(
-            f"El **Horario de salida** debe ser posterior a la entrada "
-            f"({hora_orden:%H:%M}); se ajustó a **{t_end:%H:%M}**."
-        )
-        horario_salida = t_end
+    hora_orden = time_cls(9, 30)
+    horario_salida = time_cls(16, 0)
 
     # Verificación de venta: siempre cada minuto (se quitó el selector dedicado).
     sell_check_min = 1
 
-    # Criterio de selección de contrato: Opción 1 (menor spread en Rango óptimo) u
-    # Opción 2 (primer contrato cerca de ITM = 1-ITM; ignora spread y rango de prima).
-    st.markdown(
-        "<p style='font-weight:normal; margin: 0.5rem 0 0.2rem 0;'>Criterio de selección de contrato</p>",
-        unsafe_allow_html=True,
-    )
-    _crit_options = ["Opción 1 — Menor spread (en Rango óptimo)",
-                     "Opción 2 — Primer contrato cerca de ITM"]
-    # Migración: si quedó guardada una etiqueta vieja (Opción 3 removida), resetear.
-    if st.session_state.get("selection_criterion_label") not in _crit_options:
-        st.session_state.pop("selection_criterion_label", None)
-    _crit_label = st.selectbox(
-        "Criterio de selección de contrato",
-        options=_crit_options, index=0,
-        key="selection_criterion_label", label_visibility="collapsed",
-        help=("Opción 1: compuerta de spread + el contrato de menor bid-ask en el Rango "
-              "óptimo (cascada a extendido). Opción 2: el primer contrato dentro del dinero "
-              "(1-ITM), ignorando spread y rango — la cercanía a ITM es el único criterio."),
-    )
-    selection_criterion = "itm_first" if str(_crit_label).startswith("Opción 2") else "spread"
-
-    # Selección de contrato = SOLO la lógica del criterio elegido (Opción 1 / Opción 2).
-    # La compuerta de spread va INCLUIDA en Opción 1 (rango por bucket de precio del contrato ASK).
+    selection_criterion = "spread"
     _spread_cfg = None
-    # Modelo de fills: barra (rápido) | NBBO entrada/salida (Fase 1) | NBBO por barra (Fase 2).
-    _fill_mode = st.selectbox(
-        "Modelo de fills", _FILL_MODES, index=0, key="fill_mode_manual", help=_FILL_MODE_HELP)
-    _f1, _f2 = _fill_flags(_fill_mode)
+    _f1, _f2 = _fill_flags(_FILL_MODE_F2)
     entry_at_ask = exit_at_bid = (_f1 or _f2)
     nbbo_timeline = _f2
-    search_window_min = float(st.number_input(
-        "Ventana de búsqueda (min)", min_value=0.0, max_value=30.0, value=0.0, step=1.0,
-        key="search_window_manual",
-        help="Desde el horario de entrada, repregunta Opción 1 cada minuto hasta encontrar un contrato "
-             "que pase TODO (espera a que el spread de la subasta se cierre). Entra en ese momento. "
-             "0 = un solo intento. Las acciones ilíquidas siguen sin match."))
-
-    # Info del modo overnight (DTE=1).
-    if _is_dte1:
-        st.info(
-            "🌙 **DTE = 1 (overnight)** — compra el día **D** a la **Horario de entrada** "
-            "un contrato que **vence el día hábil siguiente (D+1)**, y lo vende ese **D+1** "
-            "a la **Horario de salida**. Como son días distintos, la salida puede ser una "
-            "hora anterior a la entrada. **Sin** Umbral de ROI ni Stop loss (la venta del "
-            "día siguiente es el único evento). Ej.: compra viernes 15:30 → vende lunes 10:00."
-        )
+    search_window_min = 4.0
 
 # Cargar config del predictor — necesario en ambos modos.
 _predictor_cfg = load_predictor_config()
@@ -1731,7 +2107,7 @@ _mode_lbl = _mode_map[_params["mode"]]
 # estos mismos valores (auto-aplicados desde el slider, editables a mano) se usan
 # para todos los días del batch. Antes esta sección se ocultaba en modo rango, lo
 # que daba la sensación de que "desaparecía todo el panel".
-with st.sidebar.expander("Parámetros por iteración", expanded=True):
+with st.sidebar.container():
     # AUTO-APPLY: la Probabilidad (%) → Parámetros por iteración. Se aplica
     # cuando cambia el slider (o el config). Entre cambios, podés editar
     # CALL%/PUT%/ROI a mano sin que se sobreescriban (key-tracking sobre los
@@ -1749,12 +2125,6 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
         st.session_state["put_dollars"] = (_params["put_allocation"] / 100.0) * _tot
         st.session_state["umbral_roi_pct"] = float(_params["roi_threshold"])
         st.session_state["_last_applied_prob_key"] = _prob_key
-    st.caption(
-        f"→ Aplicado: {_mode_lbl} · CALL {_params['call_allocation']}% / "
-        f"PUT {_params['put_allocation']}% · ROI {_params['roi_threshold']}%  "
-        f"_(podés editarlos a mano)_"
-    )
-
     if is_range:
         st.caption("🤖 Modo rango — estos parámetros se aplican a todos "
                    "los días del rango (un solo set de parámetros para el batch).")
@@ -1764,11 +2134,11 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
     #   CALL y PUT → 50/50,  Sólo CALL → 100/0,  Sólo PUT → 0/100.
     def _sync_straddle_mode_changed():
         mode = st.session_state.get("straddle_mode_radio", "CALL y PUT")
-        if mode == "Sólo CALL":
+        if mode.startswith("Sólo CALL"):
             new_call_pct, new_put_pct = 100.0, 0.0
-        elif mode == "Sólo PUT":
+        elif mode.startswith("Sólo PUT"):
             new_call_pct, new_put_pct = 0.0, 100.0
-        else:  # "CALL y PUT" o "CALL o PUT" → ambas piernas 50/50
+        else:  # "CALL y PUT" / "CALL o PUT" / EOD de dos piernas → ambas 50/50
             new_call_pct, new_put_pct = 50.0, 50.0
         st.session_state["call_pct"] = new_call_pct
         st.session_state["put_pct"] = new_put_pct
@@ -1782,20 +2152,41 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
         st.session_state["call_stop_pct"] = -100.0
         st.session_state["put_stop_pct"] = -100.0
 
-    _straddle_mode = st.selectbox(
-        "Tipo de operación",
-        options=["CALL y PUT", "CALL y PUT (Refuerzo)", "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)"],
-        index=0,
-        key="straddle_mode_radio",
-        on_change=_sync_straddle_mode_changed,
-    )
-    only_call_now = _straddle_mode == "Sólo CALL"
-    only_put_now = _straddle_mode == "Sólo PUT"
+    # La etiqueta MOSTRADA (sin "Sólo") se controla con format_func; el VALOR INTERNO se mantiene
+    # ("Sólo CALL", …) para NO tocar la detección de modo de abajo ni el auto-apply (_mode_map).
+    # Opciones ORDENADAS alfabéticamente por lo que se ve.
+    _MODE_DISPLAY = {"Sólo CALL": "CALL", "Sólo PUT": "PUT",
+                     "Sólo CALL (End of Day)": "CALL (End of Day)",
+                     "Sólo PUT (End of Day)": "PUT (End of Day)"}
+    _mode_opts = sorted(
+        ["CALL y PUT", "CALL y PUT (Refuerzo)", "CALL y PUT (Refuerzo) (End of Day)",
+         "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)",
+         "CALL o PUT (End of Day)", "Sólo CALL (End of Day)", "Sólo PUT (End of Day)"],
+        key=lambda o: _MODE_DISPLAY.get(o, o))
+    with _estrat_box:
+        _straddle_mode = st.selectbox(
+            "Tipo de operación",
+            options=_mode_opts,
+            format_func=lambda o: _MODE_DISPLAY.get(o, o),
+            index=0,
+            key="straddle_mode_radio",
+            on_change=_sync_straddle_mode_changed,
+        )
+    is_call_only_eod = _straddle_mode == "Sólo CALL (End of Day)"
+    is_put_only_eod = _straddle_mode == "Sólo PUT (End of Day)"
+    only_call_now = _straddle_mode.startswith("Sólo CALL")   # incluye (End of Day) → split 100/0
+    only_put_now = _straddle_mode.startswith("Sólo PUT")     # incluye (End of Day) → split 0/100
     is_call_or_put = _straddle_mode == "CALL o PUT"
     is_call_or_put_plus = _straddle_mode == "CALL o PUT (plus)"
+    is_call_or_put_eod = _straddle_mode == "CALL o PUT (End of Day)"
     is_both_plus = _straddle_mode == "CALL y PUT (plus)"
-    is_refuerzo = _straddle_mode == "CALL y PUT (Refuerzo)"
-    if only_call_now:
+    is_refuerzo_eod = _straddle_mode == "CALL y PUT (Refuerzo) (End of Day)"
+    is_refuerzo = _straddle_mode in ("CALL y PUT (Refuerzo)", "CALL y PUT (Refuerzo) (End of Day)")
+    if is_call_only_eod:
+        engine_mode = "call_only_eod"
+    elif is_put_only_eod:
+        engine_mode = "put_only_eod"
+    elif only_call_now:
         engine_mode = "call_only"
     elif only_put_now:
         engine_mode = "put_only"
@@ -1803,8 +2194,12 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
         engine_mode = "call_or_put"
     elif is_call_or_put_plus:
         engine_mode = "call_or_put_plus"
+    elif is_call_or_put_eod:
+        engine_mode = "call_or_put_eod"
     elif is_both_plus:
         engine_mode = "both_plus"
+    elif is_refuerzo_eod:
+        engine_mode = "both_refuerzo_eod"
     elif is_refuerzo:
         engine_mode = "both_refuerzo"
     else:
@@ -1823,6 +2218,12 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
                                  "el **ROI total** (ambas piernas) alcanza el **Umbral de ROI (%)** (gana) o "
                                  "cae al **−Stop loss (%)** (corta — stop sobre el TOTAL, no por pierna), o "
                                  "al cierre del día.",
+        "CALL y PUT (Refuerzo) (End of Day)": "🎯 **CALL y PUT (Refuerzo) (End of Day)** — la martingala de "
+                                              "**CALL y PUT (Refuerzo)** (se refuerza la **pierna que más "
+                                              "pierde** al caer a **≤ −Umbral de pérdida refuerzo (%)**), pero "
+                                              "**corre hasta el cierre del día**: **NO** usa Umbral de ROI (no "
+                                              "corta por ganancia). El **Stop loss** sobre el total sigue "
+                                              "activo; la venta es al cierre.",
         "CALL y PUT (plus)": "🎯 **CALL y PUT (plus)** — se compran ambas piernas (50/50) y se "
                              "venden las dos **solo en el Horario de salida** (sin Umbral de ROI ni "
                              "Stop loss). Termina al horario o al cierre del día.",
@@ -1830,6 +2231,10 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
                      "ROI** o su **Stop loss**. Termina al umbral, al stop o al cierre del día.",
         "Sólo PUT": "🎯 **Sólo PUT** — una sola pierna (100% PUT). Sale por su **Umbral de "
                     "ROI** o su **Stop loss**. Termina al umbral, al stop o al cierre del día.",
+        "Sólo CALL (End of Day)": "🎯 **Sólo CALL (End of Day)** — una sola pierna (100% CALL) que se "
+                                  "vende **al cierre del día**. No depende de Umbral de ROI ni Stop loss.",
+        "Sólo PUT (End of Day)": "🎯 **Sólo PUT (End of Day)** — una sola pierna (100% PUT) que se "
+                                 "vende **al cierre del día**. No depende de Umbral de ROI ni Stop loss.",
         "CALL o PUT": "🎯 **CALL o PUT** — se compran ambas piernas y se venden las dos en cuanto "
                       "**cualquiera alcanza +100%** (se duplica). No depende de Umbral de ROI ni "
                       "Stop loss. Termina al +100% o al cierre del día.",
@@ -1837,85 +2242,91 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
                              "que alcanza el Umbral de salida (%)** se vende; la otra se vende "
                              "cuando, entre lo bancado y su valor, se **recupera la inversión "
                              "total**. Termina ahí o al cierre del día.",
+        "CALL o PUT (End of Day)": "🎯 **CALL o PUT (End of Day)** — se compran ambas piernas (50/50) "
+                                   "y se venden las dos **al cierre del día**. No depende de Umbral de "
+                                   "ROI ni Stop loss.",
     }
-    # La descripción va en un EXPANDER colapsado: no se muestra por defecto; se abre al
-    # hacer click (para no ocupar espacio salvo que se quiera leer).
+    # La descripción de la estrategia se muestra DIRECTAMENTE debajo del dropdown (caption, no
+    # expander) → al elegir una estrategia, su info aparece enseguida.
     _desc = _MODE_DESC.get(_straddle_mode, "")
     if _desc:
-        with st.expander(f"ⓘ ¿Qué hace «{_straddle_mode}»?", expanded=False):
-            st.markdown(_desc)
+        with _estrat_box:
+            st.caption(_desc)
+    # Modo de backtest: visual (flujo de siempre) o cargar un Excel de configuraciones (batch desde archivo).
+    with _estrat_box:
+        _bt_mode = st.radio(
+            "Modo de backtest",
+            ["Backtest visual paso a paso", "Cargar backtesting file"],
+            index=0, key="bt_mode_radio",
+            help="**Visual paso a paso**: el flujo de siempre (las filas se cargan en «Options Replay» y "
+                 "corrés ahí). **Cargar backtesting file**: subís un Excel de configuraciones y, al tocar el "
+                 "botón rojo, se corre el backtest de CADA fila sobre los tickers / fecha(s) / tipo de arriba.")
+        if _bt_mode == "Cargar backtesting file":
+            st.file_uploader("📄 Backtesting file (.xlsx)", type=["xlsx"], key="bt_file_upload",
+                             help="Excel con una fila por configuración (como el que te generé).")
 
-    # Parámetro EXCLUSIVO de "CALL y PUT (Refuerzo)": % de pérdida de UNA pierna que dispara
-    # reforzar la pierna que MÁS pierde (más contratos del mismo tipo). Default 50.
-    if is_refuerzo:
-        _rc1, _rc2 = st.columns(2)
-        refuerzo_loss_pct = _rc1.number_input(
-            "Umbral de pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0,
-            step=5.0, key="refuerzo_loss_pct",
-            help="Cuando el ROI de una pierna (CALL o PUT) cae a ≤ −este valor, se refuerza la "
-                 "pierna que más pierde con más contratos de ESA misma pierna (nunca la contraria).")
-        refuerzo_max = int(_rc2.number_input(
-            "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="refuerzo_max",
-            help="Máximo de refuerzos por iteración (en total, sumando ambas piernas). Al alcanzarlo, "
-                 "la posición aguanta hasta el Umbral de ROI o el cierre (no refuerza más)."))
-    else:
-        refuerzo_loss_pct = 50.0
-        refuerzo_max = 2
+    # Refuerzo: ya NO se ingresa en el manual (Umbral de pérdida refuerzo + No. de veces a reforzar
+    # se configuran en «Backtest de señales / iteraciones»). Defaults fijos para la corrida manual.
+    refuerzo_loss_pct = 50.0
+    refuerzo_max = 2
 
     # "Tendencia del mercado" (widget) — solo single-day. Su valor (key 'manual_prob')
     # alimenta los Parámetros por iteración, que ya se auto-aplicaron arriba. Va acá,
     # entre la descripción del Tipo de operación y la Inversión, por pedido.
-    if not is_range:
-        st.markdown(
-            "<p style='font-weight:bold; margin: 0.5rem 0 0.2rem 0;'>Tendencia del mercado</p>",
-            unsafe_allow_html=True,
-        )
-        _prob_label, _prob_color, _box_bg, _box_border = _classify_prob(manual_prob, _predictor_cfg)
-        _c_slider, _c_box = st.columns([3, 2], vertical_alignment="center")
-        _c_slider.slider(
-            "Tendencia del mercado", min_value=0, max_value=100, step=5,
-            key="manual_prob", label_visibility="collapsed",
-            help=("Movés la tendencia alcista a mano (de 5 en 5). De este valor se derivan "
-                  "Modo, CALL%, PUT% y Umbral ROI de los Parámetros por iteración."),
-        )
-        _zones = [
-            (r["min"], r["max"], r["color"])
-            for r in _predictor_cfg.get("classification_ranges", [])
-        ]
-        _segs = "".join(
-            f"<div style='flex:1; background:{c}; height:7px;' title='{lo}–{hi}'></div>"
-            for lo, hi, c in _zones
-        )
-        _c_slider.markdown(
-            f"<div style='display:flex; gap:1px; border-radius:3px; overflow:hidden; margin-top:-6px;'>{_segs}</div>"
-            "<div style='display:flex; justify-content:space-between; font-size:0.6rem; color:#000; font-weight:normal; margin-top:1px;'>"
-            "<span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span></div>",
-            unsafe_allow_html=True,
-        )
-        _fill = (
-            f"linear-gradient(to right,{_prob_color} 0%,{_prob_color} {manual_prob}%,"
-            f"rgba(151,166,195,0.25) {manual_prob}%,rgba(151,166,195,0.25) 100%)"
-        )
-        st.markdown(
-            "<style>"
-            "section[data-testid='stSidebar'] [data-baseweb='slider'] "
-            "> div:nth-child(1) > div:nth-child(1) > div:nth-child(2)"
-            f"{{background-image:{_fill} !important;}}"
-            "section[data-testid='stSidebar'] [data-baseweb='slider'] [role='slider']"
-            "{background-color:#000 !important; border-color:#000 !important;}"
-            "section[data-testid='stSidebar'] [data-testid='stSliderThumbValue']"
-            "{color:#000 !important;}"
-            "</style>",
-            unsafe_allow_html=True,
-        )
-        _c_box.markdown(
-            f"<div style='text-align:center; padding:0.55rem 0.6rem; background:{_box_bg}; "
-            f"border:1px solid {_box_border}; border-radius:0.5rem;'>"
-            f"<div style='font-size:1.6rem; font-weight:700; color:{_box_border}; line-height:1;'>{manual_prob}%</div>"
-            f"<div style='font-size:0.7rem; font-weight:600; color:{_box_border}; margin-top:0.2rem;'>{_prob_label}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+    with _trend_box:
+        if not is_range:
+            st.markdown(
+                "<p style='font-weight:bold; text-align:center; margin: -0.5rem 0 0.4rem 0;'>Tendencia del mercado</p>",
+                unsafe_allow_html=True,
+            )
+            _prob_label, _prob_color, _box_bg, _box_border = _classify_prob(manual_prob, _predictor_cfg)
+            _c_slider, _c_box = st.columns([3, 2], vertical_alignment="center")
+            _c_slider.slider(
+                "Tendencia del mercado", min_value=0, max_value=100, step=5,
+                key="manual_prob", label_visibility="collapsed",
+                help=("Movés la tendencia alcista a mano (de 5 en 5). De este valor se derivan "
+                      "Modo, CALL%, PUT% y Umbral ROI de los Parámetros por iteración."),
+            )
+            _zones = [
+                (r["min"], r["max"], r["color"])
+                for r in _predictor_cfg.get("classification_ranges", [])
+            ]
+            _segs = "".join(
+                f"<div style='flex:1; background:{c}; height:7px;' title='{lo}–{hi}'></div>"
+                for lo, hi, c in _zones
+            )
+            _c_slider.markdown(
+                f"<div style='display:flex; gap:1px; border-radius:3px; overflow:hidden; margin-top:-6px;'>{_segs}</div>"
+                "<div style='display:flex; justify-content:space-between; font-size:0.6rem; color:#000; font-weight:normal; margin-top:1px;'>"
+                "<span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span></div>",
+                unsafe_allow_html=True,
+            )
+            _fill = (
+                f"linear-gradient(to right,{_prob_color} 0%,{_prob_color} {manual_prob}%,"
+                f"rgba(151,166,195,0.25) {manual_prob}%,rgba(151,166,195,0.25) 100%)"
+            )
+            st.markdown(
+                "<style>"
+                "section[data-testid='stSidebar'] [data-baseweb='slider'] "
+                "> div:nth-child(1) > div:nth-child(1) > div:nth-child(2)"
+                f"{{background-image:{_fill} !important;}}"
+                "section[data-testid='stSidebar'] [data-baseweb='slider'] [role='slider']"
+                "{background-color:#000 !important; border-color:#000 !important;}"
+                "section[data-testid='stSidebar'] [data-testid='stSliderThumbValue']"
+                "{color:#000 !important;}"
+                "</style>",
+                unsafe_allow_html=True,
+            )
+            _c_box.markdown(
+                f"<div style='text-align:center; padding:0.55rem 0.6rem; background:{_box_bg}; "
+                f"border:1px solid {_box_border}; border-radius:0.5rem;'>"
+                f"<div style='font-size:1.6rem; font-weight:700; color:{_box_border}; line-height:1;'>{manual_prob}%</div>"
+                f"<div style='font-size:0.7rem; font-weight:600; color:{_box_border}; margin-top:0.2rem;'>{_prob_label}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("📈 **Tendencia del mercado** — disponible solo en modo «fecha única».")
 
     # -------- Bloque Inversión: total + %-split + $-split (bidireccional) --------
     # Source of truth en session_state. Callbacks mantienen % y $ sincronizados
@@ -2010,60 +2421,11 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
         st.session_state["call_pct"] = 100.0 - put_pct
         st.session_state["call_dollars"] = tot - put_d
 
-    # Fila 1: Inversión total (ocupa solo la mitad izquierda para mantener consistencia)
-    c_inv_total, _c_inv_spacer = st.columns(2)
-    c_inv_total.number_input(
-        "Inversión ($)",
-        key="invest_total",
-        step=1000.0,
-        min_value=0.0,
-        format="%.2f",
-        on_change=_sync_total_to_dollars,
-    )
-
-    # Fila 2: %-split por leg
-    c_call_pct, c_put_pct = st.columns(2)
-    c_call_pct.number_input(
-        "Inversión en CALL (%)",
-        key="call_pct",
-        step=5.0,
-        min_value=0.0,
-        max_value=100.0,
-        format="%.1f",
-        on_change=_sync_call_pct_changed,
-        disabled=only_put_now,
-    )
-    c_put_pct.number_input(
-        "Inversión en PUT (%)",
-        key="put_pct",
-        step=5.0,
-        min_value=0.0,
-        max_value=100.0,
-        format="%.1f",
-        on_change=_sync_put_pct_changed,
-        disabled=only_call_now,
-    )
-
-    # Fila 3: $-split por leg (bidireccional con %)
-    c_call_d, c_put_d = st.columns(2)
-    invest_call = c_call_d.number_input(
-        "Inversión en CALL ($)",
-        key="call_dollars",
-        step=100.0,
-        min_value=0.0,
-        format="%.2f",
-        on_change=_sync_call_dollars_changed,
-        disabled=only_put_now,
-    )
-    invest_put = c_put_d.number_input(
-        "Inversión en PUT ($)",
-        key="put_dollars",
-        step=100.0,
-        min_value=0.0,
-        format="%.2f",
-        on_change=_sync_put_dollars_changed,
-        disabled=only_call_now,
-    )
+    # Inversión: ya NO se ingresa en el manual (se configura en «Backtest de señales /
+    # iteraciones»). Se toma del estado: sembrado 1000 al 50/50 y ajustado por el modo
+    # (Estrategia) y la Tendencia del mercado.
+    invest_call = float(st.session_state.get("call_dollars", 500.0))
+    invest_put = float(st.session_state.get("put_dollars", 500.0))
 
     # Default del Umbral si nunca se sembró (caso primera carga).
     # El auto-apply de la Predicción Apertura ya escribe a este key cuando
@@ -2096,6 +2458,20 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
         stop_loss_pct = -1.0
         call_exit_threshold_pct = put_exit_threshold_pct = 1.0
         call_stop_loss_pct = put_stop_loss_pct = -1.0
+    elif is_call_or_put_eod:
+        # CALL o PUT (End of Day): se compran ambas y se venden las DOS al cierre del día.
+        # NO usa Umbral de ROI ni Stop loss — por eso no se muestran esos inputs.
+        exit_threshold_pct = 1.0          # ignorado por el modo call_or_put_eod
+        stop_loss_pct = -1.0
+        call_exit_threshold_pct = put_exit_threshold_pct = 1.0
+        call_stop_loss_pct = put_stop_loss_pct = -1.0
+    elif is_call_only_eod or is_put_only_eod:
+        # Sólo CALL/PUT (End of Day): una sola pierna, vendida al cierre del día.
+        # NO usa Umbral de ROI ni Stop loss — por eso no se muestran esos inputs.
+        exit_threshold_pct = 1.0          # ignorado por los modos *_only_eod
+        stop_loss_pct = -1.0
+        call_exit_threshold_pct = put_exit_threshold_pct = 1.0
+        call_stop_loss_pct = put_stop_loss_pct = -1.0
     elif is_call_or_put_plus:
         # CALL o PUT (plus): la 1ª pierna que alcanza el "Umbral de salida (%)" se
         # vende y banca su ganancia; la otra se vende cuando, sumando lo bancado +
@@ -2114,37 +2490,69 @@ with st.sidebar.expander("Parámetros por iteración", expanded=True):
         call_exit_threshold_pct = put_exit_threshold_pct = exit_plus_threshold_pct
         call_stop_loss_pct = put_stop_loss_pct = -1.0
     else:
-        c7, c8 = st.columns(2)
-        exit_threshold_pct = c7.number_input(
-            "Umbral de ROI (%)",
-            key="umbral_roi_pct",
-            step=5.0, min_value=1.0,
-        ) / 100.0
-        stop_loss_pct = c8.number_input(
-            "Stop loss (%)",
-            value=-100.0, step=10.0, max_value=0.0, format="%.2f",
-        ) / 100.0
-        # Per-leg no usados en estos modos: defaults inocuos para el engine.
+        # Umbral de ROI / Stop loss: ya NO se ingresan en el manual (se configuran en
+        # «Backtest de señales / iteraciones»). Se toman del estado: umbral sembrado 10%,
+        # stop fijo -100%.
+        exit_threshold_pct = float(st.session_state.get("umbral_roi_pct", 10.0)) / 100.0
+        stop_loss_pct = -1.0
         call_exit_threshold_pct = put_exit_threshold_pct = exit_threshold_pct
         call_stop_loss_pct = put_stop_loss_pct = stop_loss_pct
 
 st.sidebar.markdown("---")
-btn_iniciar = st.sidebar.button(
-    "Iniciar nueva simulación",
-    type="primary",
-    use_container_width=True,
-    key="btn_iniciar",
-    help="Resetea el estado y corre la primera iteración",
-)
-btn_proxima = st.sidebar.button(
-    "Próxima iteración",
-    type="secondary",
-    use_container_width=True,
-    disabled=(not has_session) or session_exhausted,
-    key="btn_proxima",
-    help="Usa los parámetros actuales del sidebar para la siguiente iteración",
-)
-
+# --- PUENTE (botón principal): manda la config manual (ticker × fecha × hora) a «Backtest de
+#     señales / iteraciones» para correr ahí con TODAS las funciones (confirmación, flip,
+#     sin-lookahead, ROI colectivo, Auto-DTE). Reemplaza al viejo "Iniciar nueva simulación". ---
+_TIPO_BRIDGE = {"Sólo CALL": "CALL", "Sólo PUT": "PUT"}   # el panel de señales usa "CALL"/"PUT"
+if st.sidebar.button("📤 Backtestear con TODAS las funciones →", type="primary", use_container_width=True,
+                     key="btn_to_signals",
+                     help="Genera filas en «Backtest de señales / iteraciones» (derecha) con tu "
+                          "ticker(s) × fecha(s) y la hora de entrada, para correr ahí con confirmación, "
+                          "flip, sin-lookahead, ROI colectivo, etc. — las funciones que el backtest "
+                          "manual no tiene."):
+    _hora = hora_orden.strftime("%H:%M")
+    _tipo = st.session_state.get("straddle_mode_radio", "CALL y PUT")
+    _tipo = _TIPO_BRIDGE.get(_tipo, _tipo)
+    if is_range:
+        _dates = [d.date().isoformat() for d in pd.date_range(sel_start, sel_end, freq="B")]
+    else:
+        _dates = [sel_date.isoformat()]
+    _dates = [d for d in _dates if _non_trading_reason(d) is None]   # sin feriados / fin de semana
+    _bt_mode = st.session_state.get("bt_mode_radio", "Backtest visual paso a paso")
+    _bt_file = st.session_state.get("bt_file_upload")
+    if _bt_mode == "Cargar backtesting file" and _bt_file is not None:
+        # === BATCH desde Excel: valida, BORRA todo lo de la derecha y ENCOLA el batch. Lo corre el
+        #     panel principal (así la derecha se limpia ANTES de correr — no queda el resultado viejo). ===
+        try:
+            _cfgs = brunner.read_configs(_bt_file)
+        except Exception as _e:   # noqa: BLE001
+            _cfgs = []
+            st.sidebar.error(f"No pude leer el Excel: {_e}")
+        if not _cfgs:
+            st.sidebar.warning("⚠️ El Excel no tiene filas de configuración (hoja «Backtesting» con columna ID).")
+        elif not tickers or not _dates:
+            st.sidebar.warning("⚠️ Elegí ≥1 ticker y ≥1 fecha hábil (no feriado/fin de semana).")
+        else:
+            for _k in ("batch_results", "batch_meta", "replay"):   # limpiar la derecha PRIMERO
+                st.session_state.pop(_k, None)
+            st.session_state["_batch_pending"] = {
+                "configs": _cfgs, "tickers": [str(t).upper() for t in tickers],
+                "dates": _dates, "tipo": _tipo}
+            st.rerun()
+    else:
+        # === Puente normal: manda las filas (ticker × fecha) al panel de señales. ===
+        _rows = [{"Ticker": str(tk).upper(), "Fecha": d, "Hora": _hora, "Tipo": _tipo}
+                 for tk in tickers for d in _dates]
+        if not _rows:
+            st.sidebar.warning("⚠️ Sin filas: elegí ≥1 ticker y ≥1 fecha hábil (no feriado/fin de semana).")
+        else:
+            for _k in ("batch_results", "batch_meta", "replay", "_batch_pending"):   # limpiar la derecha
+                st.session_state.pop(_k, None)
+            st.session_state["bt_iters"] = _rows
+            st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del editor
+            st.session_state["_iters_sel_seed"] = True       # todas seleccionadas
+            st.session_state["bt_iters_open"] = True          # abrir el panel de señales
+            st.toast(f"📤 {len(_rows)} fila(s) cargadas en «Backtest de señales» — corré ahí con todo.")
+            st.rerun()
 
 def _validate_form() -> bool:
     if premium_min >= premium_max:
@@ -2199,418 +2607,154 @@ def _validate_form() -> bool:
     return True
 
 
-if btn_iniciar:
-    if _validate_form():
-        if not tickers:
-            st.error("Elegí al menos un ticker.")
-            st.stop()
-        dl = get_downloader(api_key)
-        if not is_range and len(tickers) == 1:
-            # ---------- Single-day mode (1 ticker, comportamiento original) ----------
-            with st.spinner(f"Bajando datos de Polygon para {ticker} {sel_date} y corriendo iteración 1..."):
-                try:
-                    # DTE=1: el día de COMPRA no necesita 0DTE (el vencimiento es D+1).
-                    expiry = None if dte == 1 else validate_0dte_session(dl, ticker, sel_date.isoformat())
-                    # Fin de la ventana = Horario de salida - 1 min: la lógica liquida
-                    # lo pendiente en el minuto ANTES de la salida (todas las estrategias).
-                    day_end_ts = _to_ts(sel_date.isoformat(), horario_salida) - pd.Timedelta(minutes=1)
-                    order_ts = _to_ts(sel_date.isoformat(), hora_orden)
-                    it1 = run_next_iteration(
-                        dl, ticker, sel_date.isoformat(),
-                        float(premium_min), float(premium_max),
-                        float(invest_call), float(invest_put),
-                        order_ts, day_end_ts,
-                        exit_threshold_pct=float(exit_threshold_pct),
-                        exit_metric=exit_metric,
-                        stop_loss_pct=float(stop_loss_pct),
-                        iteration_idx=1,
-                        mode=engine_mode,
-                        refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
-                        refuerzo_max_count=int(refuerzo_max),
-                        ext_min=float(ext_premium_min), ext_max=float(ext_premium_max),
-                        check_step_min=int(sell_check_min),
-                        call_exit_threshold_pct=float(call_exit_threshold_pct),
-                        call_stop_loss_pct=float(call_stop_loss_pct),
-                        put_exit_threshold_pct=float(put_exit_threshold_pct),
-                        put_stop_loss_pct=float(put_stop_loss_pct),
-                        exit_plus_threshold_pct=float(exit_plus_threshold_pct),
-                        exit_plus_time=exit_plus_time,
-                        selection_criterion=selection_criterion,
-                        dte=int(dte),
-                        overnight_exit_time=horario_salida,
-                        spread_cfg=_spread_cfg,
-                        entry_at_ask=entry_at_ask,
-                        exit_at_bid=exit_at_bid,
-                        nbbo_timeline=nbbo_timeline,
-                        search_window_min=search_window_min,
-                    )
-                except NoMatchError as e:
-                    st.error(str(e))
-                    st.info("Probá ampliar el rango de premium.")
-                    st.stop()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                    st.stop()
-            st.session_state["replay"] = {
-                "ticker": ticker,
-                "mode": "single",
-                "date": sel_date.isoformat(),
-                "expiry": expiry,
-                "time_start": t_start,
-                "time_end": t_end,
-                "order_time": hora_orden,
-                "day_start_ts": order_ts,
-                "day_end_ts": day_end_ts,
-                "iterations": [it1],
-            }
-            _schedule_hora_orden_sync(st.session_state["replay"], t_start, t_end)
-            st.rerun()
+# === Corre el batch ENCOLADO (tras limpiar la derecha) — patrón «borrar primero, después correr». ===
+_batch_pending = st.session_state.get("_batch_pending")
+if _batch_pending:
+    st.markdown("### 📄 Resultados del batch (desde archivo)")
+    _bp_total = (len(_batch_pending["configs"]) * len(_batch_pending["tickers"])
+                 * len(_batch_pending["dates"]))
+    import json as _json
+    import math as _math
+    import pickle as _pickle
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import sys as _sys
+    import tempfile as _tempfile
+    _bp_t0 = time.perf_counter()
+    _bp_pr = st.progress(0.0, text=f"Corriendo batch… 0/{_bp_total}")
+    _bp_dl = get_downloader(api_key)
+    # Procesos escalados al tamaño del lote: el arranque de procesos (importar el motor) no compensa en
+    # lotes chicos → pocos procesos para pocos backtests, hasta cores−1 para los grandes.
+    _bp_procs = max(2, min(brunner.auto_processes(), round(_math.sqrt(max(1, _bp_total) / 12)) or 2))
+
+    def _bp_cb(done, total, _pr=_bp_pr, _t0=_bp_t0, _p="hilos"):
+        _pr.progress(min(done / max(total, 1), 1.0),
+                     text=f"⏱️ {time.perf_counter() - _t0:0.0f}s · {done}/{total} backtests · {_p}")
+
+    _bp_res = None
+    # Multiproceso REAL aislado en batch_cli.py (subprocess) — NO se cuelga como `multiprocessing`
+    # lanzado dentro de Streamlit. Combinado con el cache de parquets del Downloader → speedup real.
+    _bp_tmp = None
+    try:
+        _bp_tmp = Path(_tempfile.mkdtemp(prefix="sf_batch_"))
+        _req_f, _res_f, _prog_f = _bp_tmp / "req.pkl", _bp_tmp / "res.json", _bp_tmp / "prog.json"
+        with open(_req_f, "wb") as _f:
+            _pickle.dump({"configs": _batch_pending["configs"], "tickers": _batch_pending["tickers"],
+                          "dates": _batch_pending["dates"], "tipo": _batch_pending["tipo"],
+                          "data_dir": str(_bp_dl.data_dir), "api_key": api_key,
+                          "processes": _bp_procs}, _f)
+        _cli = str(Path(_bp_dl.data_dir).parent / "batch_cli.py")
+        _proc = _subprocess.Popen([_sys.executable, _cli, str(_req_f), str(_res_f), str(_prog_f)])
+        _last, _last_chg = -1, time.time()
+        while _proc.poll() is None:
+            _done = 0
+            try:
+                with open(_prog_f, encoding="utf-8") as _f:
+                    _done = int(_json.load(_f).get("done", 0))
+            except Exception:
+                pass
+            _bp_cb(_done, _bp_total, _p=f"{_bp_procs} procesos")
+            if _done != _last:
+                _last, _last_chg = _done, time.time()
+            elif time.time() - _last_chg > 150:   # 150 s sin avanzar → asumimos colgado → fallback
+                _proc.kill()
+                raise RuntimeError("el subproceso no avanza")
+            time.sleep(0.5)
+        if _proc.wait() == 0 and _res_f.exists():
+            _data = _json.load(open(_res_f, encoding="utf-8"))
+            if not _data.get("ok"):
+                raise RuntimeError(_data.get("error", "batch_cli sin resultado"))
+            _bp_res = _data["rows"]
         else:
-            # ---------- Date range batch mode: 1 iteración por día hábil ----------
-            # `freq="B"` = business days; salta sábados/domingos. Días sin chain
-            # 0 DTE o sin datos se reportan como errores por día (no rompen el batch).
-            day_list = [
-                pd.Timestamp(d).date()
-                for d in pd.date_range(sel_start, sel_end, freq="B")
-            ]
-            if not day_list:
-                st.error("El rango no contiene ningún día hábil.")
-                st.stop()
-            day_runs: list[dict] = []
-            # Placeholders para actualización en vivo: primero el panel de
-            # totales preliminares, luego la barra de progreso.
-            totals_placeholder = st.empty()
-            progress = st.progress(0.0, text=f"Backtest {len(tickers)} ticker(s) sobre {len(day_list)} días...")
-            # Modo rango: usamos los MISMOS Parámetros por iteración VISIBLES del
-            # panel (Inversión $, CALL%/PUT%, Modo, Umbral ROI, Stop loss) para TODOS
-            # los días. Son editables a mano: lo que se ve es lo que se aplica.
-            _b_call_alloc = int(round(float(st.session_state.get("call_pct", 50.0))))
-            _b_put_alloc = int(round(float(st.session_state.get("put_pct", 50.0))))
-            _b_roi_pct_int = int(round(float(exit_threshold_pct) * 100))
-            _label_m, _color_m, _bg_m, _border_m = _classify_prob(manual_prob, _predictor_cfg)
-            _pred_info = {
-                "probability": manual_prob, "label": _label_m, "color": _color_m,
-                "sample_size": 0, "reason": "",
-            }
-            _params_info = {
-                "mode": engine_mode, "tipo": _straddle_mode, "call_alloc": _b_call_alloc,
-                "put_alloc": _b_put_alloc, "roi_threshold": _b_roi_pct_int,
-            }
+            raise RuntimeError(f"subproceso terminó con código {_proc.returncode}")
+    except Exception as _se:   # noqa: BLE001 — cualquier falla del multiproceso → hilos (más lento pero seguro)
+        st.caption(f"⚙️ Multiproceso no disponible ({_se}); usando hilos…")
+        _bp_res = brunner.run_batch(
+            _bp_dl, _batch_pending["configs"], _batch_pending["tickers"], _batch_pending["dates"],
+            _batch_pending["tipo"], progress_cb=lambda d, t: _bp_cb(d, t, _p="hilos"),
+            max_workers=brunner.auto_workers(len(_batch_pending["tickers"]), len(_batch_pending["dates"])))
+    finally:
+        if _bp_tmp is not None:
+            _shutil.rmtree(_bp_tmp, ignore_errors=True)
+    _bp_pr.empty()
+    st.session_state["batch_results"] = _bp_res
+    st.session_state["batch_meta"] = {"n_cfg": len(_batch_pending["configs"]),
+                                      "tickers": _batch_pending["tickers"], "dates": _batch_pending["dates"],
+                                      "tipo": _batch_pending["tipo"], "elapsed": time.perf_counter() - _bp_t0}
+    st.session_state.pop("_batch_pending", None)
+    st.rerun()
 
-            # Días de semana con 0DTE POR TICKER → permite SALTAR sin API los días que de
-            # antemano no tienen 0DTE para ese ticker (weekly como SOXL: solo viernes; mwf:
-            # Lun/Mié/Vie). Si no se puede inferir, se chequea cada día (nearest_expiry).
-            def _valid_wd_for(_tk):
-                _t = _zerodte_map.get(_tk)
-                if _t == "daily":
-                    return {0, 1, 2, 3, 4}
-                if _t == "mwf":
-                    return {0, 2, 4}
-                from collections import Counter as _Counter
-                _cd = [p.stem.split("_", 1)[1]
-                       for p in (DATA_DIR / "chain").glob(f"{_tk}_*.parquet")]
-                if _cd:
-                    _c = _Counter(pd.Timestamp(x).weekday() for x in _cd)
-                    _thr = max(2, len(_cd) * 0.2)
-                    return {wd for wd, n in _c.items() if n >= _thr} or None
-                return None
 
-            _skipped_no0dte = 0
-            _skipped_1dte = 0   # DTE=1: días sin "día hábil siguiente" con datos
-
-            # Pre-skip RÁPIDO (sin API) + payloads por (TICKER × día). Cada ticker con su
-            # propio rango de prima (_ranges_for) y su propio calendario de 0DTE.
-            _payloads = []  # (ticker, date_str, order_ts, day_end_ts, pmin, pmax, ext_min, ext_max)
-            for _tk in tickers:
-                _vwd = _valid_wd_for(_tk)
-                _r_pmn, _r_pmx, _r_emn, _r_emx = _ranges_for(_tk)
-                for d in day_list:
-                    date_str = d.isoformat()
-                    if (dte != 1
-                            and _vwd is not None and d.weekday() not in _vwd
-                            and not (DATA_DIR / "chain" / f"{_tk}_{date_str}.parquet").exists()):
-                        _skipped_no0dte += 1
-                        continue
-                    _day_end_ts = _to_ts(date_str, horario_salida) - pd.Timedelta(minutes=1)
-                    _order_ts = _to_ts(date_str, hora_orden)
-                    _payloads.append((_tk, date_str, _order_ts, _day_end_ts,
-                                      _r_pmn, _r_pmx, _r_emn, _r_emx))
-
-            def _run_one_day(ticker_arg, date_str, order_ts, day_end_ts, pmin, pmax, emn, emx):
-                """Worker (corre en un hilo). NO llama a st.* — solo computa y devuelve
-                un dict con 'status' y, si aplica, el 'run' (día) para `day_runs`. El
-                Downloader es thread-safe (lock por archivo). Cada run lleva su 'ticker'."""
-                try:
-                    # DTE=1: el día de COMPRA no necesita 0DTE; el vencimiento es D+1.
-                    expiry = None if dte == 1 else validate_0dte_session(dl, ticker_arg, date_str)
-                    it = run_next_iteration(
-                        dl, ticker_arg, date_str,
-                        float(pmin), float(pmax),
-                        float(invest_call), float(invest_put),
-                        order_ts, day_end_ts,
-                        exit_threshold_pct=float(exit_threshold_pct),
-                        exit_metric="total",
-                        stop_loss_pct=float(stop_loss_pct),
-                        iteration_idx=1,
-                        mode=engine_mode,
-                        refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
-                        refuerzo_max_count=int(refuerzo_max),
-                        ext_min=float(emn), ext_max=float(emx),
-                        check_step_min=int(sell_check_min),
-                        call_exit_threshold_pct=float(call_exit_threshold_pct),
-                        call_stop_loss_pct=float(call_stop_loss_pct),
-                        put_exit_threshold_pct=float(put_exit_threshold_pct),
-                        put_stop_loss_pct=float(put_stop_loss_pct),
-                        exit_plus_threshold_pct=float(exit_plus_threshold_pct),
-                        exit_plus_time=exit_plus_time,
-                        selection_criterion=selection_criterion,
-                        dte=int(dte),
-                        overnight_exit_time=horario_salida,
-                        spread_cfg=_spread_cfg,
-                        entry_at_ask=entry_at_ask,
-                        exit_at_bid=exit_at_bid,
-                        nbbo_timeline=nbbo_timeline,
-                        search_window_min=search_window_min,
-                    )
-                    _exp = it.end_dt.strftime("%Y-%m-%d") if dte == 1 else expiry
-                    return {"status": "ok", "run": {
-                        "ticker": ticker_arg, "date": date_str, "expiry": _exp,
-                        "day_start_ts": order_ts, "day_end_ts": day_end_ts,
-                        "iteration": it, "error": None,
-                        "prediction": _pred_info, "day_params": _params_info,
-                    }}
-                except NoMatchError as e:
-                    return {"status": "error", "run": {
-                        "ticker": ticker_arg, "date": date_str, "expiry": None,
-                        "day_start_ts": order_ts, "day_end_ts": day_end_ts,
-                        "iteration": None, "error": f"NoMatch: {e}",
-                        "prediction": _pred_info, "day_params": _params_info}}
-                except ValueError as e:
-                    _msg = str(e)
-                    if _msg.startswith("1DTE:"):
-                        return {"status": "skip_1dte"}       # DTE=1 sin día siguiente
-                    if "No 0 DTE option" in _msg:
-                        return {"status": "skip_no0dte"}     # weekly sin 0DTE ese día
-                    return {"status": "error", "run": {
-                        "ticker": ticker_arg, "date": date_str, "expiry": None,
-                        "day_start_ts": order_ts, "day_end_ts": day_end_ts,
-                        "iteration": None, "error": str(e),
-                        "prediction": _pred_info, "day_params": _params_info}}
-                except Exception as e:
-                    return {"status": "error", "run": {
-                        "ticker": ticker_arg, "date": date_str, "expiry": None,
-                        "day_start_ts": order_ts, "day_end_ts": day_end_ts,
-                        "iteration": None, "error": str(e),
-                        "prediction": _pred_info, "day_params": _params_info}}
-
-            def _sort_key(r):
-                _ts = r.get("day_start_ts")
-                return (r.get("date") or "", r.get("ticker") or "",
-                        _ts.strftime("%H:%M") if _ts is not None else "")
-
-            # Ejecución EN PARALELO: los hilos computan; el hilo principal consume los
-            # resultados a medida que terminan, refresca la tabla "en vivo" (ordenada
-            # por fecha/hora) y lleva el cronómetro. No se bloquea con un único spinner.
-            live_ph = st.empty()
-            _t0 = time.perf_counter()
-            _n_total = len(_payloads)
-            _workers = max(1, min(8, _n_total))
-            _done, _last_render = 0, 0.0
-
-            if _n_total == 0:
-                progress.progress(1.0, text="Sin días para procesar.")
-            else:
-                with ThreadPoolExecutor(max_workers=_workers) as _ex:
-                    _futs = [_ex.submit(_run_one_day, *p) for p in _payloads]
-                    for _fut in as_completed(_futs):
-                        try:
-                            _res = _fut.result()
-                        except Exception as _e:  # defensivo: el worker ya captura todo
-                            _res = {"status": "error",
-                                    "run": {"date": "?", "iteration": None, "error": str(_e)}}
-                        _done += 1
-                        _stt = _res.get("status")
-                        if _stt == "skip_no0dte":
-                            _skipped_no0dte += 1
-                        elif _stt == "skip_1dte":
-                            _skipped_1dte += 1
-                        elif _res.get("run") is not None:
-                            day_runs.append(_res["run"])
-
-                        _elapsed = time.perf_counter() - _t0
-                        _skip_txt = ""
-                        if _skipped_no0dte:
-                            _skip_txt += f" · {_skipped_no0dte} sin 0DTE"
-                        if _skipped_1dte:
-                            _skip_txt += f" · {_skipped_1dte} sin día sig."
-                        progress.progress(
-                            _done / _n_total,
-                            text=(f"⏱️ {_elapsed:0.1f}s · {_done}/{_n_total} iteraciones "
-                                  f"({_workers} en paralelo){_skip_txt}"),
-                        )
-                        # Refrescos pesados (totales + tabla en vivo) acotados a ~0.4s
-                        # para no saturar el frontend; siempre en la última iteración.
-                        _now = time.perf_counter()
-                        if _now - _last_render > 0.4 or _done == _n_total:
-                            _last_render = _now
-                            _ordered = sorted(day_runs, key=_sort_key)
-                            with totals_placeholder.container():
-                                render_batch_totals(
-                                    _ordered, total_days=len(_ordered),
-                                    title="💼 Totales del backtest (preliminar)",
-                                )
-                            _live_rows = []
-                            for _r in _ordered:
-                                _it = _r.get("iteration")
-                                _hs = _r.get("day_start_ts")   # horario de orden ESPECIFICADO
-                                if _it is not None:
-                                    _roi = (_it.gain_total / _it.invest_total) if _it.invest_total else 0.0
-                                    _live_rows.append({
-                                        "Ticker": _r.get("ticker", ""),
-                                        "Fecha": _r.get("date"),
-                                        # Hora REAL en que se compró (start_dt = 1er minuto de la
-                                        # operación). Con ventana de búsqueda puede ser POSTERIOR al
-                                        # horario especificado (_hs), porque entró cuando el contrato
-                                        # pasó Opción 1, no necesariamente a la hora pedida.
-                                        "Hora de entrada": _it.start_dt.strftime("%H:%M"),
-                                        "Hora de salida": (_it.end_dt.strftime("%H:%M")
-                                                           if getattr(_it, "end_dt", None) is not None else ""),
-                                        "Ganancia": _it.gain_total,
-                                        "ROI %": _roi * 100.0,
-                                        "Razón": (_REASON_ICONS.get(_it.exit_reason, "") + " "
-                                                  + _REASON_LABELS.get(_it.exit_reason, _it.exit_reason)).strip(),
-                                    })
-                                else:
-                                    _live_rows.append({
-                                        "Ticker": _r.get("ticker", ""),
-                                        "Fecha": _r.get("date", "?"),
-                                        # Sin resultado → no hubo compra; mostramos la hora intentada.
-                                        "Hora de entrada": _hs.strftime("%H:%M") if _hs is not None else "",
-                                        "Hora de salida": "",
-                                        "Ganancia": None, "ROI %": None,
-                                        "Razón": _r.get("error") or "error",
-                                    })
-                            _ldf = pd.DataFrame(_live_rows)
-                            # "Ganancia acumulada" = suma corrida de la Ganancia (los días
-                            # sin resultado suman 0). Va a la derecha de ROI %.
-                            _ldf["Ganancia acumulada"] = _ldf["Ganancia"].fillna(0.0).cumsum()
-                            _ldf = _ldf[["Ticker", "Fecha", "Hora de entrada", "Hora de salida", "Ganancia",
-                                         "ROI %", "Ganancia acumulada", "Razón"]]
-
-                            def _live_row_color(_row):
-                                # Colorea la FILA por el signo de la Ganancia: verde claro
-                                # = ganó · rojo claro = perdió · sin color = 0 / sin resultado.
-                                _g = _row.get("Ganancia")
-                                if pd.isna(_g) or _g == 0:
-                                    return [""] * len(_row)
-                                _bg = ("background-color: #c8e6c9" if _g > 0
-                                       else "background-color: #ffcdd2")
-                                return [_bg] * len(_row)
-                            _styled_live = (_ldf.style
-                                            .apply(_live_row_color, axis=1)
-                                            .format({"Ganancia": "${:+,.0f}", "ROI %": "{:+.1f}%",
-                                                     "Ganancia acumulada": "${:+,.0f}"}, na_rep="—"))
-                            with live_ph.container():
-                                st.markdown("##### 📋 Resumen por día (en vivo)")
-                                st.dataframe(
-                                    _styled_live, use_container_width=True, hide_index=True,
-                                    height=min(420, 38 + 35 * max(1, len(_ldf))),
-                                    column_config={
-                                        "Razón": st.column_config.TextColumn("Razón", width="large"),
-                                    },
-                                )
-
-            _elapsed_total = time.perf_counter() - _t0
-            day_runs.sort(key=_sort_key)   # orden final por fecha/hora ascendente
-            progress.empty()
-            totals_placeholder.empty()
-            live_ph.empty()
-            st.session_state["replay"] = {
-                "tickers": tickers,
-                "ticker": tickers[0] if tickers else ticker,   # compat con renders single-ticker
-                "mode": "range",
-                "date_start": sel_start.isoformat(),
-                "date_end": sel_end.isoformat(),
-                "time_start": t_start,
-                "time_end": t_end,
-                "order_time": hora_orden,
-                "day_runs": day_runs,
-                "skipped_no0dte": _skipped_no0dte,
-                "skipped_1dte": _skipped_1dte,
-                "elapsed_sec": _elapsed_total,
-                "workers": _workers,
-            }
-            st.rerun()
-
-elif btn_proxima:
-    if not has_session:
-        st.error("Iniciá una sesión primero.")
-        st.stop()
-    if replay_state.get("mode") in ("range", "signals"):
-        st.error("La 'Próxima iteración' no aplica en este modo — iniciá una nueva simulación.")
-        st.stop()
-    if _validate_form():
-        # Próxima iteración: usar la Hora/Minuto que el usuario tiene en el
-        # widget — no el auto-calculado end_dt+1min. El auto-reset post-iteración
-        # SUGIERE next_ts en el widget, pero el usuario puede sobreescribirlo
-        # antes de clickear "Próxima iteración".
-        next_ts = _to_ts(replay_state["date"], hora_orden)
-        if next_ts >= replay_state["day_end_ts"]:
-            st.warning(
-                f"El 'Horario de entrada' ({hora_orden:%H:%M}) está fuera de la "
-                f"ventana de sesión — ajustá el valor y reintentá."
-            )
-        else:
-            with st.spinner(f"Corriendo iteración {len(replay_state['iterations']) + 1} desde las {next_ts:%H:%M}..."):
-                try:
-                    dl = get_downloader(api_key)
-                    it_next = run_next_iteration(
-                        dl,
-                        replay_state["ticker"],
-                        replay_state["date"],
-                        float(premium_min), float(premium_max),
-                        float(invest_call), float(invest_put),
-                        next_ts,
-                        replay_state["day_end_ts"],
-                        exit_threshold_pct=float(exit_threshold_pct),
-                        exit_metric=exit_metric,
-                        stop_loss_pct=float(stop_loss_pct),
-                        iteration_idx=len(replay_state["iterations"]) + 1,
-                        mode=engine_mode,
-                        refuerzo_loss_threshold_pct=float(refuerzo_loss_pct) / 100.0,
-                        refuerzo_max_count=int(refuerzo_max),
-                        ext_min=float(ext_premium_min), ext_max=float(ext_premium_max),
-                        check_step_min=int(sell_check_min),
-                        call_exit_threshold_pct=float(call_exit_threshold_pct),
-                        call_stop_loss_pct=float(call_stop_loss_pct),
-                        put_exit_threshold_pct=float(put_exit_threshold_pct),
-                        put_stop_loss_pct=float(put_stop_loss_pct),
-                        exit_plus_threshold_pct=float(exit_plus_threshold_pct),
-                        exit_plus_time=exit_plus_time,
-                        selection_criterion=selection_criterion,
-                        dte=int(dte),
-                        overnight_exit_time=horario_salida,
-                        spread_cfg=_spread_cfg,
-                        entry_at_ask=entry_at_ask,
-                        exit_at_bid=exit_at_bid,
-                        nbbo_timeline=nbbo_timeline,
-                        search_window_min=search_window_min,
-                    )
-                except NoMatchError as e:
-                    st.error(str(e))
-                    st.info("Probá ampliar el rango de premium para esta iteración.")
-                    st.stop()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                    st.stop()
-            replay_state["iterations"].append(it_next)
-            st.session_state["replay"] = replay_state
-            _schedule_hora_orden_sync(replay_state, t_start, t_end)
-            st.rerun()
+# === Resultados del BATCH desde archivo (modo «Cargar backtesting file») ===
+_batch = st.session_state.get("batch_results")
+if _batch:
+    _meta = st.session_state.get("batch_meta", {})
+    st.markdown("### 📄 Resultados del batch (desde archivo)")
+    _n_ok = sum(1 for _r in _batch if _r.get("status") == "ok")
+    st.caption(f"{_meta.get('n_cfg', '?')} configs × {len(_meta.get('tickers', []))} ticker(s) × "
+               f"{len(_meta.get('dates', []))} fecha(s) = **{len(_batch)}** backtests · "
+               f"{_n_ok} ok / {len(_batch) - _n_ok} sin datos · {_meta.get('elapsed', 0):.0f}s · "
+               f"{_meta.get('tipo', '')}")
+    # Panel de TOTALES (Σ sobre todos los config × ticker × fecha) — mismo estilo que «Totales del backtest».
+    _tot = brunner.batch_totals(_batch)
+    _tc = st.columns(6)
+    _tc[0].metric("Backtests procesados", f"{_tot['n_ok']} / {_tot['n_total']}")
+    _tc[1].metric("Inversión total", f"${_tot['inv']:,.2f}")
+    if _tot["gain"] > 0:
+        _gbg, _gdc, _garr = "rgba(33, 195, 84, 0.1)", "#2e7d32", "▲"
+    elif _tot["gain"] < 0:
+        _gbg, _gdc, _garr = "#ffcdd2", "#b71c1c", "▼"
+    else:
+        _gbg, _gdc, _garr = "#f0f2f6", "#555", "–"
+    _gdt = f"{_garr} {abs(_tot['roi']):.1%}" if _tot["inv"] else ""
+    _tc[2].markdown(
+        f"<div style='border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem; "
+        f"padding:0.85rem 1rem; background-color:{_gbg};'>"
+        f"<div style='font-size:0.85rem; font-weight:bold; color:rgba(49,51,63,0.65); "
+        f"margin-bottom:0.35rem;'>Ganancia total</div>"
+        f"<div style='font-size:1.75rem; font-weight:600; line-height:1.15;'>${_tot['gain']:+,.2f}</div>"
+        f"<div style='font-size:0.85rem; color:{_gdc}; margin-top:0.25rem;'>{_gdt}</div></div>",
+        unsafe_allow_html=True)
+    _tc[3].metric("Capital final", f"${_tot['capital']:,.2f}")
+    _tc[4].metric("Ganadores / perdedores", f"{_tot['wins']} / {_tot['losses']}")
+    _tc[5].metric("Win rate", f"{_tot['win_rate']:.1%}",
+                  help="Backtests ganadores / (ganadores + perdedores); los de ganancia 0 se excluyen.")
+    _RS_B = {"100%_threshold": "umbral", "stop_loss": "stop loss", "session_end": "cierre de sesión",
+             "collective_roi": "ROI colectivo", "collective_stop": "stop colectivo",
+             "wrong_direction": "dirección equivocada", "weak_confirmation": "confirmación débil",
+             "overnight_1dte": "overnight"}
+    _rs_base = ["100%_threshold", "stop_loss", "session_end"]
+    _rsp = [f"**{_tot['reasons'].get(_k, 0)}** {_RS_B[_k]}" for _k in _rs_base]
+    _rsp += [f"**{_v}** {_RS_B.get(_k, _k)}" for _k, _v in _tot["reasons"].items()
+             if _k not in _rs_base and _v > 0]
+    st.caption(f"📊 Razones de salida: {' · '.join(_rsp)}  ·  💹 **Ganancia total** = suma de las "
+               f"ganancias ($) de los {_tot['n_ok']} backtests OK (sobre TODAS las configs/tickers/fechas)")
+    _summ_df = pd.DataFrame(brunner.summarize(_batch))
+    if not _summ_df.empty:
+        _summ_df = _summ_df.sort_values("Ganancia Total", ascending=False)
+        st.markdown("**Resumen por config** (mejor Ganancia arriba):")
+        st.dataframe(_summ_df[["ID", "Inversión Total", "Ganancia Total", "ROI %", "ok", "error"]],
+                     use_container_width=True, hide_index=True)
+    with st.expander(f"📋 Detalle — {len(_batch)} filas (config × ticker × fecha)", expanded=False):
+        st.dataframe(pd.DataFrame(_batch)[["ID", "Fecha", "Ticker", "Operación", "Inversión Total",
+                                           "Ganancia Total", "ROI %", "status", "error"]],
+                     use_container_width=True, hide_index=True)
+    _cda, _cdb = st.columns([2, 1])
+    _cda.download_button("💾 Descargar resultados (.xlsx)", brunner.results_to_xlsx(_batch, _meta),
+                         file_name="Backtesting_resultados.xlsx",
+                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                         use_container_width=True)
+    if _cdb.button("🗑️ Limpiar", use_container_width=True):
+        st.session_state.pop("batch_results", None)
+        st.session_state.pop("batch_meta", None)
+        st.rerun()
+    st.stop()
 
 replay_state = st.session_state.get("replay")
 if replay_state is None:
-    st.info("Configurá los parámetros en la barra lateral y pulsá **Iniciar nueva simulación**.")
+    st.info("Configurá **Ticker** y **Fecha** en la barra lateral y pulsá "
+            "**📤 Backtestear con TODAS las funciones →** para cargar las filas en el "
+            "panel **🔬 Backtest de señales / iteraciones** y correr ahí.")
     st.stop()
 
 
@@ -2765,16 +2909,34 @@ BLUE_MAX_STYLE = "background-color: #1565c0; color: white; font-weight: bold"
 
 
 def _highlight_max_roi(display_df: pd.DataFrame) -> pd.DataFrame:
-    """Resalta en azul las celdas ROI (%) y ROI ($) en la fila del MÁXIMO alcanzado.
-    Ambas comparten fila (ROI (%) = ROI ($)/inversión, constante). Se aplica AL FINAL
-    del Styler para que el azul tape el color de signo/umbral en esa celda."""
+    """Colorea las columnas ROI (%) y ROI ($) de la tabla minuto a minuto (ambas comparten
+    fila): el MÁXIMO de los valores con ROI(%) > 0 → verde OSCURO; el MÍNIMO de los ROI(%) < 0
+    → rojo OSCURO; el resto, verde/rojo claro según signo. Mismo criterio que las filas del
+    heatmap. Se aplica AL FINAL del Styler para tapar el color de signo/umbral previo."""
     styles = pd.DataFrame("", index=display_df.index, columns=display_df.columns)
-    _col = "ROI ($)"
-    if _col in display_df.columns and display_df[_col].notna().any():
-        _imax = display_df[_col].idxmax()
+    _col = "ROI (%)"
+    if _col not in display_df.columns:
+        return styles
+    _s = pd.to_numeric(display_df[_col], errors="coerce")
+    _pos = _s[_s > 0]
+    _neg = _s[_s < 0]
+    _imax = _pos.idxmax() if not _pos.empty else None
+    _imin = _neg.idxmin() if not _neg.empty else None
+    for _i in display_df.index:
+        _v = _s.get(_i)
+        if pd.isna(_v) or _v == 0:
+            continue
+        if _i == _imax:
+            _css = "background-color: #1b5e20; color: white; font-weight: bold"   # máx (+) → verde OSCURO
+        elif _i == _imin:
+            _css = "background-color: #b71c1c; color: white; font-weight: bold"   # mín (−) → rojo OSCURO
+        elif _v > 0:
+            _css = "background-color: #c8e6c9"   # verde claro
+        else:
+            _css = "background-color: #ffcdd2"   # rojo claro
         for _c in ("ROI (%)", "ROI ($)"):
             if _c in styles.columns:
-                styles.loc[_imax, _c] = BLUE_MAX_STYLE
+                styles.loc[_i, _c] = _css
     return styles
 
 
@@ -2904,7 +3066,7 @@ def render_ops_report(it: IterationResult):
             sell_lines.append(f"- **PUT**: {np_tot} contratos a ${_px * 100:,.2f} = **${np_tot * _px * 100:,.2f}**")
         _split = (f" ({it.refuerzo.get('n_call', 0)} CALL, {it.refuerzo.get('n_put', 0)} PUT)"
                   if it.refuerzo.get("events") else "")
-        md = [f"**🟢 Compras** — apertura + {it.refuerzo['n']} refuerzo(s){_split} · capital total ${it.invest_total:,.0f}",
+        md = [f"**🟢 Compras** — apertura @ {it.start_dt:%H:%M} + {it.refuerzo['n']} refuerzo(s){_split} · capital total ${it.invest_total:,.0f}",
               *buy_lines, f"➡ **Total compra: ${buy_total:,.2f}**", "",
               f"**🔴 Venta (cierre @ {it.end_dt:%H:%M})** — se venden TODOS los contratos de todos los tranches",
               *sell_lines, f"➡ **Total venta: ${sell_total:,.2f}**", "",
@@ -2952,7 +3114,7 @@ def render_ops_report(it: IterationResult):
     roi = (net / buy_total * 100.0) if buy_total else 0.0
     _ok = "✅" if net >= 0 else "🔻"
 
-    md = ["**🟢 Compra (apertura)**", *buy_lines,
+    md = [f"**🟢 Compra (apertura @ {it.start_dt:%H:%M})**", *buy_lines,
           f"➡ **Total compra: ${buy_total:,.2f}**", "",
           f"**🔴 Venta (cierre @ {it.end_dt:%H:%M})**", *sell_lines,
           f"➡ **Total venta: ${sell_total:,.2f}**", "",
@@ -3427,6 +3589,313 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
 
 # Modo SEÑALES (multi-iteración): cada señal = 1 "sesión" rica, REUSANDO render_iteration
 # (Totales + detalle por iteración), igual que un backtest manual.
+def render_roi_heatmap(records: list, key_prefix: str = "roi_hm") -> None:
+    """Heatmap ROI por ticker × intervalo de tiempo, para UNA fecha. `records` = lista de dicts
+    con 'ticker', 'fecha', 'hora', 'iteration'. Fila TOTAL agregada arriba (ΣROI$ / Σinvertido)
+    con umbral de ROI colectivo que resalta los mejores intervalos. Reusable: señales + manual."""
+    _oks = [r for r in records if r.get("iteration") is not None]
+    with st.expander(f"🗓️ ROI por ticker e intervalo de tiempo ({len(_oks)})", expanded=False):
+        # Totales del DÍA seleccionado — MISMO cálculo que «Totales del backtest» (Σ invest_total /
+        # Σ gain_total de las señales de ese día). La fecha se lee del estado (el selectbox está más
+        # abajo) → refleja la última selección. Va arriba del todo, encima de la leyenda.
+        _sel_date_prev = st.session_state.get(f"{key_prefix}_date")
+        if _sel_date_prev and _sel_date_prev != "(todas)":
+            _drecs = [r for r in _oks if r.get("fecha") == _sel_date_prev]
+            _dinv = sum(float(getattr(r["iteration"], "invest_total", 0.0) or 0.0) for r in _drecs)
+            _dgain = sum(float(getattr(r["iteration"], "gain_total", 0.0) or 0.0) for r in _drecs)
+            if _dinv > 0:
+                st.markdown(f"**Totales del día {_sel_date_prev}** · {len(_drecs)} señal(es)")
+                _mc1, _mc2 = st.columns(2)
+                _mc1.metric("Inversión total", f"${_dinv:,.2f}")
+                _mc2.metric("Ganancia total", f"${_dgain:+,.2f}",
+                            f"{_dgain / _dinv * 100.0:+.1f}%")
+        st.caption("Para una FECHA específica: cada celda = **ROI(%) / ROI($)** del ticker en ese "
+                   "instante · **CLOSED** = sin posición · 🟢 ganancia / 🔴 pérdida. La fila **TOTAL** "
+                   "(arriba) agrega todos los tickers por intervalo; verde OSCURO = mejor (máx +) · "
+                   "rojo OSCURO = peor (mín −).")
+        _hdates = sorted({r.get("fecha") for r in _oks if r.get("fecha")})
+        if not _hdates:
+            st.caption("Sin fechas para mostrar.")
+            return
+        _hc0, _hc1, _hc2 = st.columns([1, 1, 2])
+        _hdate = _hc0.selectbox("Fecha", ["(todas)"] + _hdates, key=f"{key_prefix}_date")
+        if _hdate == "(todas)":
+            # RESUMEN por ticker en TODO el backtest (sin detalle minuto a minuto): ROI total
+            # de cada ticker = Σ ganancias (final - inicial) / Σ invertido, sobre todas las fechas.
+            _bytk: dict = {}
+            for r in _oks:
+                it = r["iteration"]
+                _tk = r.get("ticker") or "?"
+                try:
+                    _inv = float(getattr(it, "invest_total", 0.0) or 0.0)
+                    # ROI($) REALIZADA = último valor del timeline (mismo cálculo que el heatmap;
+                    # initial/final_total son prima POR ACCIÓN, no $, así que NO se restan directo).
+                    _gn = float(_build_display_df(it)["ROI ($)"].to_numpy()[-1])
+                except Exception:
+                    continue
+                _d = _bytk.setdefault(_tk, {"inv": 0.0, "gain": 0.0, "n": 0})
+                _d["inv"] += _inv
+                _d["gain"] += _gn
+                _d["n"] += 1
+            if not _bytk:
+                st.caption("Sin resultados para resumir.")
+                return
+            _trows = [{"Ticker": _t, "Señales": _v["n"], "Invertido": _v["inv"],
+                       "ROI ($)": _v["gain"],
+                       "ROI (%)": (_v["gain"] / _v["inv"] * 100.0) if _v["inv"] else 0.0}
+                      for _t, _v in sorted(_bytk.items(), key=lambda kv: kv[1]["gain"], reverse=True)]
+            _tinv = sum(_v["inv"] for _v in _bytk.values())
+            _tgain = sum(_v["gain"] for _v in _bytk.values())
+            _sum_df = pd.DataFrame(
+                [{"Ticker": "TOTAL", "Señales": sum(_v["n"] for _v in _bytk.values()),
+                  "Invertido": _tinv, "ROI ($)": _tgain,
+                  "ROI (%)": (_tgain / _tinv * 100.0) if _tinv else 0.0}] + _trows)
+            st.caption(f"Resumen por ticker · **TODAS** las fechas — {len(_oks)} señal(es) con resultado. "
+                       "ROI($) = suma de ganancias del ticker · ROI(%) = ROI$ ÷ invertido. "
+                       "🟢 verde oscuro = mejor ticker · 🔴 rojo oscuro = peor.")
+
+            def _style_sum(_df):
+                _sty = pd.DataFrame("", index=_df.index, columns=_df.columns)
+                _vals = [(i, _df.loc[i, "ROI ($)"]) for i in _df.index if _df.loc[i, "Ticker"] != "TOTAL"]
+                _pos = [x for x in _vals if x[1] > 0]
+                _neg = [x for x in _vals if x[1] < 0]
+                _imax = max(_pos, key=lambda x: x[1])[0] if _pos else None
+                _imin = min(_neg, key=lambda x: x[1])[0] if _neg else None
+                for i in _df.index:
+                    _is_tot = _df.loc[i, "Ticker"] == "TOTAL"
+                    _b = "font-weight:bold; background-color:#eef;" if _is_tot else ""
+                    for c in _df.columns:
+                        _sty.loc[i, c] = _b
+                    if not _is_tot:
+                        _v = _df.loc[i, "ROI ($)"]
+                        if i == _imax:
+                            _cell = "background-color:#1b5e20; color:white; font-weight:bold;"
+                        elif i == _imin:
+                            _cell = "background-color:#b71c1c; color:white; font-weight:bold;"
+                        elif _v > 0:
+                            _cell = "background-color:#c8e6c9;"
+                        elif _v < 0:
+                            _cell = "background-color:#ffcdd2;"
+                        else:
+                            _cell = ""
+                        _sty.loc[i, "ROI ($)"] = _cell
+                        _sty.loc[i, "ROI (%)"] = _cell
+                return _sty
+
+            st.dataframe(
+                _sum_df.style.apply(_style_sum, axis=None).format(
+                    {"Invertido": "${:,.2f}", "ROI ($)": "${:+,.2f}", "ROI (%)": "{:+.1f}%"}),
+                hide_index=True, use_container_width=True)
+            st.divider()
+            st.markdown("**Detalle minuto a minuto** — todas las fechas (1 fila por señal · "
+                        "columnas = hora del día):")
+        _thr = float(_hc1.number_input(
+            "Umbral de ROI colectivo (%)", value=5.0, step=1.0, key=f"{key_prefix}_thr",
+            help="Umbral del filtro «Solo columnas con ROI(%) > Umbral»: deja solo los intervalos "
+                 "cuyo ROI agregado (fila TOTAL) supera este valor. No afecta los colores."))
+        _hres = _hc2.radio("Rango temporal", ["15 segundos", "30 segundos", "1 minuto"],
+                           index=2, horizontal=True, key=f"{key_prefix}_res")
+        _hsec = {"15 segundos": 15, "30 segundos": 30, "1 minuto": 60}[_hres]
+        _oks_date = _oks if _hdate == "(todas)" else [r for r in _oks if r.get("fecha") == _hdate]
+        _all_tks = sorted({r.get("ticker") for r in _oks_date if r.get("ticker")})
+        # Re-siembra el filtro al cambiar la FECHA → por defecto TODOS los tickers que operaron ese
+        # día (la columna "Tickers" del Resumen por día). Sin esto el multiselect quedaba pegado en
+        # la selección anterior por su `key`.
+        _tks_sig = (key_prefix, str(_hdate))
+        if st.session_state.get(f"{key_prefix}_tks_sig") != _tks_sig:
+            st.session_state[f"{key_prefix}_tks_sig"] = _tks_sig
+            st.session_state.pop(f"{key_prefix}_tks", None)
+        _ft1, _ft2 = st.columns([3, 2])
+        _sel_tks = _ft1.multiselect("Filtrar tickers (filas)", _all_tks, default=_all_tks,
+                                    key=f"{key_prefix}_tks")
+        _only_pos = _ft2.checkbox("Solo columnas con ROI% > 0", value=False, key=f"{key_prefix}_pos")
+        _only_thr = _ft2.checkbox(
+            "Solo columnas con ROI (%) > Umbral de ROI colectivo (%)", value=False,
+            key=f"{key_prefix}_thrcol",
+            help="Deja solo los intervalos cuyo ROI agregado (fila TOTAL) SUPERA el Umbral de "
+                 "ROI colectivo de arriba.")
+        _full_range = _ft2.checkbox(
+            "🕘 Rango horario completo (en una fecha única)", value=False,
+            key=f"{key_prefix}_fullrange",
+            help="En UNA sola fecha, extiende las columnas al MISMO rango horario que la vista "
+                 "«(todas)» (rellena CLOSED los minutos sin posición). Por defecto la fecha única solo "
+                 "muestra los minutos con alguna posición abierta. No aplica a «(todas)».")
+        # Si el multiselect quedó vacío (transición al cambiar de fecha, o deselección total),
+        # caemos a TODOS los tickers del día → la tabla nunca se "esconde" por un filtro vacío.
+        _oks_date = [r for r in _oks_date if r.get("ticker") in (_sel_tks or _all_tks)]
+        _tkc: dict = {}
+        for _r in _oks_date:
+            _tkc[_r.get("ticker")] = _tkc.get(_r.get("ticker"), 0) + 1
+
+        def _hfloor(_t):
+            return ((_t.hour * 3600 + _t.minute * 60 + _t.second) // _hsec) * _hsec
+
+        def _hlbl(_s):
+            _h, _r = divmod(_s, 3600)
+            _m, _x = divmod(_r, 60)
+            return f"{_h:02d}:{_m:02d}:{_x:02d}" if _hsec < 60 else f"{_h:02d}:{_m:02d}"
+
+        def _grange(_recs):
+            """(min entrada, max salida) en segundos-del-día (a _hsec) sobre TODOS los registros —
+            para extender la grilla de una fecha única al rango global (= vista «todas»)."""
+            _es, _xs = [], []
+            for _r in _recs:
+                _it = _r.get("iteration")
+                try:
+                    _tc = _it.df["timestamp"]
+                    if len(_tc):
+                        _es.append(_hfloor(pd.to_datetime(_tc.iloc[0])))
+                        _xs.append(_hfloor(pd.to_datetime(_tc.iloc[-1])))
+                except Exception:
+                    continue
+            return (min(_es), max(_xs)) if _es else (None, None)
+
+        _hits = []
+        for r in sorted(_oks_date, key=lambda x: (x.get("ticker") or "", x.get("hora") or "")):
+            it = r["iteration"]
+            try:
+                _disp = _build_display_df(it)
+                _ts = pd.to_datetime(it.df["timestamp"])
+                _pc = _disp["ROI (%)"].to_numpy()
+                _dl = _disp["ROI ($)"].to_numpy()
+            except Exception:
+                continue
+            if len(_ts) == 0:
+                continue
+            _cells = {}
+            for _t, _p, _d in zip(_ts, _pc, _dl):
+                _cells[_hfloor(_t)] = (float(_p), float(_d))
+            _tk = r.get("ticker") or "?"
+            if _hdate == "(todas)":
+                _lab = f"{_tk} · {r.get('fecha')} {r.get('hora')}"
+            else:
+                _lab = _tk if _tkc.get(_tk, 0) == 1 else f"{_tk} · {r.get('hora')}"
+            _inv = float(getattr(it, "invest_total", 0.0) or 0.0)
+            _hits.append((_lab, _hfloor(_ts.iloc[0]), _hfloor(_ts.iloc[-1]), _cells, _inv))
+        if not _hits:
+            st.caption("Sin timeline para esa fecha.")
+            return
+        _gmin = min(e for _l, e, _xe, _c, _iv in _hits)
+        _gmax = max(_xe for _l, e, _xe, _c, _iv in _hits)
+        if _full_range and _hdate != "(todas)":
+            _ga, _gb = _grange(_oks)   # rango GLOBAL (todas las fechas) → columnas como en «(todas)»
+            if _ga is not None:
+                _gmin, _gmax = min(_gmin, _ga), max(_gmax, _gb)
+        _grid = list(range(_gmin, _gmax + _hsec, _hsec))
+        if len(_hits) * len(_grid) > 25000:
+            st.warning(f"⚠️ {len(_hits)} tickers × {len(_grid)} intervalos — muy pesado. Usá **1 minuto**.")
+            return
+        _cols = [_hlbl(_s) for _s in _grid]
+        _tot_dol = {c: 0.0 for c in _cols}   # Σ ROI$ por columna (solo celdas válidas)
+        _tot_inv = {c: 0.0 for c in _cols}   # Σ invertido por columna (tickers abiertos)
+        _tot_n = {c: 0 for c in _cols}
+        _hdata = []
+        for _label, _e, _xe, _cells, _inv in _hits:
+            _row = {"Ticket": _label}
+            _last = None
+            for _s in _grid:
+                _c = _hlbl(_s)
+                if _s < _e or _s > _xe:                # fuera de la operación → CLOSED (no suma)
+                    _row[_c] = "CLOSED"
+                    _last = None
+                else:                                  # abierta → forward-fill
+                    if _s in _cells:
+                        _last = _cells[_s]
+                    if _last is not None:
+                        _p, _d = _last
+                        _row[_c] = f"{_p*100:.1f}% / ${_d:,.2f}"
+                        _tot_dol[_c] += _d
+                        _tot_inv[_c] += _inv
+                        _tot_n[_c] += 1
+                    else:
+                        _row[_c] = "CLOSED"
+            _hdata.append(_row)
+        # Fila TOTAL: ROI% agregado = Σ ROI$ / Σ invertido (excluye CLOSED) · ROI$ = Σ ROI$.
+        _total = {"Ticket": "TOTAL"}
+        for _c in _cols:
+            if _tot_n[_c] > 0 and _tot_inv[_c] > 0:
+                _agg = _tot_dol[_c] / _tot_inv[_c] * 100.0
+                _total[_c] = f"{_agg:.1f}% / ${_tot_dol[_c]:,.2f}"
+            else:
+                _total[_c] = "CLOSED"
+        # Filtro de columnas — RANGO DE HORAS:
+        if len(_cols) > 1:
+            # Reset del rango a COMPLETO cuando cambia la grilla o los filtros (fecha, resolución,
+            # tickers o cualquiera de los checkboxes). Evita que el slider quede "pegado" en un
+            # rango viejo (p. ej. 09:45–09:45) y no muestre todos los minutos al deseleccionar.
+            _hr_sig = (str(_hdate), _hres, tuple(_sel_tks), _cols[0], _cols[-1], len(_cols),
+                       bool(_only_pos), bool(_only_thr))
+            if st.session_state.get(f"{key_prefix}_hrange_sig") != _hr_sig:
+                st.session_state[f"{key_prefix}_hrange_sig"] = _hr_sig
+                st.session_state.pop(f"{key_prefix}_hrange", None)
+            _tr = st.select_slider("Rango de horas (columnas)", options=_cols,
+                                   value=(_cols[0], _cols[-1]), key=f"{key_prefix}_hrange")
+            _cols = _cols[_cols.index(_tr[0]):_cols.index(_tr[1]) + 1]
+        # Filtro — solo columnas con ROI% > 0 en alguna fila de ticker:
+        if _only_pos:
+            def _col_pos(_c):
+                for _row in _hdata:
+                    _v = _row.get(_c, "")
+                    if isinstance(_v, str) and "%" in _v:
+                        try:
+                            if float(_v.split("%")[0]) > 0:
+                                return True
+                        except Exception:
+                            pass
+                return False
+            _cols = [_c for _c in _cols if _col_pos(_c)]
+        # Filtro — solo columnas cuyo TOTAL colectivo (%) supera el Umbral de ROI colectivo:
+        if _only_thr:
+            def _col_over_thr(_c):
+                return (_tot_n.get(_c, 0) > 0 and _tot_inv.get(_c, 0) > 0
+                        and (_tot_dol[_c] / _tot_inv[_c] * 100.0) > _thr)
+            _cols = [_c for _c in _cols if _col_over_thr(_c)]
+        if not _cols:
+            st.caption("Ninguna columna cumple los filtros seleccionados.")
+            return
+        _full = pd.DataFrame([_total] + _hdata)[["Ticket"] + _cols]
+        def _style(df):
+            sty = pd.DataFrame("", index=df.index, columns=df.columns)
+            # Por CADA fila (TOTAL y tickers): el MÁXIMO de sus positivos → verde OSCURO; el
+            # MÍNIMO de sus negativos → rojo OSCURO; el resto, verde/rojo claro según signo.
+            for _i in df.index:
+                _is_tot = (df.at[_i, "Ticket"] == "TOTAL")
+                _bold = "; font-weight:bold" if _is_tot else ""
+                sty.at[_i, "Ticket"] = ("background-color:#37474f; color:white; font-weight:bold"
+                                        if _is_tot else "")
+                _vals = []
+                for _c in _cols:
+                    _v = df.at[_i, _c]
+                    if isinstance(_v, str) and "%" in _v:
+                        try:
+                            _vals.append(float(_v.split("%")[0]))
+                        except Exception:
+                            pass
+                _rmax = max([v for v in _vals if v > 0], default=None)
+                _rmin = min([v for v in _vals if v < 0], default=None)
+                for _c in _cols:
+                    _v = df.at[_i, _c]
+                    if not isinstance(_v, str) or "%" not in _v:
+                        sty.at[_i, _c] = "color:#9aa0a6"          # CLOSED → gris tenue
+                        continue
+                    try:
+                        _p = float(_v.split("%")[0])
+                    except Exception:
+                        continue
+                    if _rmax is not None and _p == _rmax:           # máx (+) de la fila → verde OSCURO
+                        sty.at[_i, _c] = "background-color:#1b5e20; color:white; font-weight:bold"
+                    elif _rmin is not None and _p == _rmin:         # mín (−) de la fila → rojo OSCURO
+                        sty.at[_i, _c] = "background-color:#b71c1c; color:white; font-weight:bold"
+                    elif _p > 0:
+                        sty.at[_i, _c] = "background-color:#c8e6c9" + _bold   # verde claro
+                    elif _p < 0:
+                        sty.at[_i, _c] = "background-color:#ffcdd2" + _bold   # rojo claro
+            return sty
+
+        st.dataframe(_full.style.apply(_style, axis=None), use_container_width=True,
+                     hide_index=True, height=min(560, 60 + 35 * (len(_hdata) + 1)))
+
+
 def _render_signals_session(rs):
     results = rs.get("sig_results", [])
     oks = [r for r in results if r.get("iteration") is not None]
@@ -3436,45 +3905,145 @@ def _render_signals_session(rs):
     if _h2.button("🧹 Limpiar", key="sig_clear_render", use_container_width=True):
         st.session_state.pop("replay", None)
         st.rerun()
-    _tot_inv = sum(r["iteration"].invest_total for r in oks)
-    _tot_gain = sum(r["iteration"].gain_total for r in oks)
-    _nwin = sum(1 for r in oks if r["iteration"].gain_total > 0)
-    _roi = _tot_gain / _tot_inv if _tot_inv else 0.0
-    st.markdown("### 💼 Totales de las señales")
-    _tc = st.columns(5)
-    _tc[0].metric("# señales", len(results))
-    _tc[1].metric("Con resultado", len(oks))
-    _tc[2].metric("Inversión total", f"${_tot_inv:,.2f}")
-    if _tot_gain > 0:
-        _gbg, _gdc, _gar = "rgba(33, 195, 84, 0.1)", "#2e7d32", "▲"
-    elif _tot_gain < 0:
-        _gbg, _gdc, _gar = "#ffcdd2", "#b71c1c", "▼"
-    else:
-        _gbg, _gdc, _gar = "#f0f2f6", "#555", "–"
-    _gdt = f"{_gar} {abs(_roi):.1%}" if _tot_inv else ""
-    _tc[3].markdown(
-        f"<div style='border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem; "
-        f"padding:0.85rem 1rem; background-color:{_gbg};'>"
-        f"<div style='font-size:0.85rem; font-weight:bold; color:rgba(49,51,63,0.65); "
-        f"margin-bottom:0.35rem;'>Ganancia total</div>"
-        f"<div style='font-size:1.75rem; font-weight:600; line-height:1.15;'>${_tot_gain:+,.2f}</div>"
-        f"<div style='font-size:0.85rem; color:{_gdc}; margin-top:0.25rem;'>{_gdt}</div></div>",
-        unsafe_allow_html=True,
-    )
-    _tc[4].metric("Ganadoras", f"{_nwin}/{len(oks)}" if oks else "0/0")
     if rs.get("sig_elapsed") is not None:
         st.caption(f"⏱️ Completado en {rs['sig_elapsed']:0.1f}s · "
                    f"{rs.get('sig_workers', 1)} en paralelo")
+
+    # Totales RICOS — el MISMO helper que el backtest por rango (vista idéntica:
+    # días procesados, inversión, ganancia, capital final, ganadores/perdedores,
+    # win rate, razones de salida + panel de riesgo).
+    render_batch_totals(oks, total_days=len(results),
+                        title="💼 Totales del backtest", show_risk=True)
+
+    # Totales AGRUPADOS por semana / ticker / grupo (sector) — igual que el rango.
+    if oks:
+        _grp_by = st.radio(
+            "📂 Agrupar totales por",
+            ["General", "Por semana", "Por ticker", "Por grupo (sector)"],
+            horizontal=True, key="sig_group_by",
+            help="Recalcula inversión, ganancia, capital final, ganadores/perdedores "
+                 "y win rate para cada grupo (semana, ticker o sector).",
+        )
+        if _grp_by == "Por semana":
+            render_grouped_totals(
+                oks,
+                lambda r: "Sem. " + pd.Timestamp(r["fecha"]).to_period("W").start_time.strftime("%Y-%m-%d"),
+                "Semana (lun)")
+        elif _grp_by == "Por ticker":
+            render_grouped_totals(oks, lambda r: r.get("ticker", "—"), "Ticker")
+        elif _grp_by == "Por grupo (sector)":
+            _ti_grp = load_ticker_info()
+
+            def _grp_of(r):
+                _i = _ti_grp.get((r.get("ticker") or "").upper().strip()) or {}
+                return _i.get("bloque_sector") or _i.get("indice") or "Otros"
+
+            render_grouped_totals(oks, _grp_of, "Grupo")
+
     _skipped = rs.get("sig_skipped") or []
     if _skipped:
         _sk = ", ".join(f"{s.get('ticker')} {s.get('fecha')}" for s in _skipped[:12])
         if len(_skipped) > 12:
             _sk += f" … (+{len(_skipped) - 12})"
-        st.caption(f"⏭️ {len(_skipped)} señal(es) salteada(s) por no tener **0DTE** ese día "
-                   f"(activá *Auto-DTE* arriba para operarlas al vencimiento más cercano): {_sk}")
-    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-    for r in sorted(oks, key=lambda x: (x.get("fecha") or "", x.get("hora") or "",
-                                        x.get("ticker") or "")):
+        st.caption(f"ℹ️ Se saltaron **{len(_skipped)}** señal(es) sin **0DTE** ese día "
+                   f"(activá *Auto-DTE* arriba para operarlas al vencimiento más cercano). "
+                   f"No cuentan como error ni en los totales: {_sk}")
+
+    # Distribución temporal de operaciones exitosas (baseline 09:30 → hora de cierre real).
+    render_temporal_distribution([r["iteration"] for r in oks],
+                                 entrada=pd.Timestamp("09:30").time(),
+                                 chart_key="temporal_chart_sig")
+
+    # --- 🗓️ Heatmap: ROI por ticker × intervalo de tiempo (función reusable, con fila TOTAL) ---
+    render_roi_heatmap(oks, "sig_heatmap")
+
+    # Resumen por día — agrega TODAS las señales de cada fecha (1 fila por día).
+    if oks:
+        _by_day: dict = {}
+        for r in oks:
+            _it = r["iteration"]
+            _e = _by_day.setdefault(r["fecha"], {"gain": 0.0, "invest": 0.0,
+                                                 "n": 0, "win": 0, "tks": set()})
+            _e["gain"] += _it.gain_total
+            _e["invest"] += _it.invest_total
+            _e["n"] += 1
+            _e["win"] += 1 if _it.gain_total > 0 else 0
+            _e["tks"].add(r.get("ticker", ""))
+        _drows, _cum = [], 0.0
+        for _d in sorted(_by_day):
+            _e = _by_day[_d]
+            _cum += _e["gain"]
+            _drows.append({
+                "Fecha": _d, "Ops": _e["n"], "Ganancia": _e["gain"],
+                "ROI %": (_e["gain"] / _e["invest"] * 100.0) if _e["invest"] else 0.0,
+                "Ganadores": f"{_e['win']}/{_e['n']}",
+                "Ganancia acumulada": _cum,
+                "Tickers": ", ".join(sorted(t for t in _e["tks"] if t)),
+            })
+
+        def _gcol(v):
+            if not isinstance(v, (int, float)) or pd.isna(v):
+                return ""
+            return ("background-color: #c8e6c9" if v > 0
+                    else ("background-color: #ffcdd2" if v < 0 else ""))
+
+        with st.expander(f"📋 Días con resultados ({len(_drows)})", expanded=False):
+            st.markdown("### Resumen por día")
+            _styled_day = (pd.DataFrame(_drows).style
+                           .map(_gcol, subset=["Ganancia", "Ganancia acumulada"])
+                           .format({"Ganancia": "${:+,.0f}", "ROI %": "{:+.1f}%",
+                                    "Ganancia acumulada": "${:+,.0f}"}))
+            st.dataframe(_styled_day, use_container_width=True, hide_index=True,
+                         height=min(440, 38 + 35 * max(1, len(_drows))))
+
+    st.markdown("#### 🔍 Detalle por señal")
+    # --- Filtro de filas: Todas / ROI ≥ 0 / ROI < 0 / por motivo de salida (con contadores) ---
+    _det = sorted(oks, key=lambda x: (x.get("fecha") or "", x.get("hora") or "",
+                                      x.get("ticker") or ""))
+
+    def _reason_cell(r):
+        _rk = r["iteration"].exit_reason
+        return f"{_REASON_ICONS.get(_rk, '•')} {_REASON_LABELS.get(_rk, _rk)}"
+
+    _n_pos = sum(1 for r in _det if r["iteration"].gain_total >= 0)
+    _n_neg = sum(1 for r in _det if r["iteration"].gain_total < 0)
+    _reason_counts: dict = {}
+    for r in _det:
+        _c = _reason_cell(r)
+        _reason_counts[_c] = _reason_counts.get(_c, 0) + 1
+    # umbral/stop/cierre van SIEMPRE (aunque tengan 0); wrong_direction/overnight solo si aparecen.
+    _reason_opts = []
+    for _rk, _always in (("100%_threshold", True), ("stop_loss", True), ("session_end", True),
+                         ("wrong_direction", False), ("weak_confirmation", False),
+                         ("overnight_1dte", False)):
+        _cell = f"{_REASON_ICONS.get(_rk, '•')} {_REASON_LABELS.get(_rk, _rk)}"
+        if _always or _reason_counts.get(_cell, 0) > 0:
+            _reason_opts.append(_cell)
+    _filter_options = ["Todas", "ROI ≥ 0", "ROI < 0"] + _reason_opts
+    if st.session_state.get("sig_roi_filter") not in _filter_options:
+        st.session_state.pop("sig_roi_filter", None)
+    _sig_filter = st.radio(
+        "Filtrar filas", options=_filter_options, index=0, horizontal=True, key="sig_roi_filter",
+        format_func=lambda o: {
+            "Todas": f"Todas ({len(_det)})",
+            "ROI ≥ 0": f"ROI ≥ 0 ({_n_pos})",
+            "ROI < 0": f"ROI < 0 ({_n_neg})",
+        }.get(o, f"{o} ({_reason_counts.get(o, 0)})"),
+    )
+    if _sig_filter == "ROI ≥ 0":
+        _det = [r for r in _det if r["iteration"].gain_total >= 0]
+    elif _sig_filter == "ROI < 0":
+        _det = [r for r in _det if r["iteration"].gain_total < 0]
+    elif _sig_filter in _reason_opts:
+        _det = [r for r in _det if _reason_cell(r) == _sig_filter]
+    if not _det:
+        st.caption("No hay señales que cumplan el filtro seleccionado.")
+    # Render PEREZOSO con expander NATIVO (como antes): render_iteration es PESADO y el expander
+    # ejecuta su contenido SIEMPRE → con decenas de señales se recalcula todo en cada rerun. Acá el
+    # detalle se genera UNA sola vez al tocar "Ver detalle" (1 llamada al server por señal); una vez
+    # cargado, ABRIR/CERRAR el expander es del lado del CLIENTE y NO vuelve a llamar al servidor.
+    _loaded = st.session_state.setdefault("sig_det_loaded", set())
+    for _i, r in enumerate(_det):
         it = r["iteration"]
         _reason = _REASON_LABELS.get(it.exit_reason, it.exit_reason)
         if it.gain_total >= 0:
@@ -3489,15 +4058,23 @@ def _render_signals_session(rs):
         _title = (f"{_icon} {r['ticker']} {r['tipo']}  ·  {r['fecha']} {r['hora']} → "
                   f"{it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
                   f"{_reason}  ·  Ganancia: {_gp} ({_pct_part}){_ref_part}")
-        with st.expander(_title, expanded=(len(oks) == 1)):
-            st.markdown(f"**{r['ticker']} — {r['fecha']}  ·  0 DTE  ·  Ventana 09:30–16:00**")
-            render_iteration(it, r["ticker"], r["fecha"])
+        _sid = f"{r['ticker']}|{r['fecha']}|{r['hora']}|{r['tipo']}"
+        _auto = (len(_det) == 1)                          # 1 sola señal → se carga y abre sola
+        with st.expander(_title, expanded=_auto):
+            if _auto or _sid in _loaded:
+                st.markdown(f"**{r['ticker']} — {r['fecha']}  ·  0 DTE  ·  Ventana 09:30–16:00**")
+                render_iteration(it, r["ticker"], r["fecha"])
+            elif st.button("📊 Ver detalle de esta señal", key=f"sigdet_load_{_i}",
+                           help="Genera el detalle (operaciones, strikes, gráfico, tabla). Después, "
+                                "abrir/cerrar este recuadro ya NO llama al servidor."):
+                _loaded.add(_sid)
+                st.rerun()
     if errs:
-        st.divider()
-        st.markdown("**Señales sin resultado:**")
-        for r in errs:
-            st.caption(f"⚠ {r.get('ticker', '?')} {r.get('tipo', '')} {r.get('fecha', '')} "
-                       f"{r.get('hora', '')} — {r.get('error', 'error')}")
+        with st.expander(f"❌ Señales sin resultado ({len(errs)})", expanded=False):
+            for r in errs:
+                st.markdown(f"**{r.get('ticker', '?')} {r.get('tipo', '')} "
+                            f"{r.get('fecha', '')} {r.get('hora', '')}** — "
+                            f"{r.get('error', 'error')}")
 
 
 if replay_state.get("mode") == "signals":
@@ -3564,6 +4141,13 @@ if _mode == "range":
                 return _i.get("bloque_sector") or _i.get("indice") or "Otros"
 
             render_grouped_totals(successful, _grp_of, "Grupo")
+    _n_holiday = int(replay_state.get("skipped_holiday", 0))
+    if _n_holiday:
+        st.caption(
+            f"🏖️ Se saltaron **{_n_holiday}** (ticker × día) sin sesión — **feriado / fin de "
+            f"semana** (mercado cerrado, no hay data). Ej.: Juneteenth (19-jun). No cuentan como "
+            f"error ni en los totales."
+        )
     _n_skipped = int(replay_state.get("skipped_no0dte", 0))
     if _n_skipped:
         st.caption(
@@ -3583,6 +4167,20 @@ if _mode == "range":
         [r.get("iteration") for r in day_runs],
         entrada=replay_state["order_time"], chart_key="temporal_chart_range",
     )
+
+    # --- 🗓️ Heatmap: ROI por ticker × intervalo de tiempo (con fila TOTAL) — modo RANGO ---
+    _hm_recs = []
+    for r in successful:
+        _it = r.get("iteration")
+        if _it is None:
+            continue
+        try:
+            _h = pd.to_datetime(_it.df["timestamp"]).iloc[0].strftime("%H:%M")
+        except Exception:
+            _h = ""
+        _hm_recs.append({"ticker": r.get("ticker"), "fecha": r.get("date"),
+                         "hora": _h, "iteration": _it})
+    render_roi_heatmap(_hm_recs, "manual_heatmap")
 
     # --- Resumen COMBINADO por día (solo con >1 ticker): la ganancia de cada día
     #     sumando TODOS los tickers seleccionados (1 fila por fecha). ---
@@ -3618,7 +4216,7 @@ if _mode == "range":
                     else ("background-color: #ffcdd2" if v < 0 else ""))
 
         with st.expander(f"📅 Resumen combinado por día ({len(_drows)} días · {len(_tk_list)} tickers)",
-                         expanded=True):
+                         expanded=False):
             st.caption("Ganancia de cada día **sumando todos los tickers** seleccionados. "
                        "1 fila por fecha; ordenado cronológicamente.")
             _styled_day = (_ddf.style
@@ -3635,7 +4233,7 @@ if _mode == "range":
     # Días con resultados — tabla + descargas dentro de un expander
     # ------------------------------------------------------------------
     selected_dates: list[str] = []
-    with st.expander(f"📋 Días con resultados ({len(successful)})", expanded=True):
+    with st.expander(f"📋 Días con resultados ({len(successful)})", expanded=False):
         st.markdown("### Resumen por día")
         if successful:
             rows = []

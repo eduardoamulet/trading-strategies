@@ -6,7 +6,7 @@ Flujo:
   2) Menú según rol: la sección Administración (👥 Usuarios) solo la ven los admin.
 
 Menú: 🏠 Dashboard · 🎯 Estrategias · 📈 Activos · 👤 Perfil · ❓ Ayuda
-Alertas: 🔔 Alertas Investep Academy IA · 📈 Trading view (en construcción)
+Alertas: 🔔 Investep Academy IA · 📈 Trading view (en construcción)
 Herramientas: 🔬 Backtesting · 🟢 Live · 📓 Registro · 🔄 Datos   ·   Administración (admin): 👥 Usuarios
 
 Correr desde la raíz (Traiding/):  py -m streamlit run trading_suite.py
@@ -18,8 +18,12 @@ from pathlib import Path
 
 import streamlit as st
 
+# Sidebar (panel de config manual) CONTRAÍDA al llegar por handoff de señales (Investep /
+# Trading view); expandida en cualquier otro caso. La flag la setean esos botones antes de saltar.
+_sb_state = "collapsed" if st.session_state.get("bt_sidebar_collapse") else "expanded"
 st.set_page_config(page_title="SignalForge", page_icon="📈", layout="wide",
-                   initial_sidebar_state="expanded")
+                   initial_sidebar_state=_sb_state)
+st.session_state.pop("bt_sidebar_collapse", None)   # one-shot: solo colapsa en la llegada
 
 # Ocultar SOLO el botón Deploy y el menú ⋮ de Streamlit (no toda la barra: si se
 # oculta stToolbar entero se pierde el control para re-expandir la barra lateral).
@@ -62,7 +66,7 @@ user = auth.require_login()   # frena si no hay sesión / crea el primer admin
 # ── 2) Páginas ───────────────────────────────────────────────────────────────
 dashboard = st.Page("options_replay/dashboard_app.py", title="Dashboard", icon="🏠",
                     url_path="dashboard", default=True)
-alertas = st.Page("options_replay/signals_app.py", title="Alertas Investep Academy IA",
+alertas = st.Page("options_replay/signals_app.py", title="Investep Academy IA",
                   icon="🔔", url_path="alertas")
 trading_view = st.Page("options_replay/trading_view_app.py", title="Trading view", icon="📈",
                        url_path="trading_view")
@@ -101,6 +105,76 @@ _LOGO_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="150" height="30">'
              '<text x="0" y="23" font-family="sans-serif" font-size="22" font-weight="800">'
              '<tspan fill="#1f2937">Signal</tspan><tspan fill="#16a34a">Forge</tspan></text></svg>')
 st.logo(_LOGO_SVG)
+
+# ── 🔔 Campanita de notificaciones — señales del DÍA (estilo Investep) ──────────
+# Lee la base de señales (ingestadas por API/email) y muestra las de HOY con badge de
+# "nuevas". Fija arriba a la derecha, a la IZQUIERDA del menú "EM" (con espacio entre ambos);
+# el panel abre hacia la izquierda. Visible en todas las páginas. Nunca rompe la app.
+try:
+    import pandas as _pd
+    import signals_db as _sdb
+    _allsig = _sdb.load_signals()
+    # Auto-fetch UNA vez por sesión (si hay credenciales en signals_secrets) → la campanita se
+    # llena sola al abrir la app, sin tocar botones (como el sitio de Investep).
+    if not st.session_state.get("_notif_autofetched"):
+        st.session_state["_notif_autofetched"] = True
+        try:
+            import external_signals as _xs0
+            _au, _ap, _at = _xs0._api_secrets()
+            if (_au and _ap) or _at:
+                _xs0.fetch_from_api(days_back=1)
+                _allsig = _sdb.load_signals()
+        except Exception:
+            pass
+    _hoy = _pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+    _hoysig = (_allsig[_allsig["fecha"].astype(str) == _hoy]
+               if _allsig is not None and not _allsig.empty else _pd.DataFrame())
+    _seen = st.session_state.setdefault("_notif_seen", set())
+    _nnew = 0 if _hoysig.empty else int((~_hoysig["id"].astype(str).isin(_seen)).sum())
+    # Campanita FIJA arriba a la derecha, a la izquierda de EM (que está en right:16px). El
+    # contenedor se colapsa (absolute, 0×0) para no ocupar espacio en el flujo de la página.
+    st.markdown(
+        "<style>"
+        ".st-key-ccd_notif_bell{position:absolute !important; height:0 !important;"
+        " width:0 !important; margin:0 !important; padding:0 !important;}"
+        ".st-key-ccd_notif_bell div[data-testid='stPopover']{position:fixed !important; top:6px;"
+        " right:125px; left:auto !important; width:auto !important; min-width:0 !important;"
+        " z-index:9999999 !important;}"
+        ".st-key-ccd_notif_bell div[data-testid='stPopover'] > button{width:auto !important;}"
+        "</style>", unsafe_allow_html=True)
+    _bell_box = st.container(key="ccd_notif_bell")
+    with _bell_box.popover(f"🔔 {_nnew} nuevas" if _nnew else "🔔 Notificaciones"):
+        _nb1, _nb2 = st.columns(2)
+        if _nb1.button("🔄 Bajar API", key="_notif_fetch", use_container_width=True):
+            try:
+                import external_signals as _xs
+                _k = _xs.fetch_from_api(days_back=1)
+                st.toast(f"📡 {_k} señal(es) nueva(s) de la API")
+            except Exception as _e:
+                st.toast(f"⚠️ {str(_e)[:70]}")
+            st.rerun()
+        if _nb2.button("✓ Leer todas", key="_notif_read", use_container_width=True,
+                       disabled=_hoysig.empty):
+            _seen.update(_hoysig["id"].astype(str).tolist())
+            st.rerun()
+        st.caption(f"**{len(_hoysig)}** señales hoy · {_hoy}"
+                   + (f" · **{_nnew}** nuevas" if _nnew else ""))
+        if _hoysig.empty:
+            st.caption("Sin señales hoy. Tocá «Bajar API» para traerlas.")
+        for _, _r in _hoysig.sort_values("hora", ascending=False).head(25).iterrows():
+            _ic = "📈" if str(_r.get("tipo")).upper() == "CALL" else "📉"
+            _dot = "🔵 " if str(_r.get("id")) not in _seen else ""
+            try:
+                _pr = f"{float(_r.get('probabilidad')):.0f}%"
+            except Exception:
+                _pr = ""
+            st.markdown(
+                f"{_dot}{_ic} **{_r.get('tipo')} {_r.get('symbol')}** · {_pr} · {_r.get('estrategia')}  \n"
+                f"<span style='color:#888;font-size:0.78em'>{_r.get('hora')}</span>",
+                unsafe_allow_html=True)
+except Exception as _ne:
+    st.caption(f"🔔 campanita no disponible · {str(_ne)[:60]}")
+
 pg = st.navigation(nav, position="sidebar")
 auth.top_user_menu(user, perfil)   # menú de usuario arriba a la derecha
 pg.run()

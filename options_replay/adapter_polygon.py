@@ -140,6 +140,18 @@ class PolygonAdapter:
                 break
         return sorted(seen)
 
+    def first_expiration(self, ticker: str, on_or_after: str) -> Optional[str]:
+        """El vencimiento MÁS CERCANO >= `on_or_after`, en UNA sola llamada (ordenado asc,
+        limit 1). Mucho más rápido que list_expirations, que pagina TODOS los contratos
+        (decenas de páginas para SPY/QQQ). Para `nearest_expiry`, que solo necesita el primero."""
+        data = self._get("/v3/reference/options/contracts", {
+            "underlying_ticker": ticker, "expiration_date.gte": on_or_after,
+            "expired": "true", "sort": "expiration_date", "order": "asc", "limit": 1})
+        for row in data.get("results", []):
+            if row.get("expiration_date"):
+                return row["expiration_date"]
+        return None
+
     def is_optionable(self, ticker: str) -> bool:
         """¿El subyacente tiene opciones VIGENTES hoy? = al menos 1 contrato NO expirado
         (expired=false). Para "¿es optionable?" — distinto de list_expirations, que usa

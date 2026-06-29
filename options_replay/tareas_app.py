@@ -209,6 +209,97 @@ def _render_tasks():
 
 _render_tasks()
 
+# ───────────────────────── poller de señales Investep (campanita) ─────────────────────
+POLL_ID = "investep_poll"
+
+
+def _read_last_log(tid: str) -> str:
+    try:
+        _lines = (TASKS_DIR / f"{tid}.log").read_text(
+            encoding="utf-8", errors="replace").strip().splitlines()
+        return _lines[-1] if _lines else ""
+    except Exception:
+        return ""
+
+
+def _poll_meta_write(iv: float) -> None:
+    try:
+        (TASKS_DIR / f"{POLL_ID}.meta").write_text(json.dumps({"interval_min": iv}))
+    except Exception:
+        pass
+
+
+def _poll_meta_read() -> float:
+    try:
+        return float(json.loads(
+            (TASKS_DIR / f"{POLL_ID}.meta").read_text()).get("interval_min", 1.0))
+    except Exception:
+        return 1.0
+
+
+def _has_investep_creds() -> bool:
+    try:
+        import external_signals as _xs
+        _u, _p, _t = _xs._api_secrets()
+        return bool((_u and _p and "TU_EMAIL" not in str(_u)) or _t)
+    except Exception:
+        return False
+
+
+@st.fragment(run_every=3.0)
+def _render_poll():
+    pid = _pidfile_pid(POLL_ID)
+    on = _pid_alive(pid)
+    if "poll_interval_min" not in st.session_state:
+        st.session_state["poll_interval_min"] = _poll_meta_read()
+    _iv = float(st.session_state.get("poll_interval_min", 1.0))
+    with st.container(border=True):
+        _c1, _c2 = st.columns([4, 1.5], vertical_alignment="center")
+        with _c1:
+            st.markdown("#### 📡 Polling de señales Investep")
+            st.caption("Cada cierto intervalo baja las señales nuevas de la API de Investep "
+                       "(login automático) y las carga a la base → alimenta la 🔔 campanita. "
+                       "Corre en segundo plano y sobrevive al cierre de la app.")
+            if on:
+                st.markdown(f":green[**● Encendida**]  ·  cada {_poll_meta_read():g} min"
+                            f"  ·  PID {pid}")
+                _last = _read_last_log(POLL_ID)
+                if _last:
+                    st.caption(f"Último: `{_last}`")
+            else:
+                st.markdown(":gray[**○ Apagada**]")
+                _icol, _ = st.columns([1.3, 2.7])
+                _iv = _icol.number_input("Intervalo (min)", min_value=0.5, max_value=60.0,
+                                         step=0.5, key="poll_interval_min",
+                                         help="Cada cuántos minutos consultar la API. Default 1.")
+                if not _has_investep_creds():
+                    st.caption("⚠️ Falta poner `INVESTEP_USER` / `INVESTEP_PASSWORD` en "
+                               "`signals_secrets.py` para que el login funcione.")
+        with _c2:
+            if on:
+                if st.button("⏹ Apagar", key=f"stop_{POLL_ID}", use_container_width=True):
+                    _kill(pid)
+                    try:
+                        (TASKS_DIR / f"{POLL_ID}.pid").unlink()
+                    except Exception:
+                        pass
+                    st.toast("Apagando el poller…")
+                    st.rerun()
+            else:
+                if st.button("▶ Encender", key=f"start_{POLL_ID}", type="primary",
+                             use_container_width=True):
+                    if not _has_investep_creds():
+                        st.toast("⚠️ Primero poné las credenciales en signals_secrets.py")
+                    else:
+                        _poll_meta_write(float(_iv))
+                        _launch(POLL_ID, [PY, "poll_investep.py",
+                                          "--interval-min", str(_iv)], HERE)
+                        st.toast(f"Encendiendo el poller · cada {_iv:g} min…")
+                        st.rerun()
+
+
+_render_poll()
+
 st.divider()
 st.caption("⚠️ El daemon NUNCA opera en real (`LIVE_TRADING_ENABLED = False` · sandbox). "
            "Los logs de cada tarea quedan en `options_replay/data/tasks/{id}.log`.")

@@ -49,6 +49,10 @@ REASON = {
     "stop_loss": "Stop loss",
     "session_end": "Cierre (sin trigger)",
     "overnight_1dte": "Overnight 1DTE",
+    "wrong_direction": "Señal en sentido del movimiento equivocado",
+    "weak_confirmation": "Confirmación débil (vela doji, sin convicción)",
+    "collective_roi": "ROI colectivo (cartera)",
+    "collective_stop": "Stop colectivo (cartera)",
 }
 
 
@@ -71,7 +75,11 @@ _TIPO_MODE = {
     "PUT": "put_only", "SÓLO PUT": "put_only", "SOLO PUT": "put_only",
     "CALL Y PUT": "both", "CALL Y PUT (PLUS)": "both_plus",
     "CALL Y PUT (REFUERZO)": "both_refuerzo",
+    "CALL Y PUT (REFUERZO) (END OF DAY)": "both_refuerzo_eod",
     "CALL O PUT": "call_or_put", "CALL O PUT (PLUS)": "call_or_put_plus",
+    "CALL O PUT (END OF DAY)": "call_or_put_eod",
+    "SÓLO CALL (END OF DAY)": "call_only_eod", "SOLO CALL (END OF DAY)": "call_only_eod",
+    "SÓLO PUT (END OF DAY)": "put_only_eod", "SOLO PUT (END OF DAY)": "put_only_eod",
 }
 
 
@@ -81,7 +89,12 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             auto_dte: bool = False, selection_criterion: str = "spread",
             refuerzo_loss_pct: float = 0.50, refuerzo_max: int = 2,
             call_pct: float = 50.0, nbbo_timeline: bool = False,
-            search_window_min: float = 0.0) -> dict:
+            search_window_min: float = 0.0, dte: int = 0,
+            exit_hora: str = "16:00", confirm_candle: bool = False,
+            confirm_min_body_pct: float = 0.0,
+            flip_on_wrong_direction: bool = False,
+            cut_weak_confirmation: bool = True,
+            apply_refuerzo: bool = False) -> dict:
     """Corre 1 iteración. `spec` admite 'ticker' o 'symbol', más 'fecha', 'hora', 'tipo'.
     `selection_criterion` = criterio de selección de contrato ('spread' = Opción 1 menor
     spread; 'itm_first' = Opción 2 primer contrato cerca de ITM, ignora spread y rango).
@@ -100,11 +113,16 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
         entry = _time(int(hh), int(mm))
     except Exception:
         return {**base, "status": "error", "iteration": None, "error": f"hora inválida '{hora_s}'"}
+    try:
+        _eh, _em = str(exit_hora).split(":")[:2]
+        exit_t = _time(int(_eh), int(_em))
+    except Exception:
+        exit_t = _time(16, 0)
     # Inversión por pierna: una pierna = 100%; dos piernas = según call_pct (% que va a la
     # CALL; el resto a la PUT). Default 50 → 50/50. NO hardcoded.
-    if mode == "call_only":
+    if mode in ("call_only", "call_only_eod"):
         inv_call, inv_put = float(inversion), 0.0
-    elif mode == "put_only":
+    elif mode in ("put_only", "put_only_eod"):
         inv_call, inv_put = 0.0, float(inversion)
     else:
         _cp = max(0.0, min(100.0, float(call_pct))) / 100.0
@@ -112,46 +130,119 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
         inv_put = float(inversion) * (1.0 - _cp)
     lo, hi = premium_range(ticker)
     order_ts = to_ts(fecha, entry)
-    day_end_ts = to_ts(fecha, _time(16, 0)) - pd.Timedelta(minutes=1)
+    day_end_ts = to_ts(fecha, exit_t) - pd.Timedelta(minutes=1)
     try:
         # Auto-DTE: si NO hay 0DTE para la fecha (ticker semanal en día no-viernes), usar
-        # el vencimiento más cercano → compra `fecha`, vende a ese vencimiento (estilo DTE=1).
-        _ovn_sell = None
+        # el vencimiento más cercano, pero lo reproduce INTRADÍA sobre `fecha` (entra y sale el
+        # MISMO día al umbral/stop/cierre, NO lo retiene a vencimiento) → captura el intradía.
+        _intraday_expiry = None
         if auto_dte:
+            # ¿Hay 0DTE ese día? Chequeo RÁPIDO del cache (archivo de chain) — evita LISTAR todos
+            # los vencimientos por API, que es lentísimo (SPY/QQQ/IWM tienen cientos → ~25s). Solo
+            # si NO hay 0DTE se pide el vencimiento más cercano (ahí sí puede pegar a la API).
+            _has0 = False
             try:
-                _ne = dl.nearest_expiry(ticker, fecha)
+                _has0 = ((dl.data_dir / "chain" / f"{ticker}_{fecha}.parquet").exists()
+                         or not dl.chain(ticker, fecha).empty)
             except Exception:
-                _ne = None
-            if _ne is None:
-                return {**base, "status": "error", "iteration": None,
-                        "error": f"sin vencimientos disponibles para {ticker} en/desde {fecha} "
-                                 "(data reciente todavía no cargada en Polygon)"}
-            if _ne != fecha:
-                _ovn_sell = _ne   # no hay 0DTE ese día → vencimiento más cercano
-        if _ovn_sell is not None:
-            it = run_overnight_1dte(
-                dl, ticker, fecha, lo, hi, inv_call, inv_put, order_ts,
-                iteration_idx=int(iteration_idx), mode=mode, ext_min=lo, ext_max=hi,
-                selection_criterion=selection_criterion, spread_cfg=spread_cfg, sell_date=_ovn_sell,
-                exit_time=_time(16, 0), entry_at_ask=entry_at_ask, exit_at_bid=exit_at_bid)
-        else:
-            validate_0dte_session(dl, ticker, fecha)
-            _umb = float(umbral_pct) / 100.0
-            _stp = float(stop_pct) / 100.0
-            # 'plus': ambas piernas se venden a más tardar a las 16:00 (Horario de salida).
-            _plus_time = _time(16, 0) if mode in ("both_plus", "call_or_put_plus") else None
-            it = run_next_iteration(
-                dl, ticker, fecha, lo, hi, inv_call, inv_put, order_ts, day_end_ts,
-                exit_threshold_pct=_umb, exit_metric="total", stop_loss_pct=_stp,
-                iteration_idx=int(iteration_idx), mode=mode,
-                refuerzo_loss_threshold_pct=float(refuerzo_loss_pct), refuerzo_max_count=int(refuerzo_max),
-                ext_min=lo, ext_max=hi, selection_criterion=selection_criterion, dte=0, spread_cfg=spread_cfg,
-                entry_at_ask=entry_at_ask, exit_at_bid=exit_at_bid, nbbo_timeline=nbbo_timeline,
-                search_window_min=search_window_min,
-                call_exit_threshold_pct=_umb, call_stop_loss_pct=_stp,
-                put_exit_threshold_pct=_umb, put_stop_loss_pct=_stp,
-                exit_plus_threshold_pct=_umb, exit_plus_time=_plus_time,
-            )
+                _has0 = False
+            if not _has0:
+                try:
+                    _ne = dl.nearest_expiry(ticker, fecha)
+                except Exception:
+                    _ne = None
+                if _ne is None:
+                    return {**base, "status": "error", "iteration": None,
+                            "error": f"sin vencimientos disponibles para {ticker} en/desde {fecha} "
+                                     "(data reciente todavía no cargada en Polygon)"}
+                if _ne != fecha:
+                    _intraday_expiry = _ne   # no hay 0DTE → contrato del venc. más cercano (intradía)
+        # --- Filtro de CONFIRMACIÓN de vela: a los 15 min de la entrada, si la primera vela
+        #     de 15m cerró EN CONTRA de la señal, se vende AHÍ con motivo "wrong_direction".
+        #     Solo para señales de una pierna (CALL o PUT); en combinados la dirección es
+        #     ambigua → no aplica. Solo intradía (dte=0, incluye Auto-DTE intradía). ---
+        _cut_reason = None
+        _flip = False
+        if (confirm_candle and int(dte) == 0
+                and mode in ("call_only", "put_only", "call_only_eod", "put_only_eod")):
+            try:
+                _und = dl.underlying(ticker, fecha)
+                _cw_end = order_ts + pd.Timedelta(minutes=15)
+                _win = _und[(_und["timestamp"] >= order_ts) & (_und["timestamp"] < _cw_end)]
+                if not _win.empty:
+                    _c_open = float(_win.iloc[0]["open"])
+                    _c_close = float(_win.iloc[-1]["close"])
+                    _is_call = mode in ("call_only", "call_only_eod")
+                    # Cuerpo de la vela de confirmación, % en la DIRECCIÓN de la señal (>0 = a favor).
+                    # Anti-DOJI: si el cuerpo no llega a `confirm_min_body_pct`, NO confirma → se corta.
+                    # Banda muerta de ±umbral: cuerpo a FAVOR >= umbral → confirma (sigue). Cuerpo EN
+                    # CONTRA < −umbral → "wrong_direction" (vela adversa DE VERDAD, único caso que
+                    # invierte). |cuerpo| < umbral (incluye ruido tipo −0.01%) → "weak_confirmation"
+                    # (doji/sin convicción): se CORTA pero NO se invierte → evita flips por ruido.
+                    # Con umbral=0 equivale al comportamiento original (flipea con cualquier negativo).
+                    _body = (_c_close - _c_open) / _c_open * 100.0 if _c_open else 0.0
+                    _body_dir = _body if _is_call else -_body
+                    _thr_body = float(confirm_min_body_pct)
+                    # La salida por DOJI (weak_confirmation) solo si "Cerrar si confirmación débil" está
+                    # ON y el modo NO es "End of Day" (esos corren hasta el cierre por diseño).
+                    _cut_weak = bool(cut_weak_confirmation) and mode not in ("call_only_eod", "put_only_eod")
+                    if _body_dir < _thr_body:
+                        _adverse = _body_dir < -_thr_body   # movimiento adverso SIGNIFICATIVO (no ruido)
+                        if _adverse:
+                            _cut_reason = "wrong_direction"
+                            # FLIP con vela adversa significativa (no doji/ruido): reemplaza por la pierna
+                            # OPUESTA al cierre de la 1ª vela (entrada+15m) corriendo hasta el cierre del día.
+                            if flip_on_wrong_direction:
+                                _flip = True
+                            else:
+                                day_end_ts = _cw_end   # cortar al cierre de la vela de confirmación
+                        elif _cut_weak:
+                            # DOJI/sin convicción: cortar SOLO si el checkbox lo pide (y no es End of Day);
+                            # si no, la operación NO corta por doji y sigue hasta su salida normal / cierre.
+                            _cut_reason = "weak_confirmation"
+                            day_end_ts = _cw_end
+            except Exception:
+                pass   # si falla la lectura del subyacente, no filtra (corre normal)
+        if _flip:
+            # Reemplazar la señal por la pierna OPUESTA, entrando a ~9:45 y corriendo al cierre.
+            _opp = "PUT" if tipo == "CALL" else "CALL"
+            if mode in ("call_only", "call_only_eod"):
+                mode = "put_only_eod" if mode == "call_only_eod" else "put_only"
+                inv_call, inv_put = 0.0, float(inversion)
+            else:
+                mode = "call_only_eod" if mode == "put_only_eod" else "call_only"
+                inv_call, inv_put = float(inversion), 0.0
+            order_ts = _cw_end
+            base = {**base, "tipo": f"{tipo}→{_opp}", "hora": _cw_end.strftime("%H:%M")}
+        # Siempre INTRADÍA (entra y sale el mismo día). Con Auto-DTE intradía, `_intraday_expiry`
+        # apunta al contrato del venc. más cercano, pero igual sale ese día al umbral/stop/cierre.
+        if int(dte) <= 0 and _intraday_expiry is None:
+            validate_0dte_session(dl, ticker, fecha)   # 0DTE: validar. Auto-DTE: ya sabemos que no hay.
+        _umb = float(umbral_pct) / 100.0
+        _stp = float(stop_pct) / 100.0
+        # 'plus': ambas piernas se venden a más tardar a las 16:00 (Horario de salida).
+        _plus_time = exit_t if mode in ("both_plus", "call_or_put_plus") else None
+        it = run_next_iteration(
+            dl, ticker, fecha, lo, hi, inv_call, inv_put, order_ts, day_end_ts,
+            exit_threshold_pct=_umb, exit_metric="total", stop_loss_pct=_stp,
+            iteration_idx=int(iteration_idx), mode=mode,
+            refuerzo_loss_threshold_pct=float(refuerzo_loss_pct), refuerzo_max_count=int(refuerzo_max),
+            apply_refuerzo=bool(apply_refuerzo),
+            ext_min=lo, ext_max=hi, selection_criterion=selection_criterion, dte=int(dte),
+            overnight_exit_time=exit_t, spread_cfg=spread_cfg,
+            entry_at_ask=entry_at_ask, exit_at_bid=exit_at_bid, nbbo_timeline=nbbo_timeline,
+            search_window_min=search_window_min,
+            call_exit_threshold_pct=_umb, call_stop_loss_pct=_stp,
+            put_exit_threshold_pct=_umb, put_stop_loss_pct=_stp,
+            exit_plus_threshold_pct=_umb, exit_plus_time=_plus_time,
+            option_expiry=_intraday_expiry,
+        )
+        if _cut_reason and not _flip and it is not None:
+            it.exit_reason = _cut_reason
+            if getattr(it, "call_exit_reason", ""):
+                it.call_exit_reason = _cut_reason
+            if getattr(it, "put_exit_reason", ""):
+                it.put_exit_reason = _cut_reason
         return {**base, "status": "ok", "iteration": it, "error": None}
     except NoMatchError as e:
         return {**base, "status": "error", "iteration": None,

@@ -46,10 +46,10 @@ t_yes        = isES ? "SI" : "YES"
 t_no         = isES ? "no" : "no"
 t_open       = isES ? "APER" : "OPEN"
 t_intra      = isES ? "intra" : "intra"
-t_rule1      = isES ? "1. Tendencia Previa B15m"       : "1. Previous trend"
-t_rule2      = isES ? "2. Ruptura Línea de Tendencia"  : "2. Active trendline"
-t_rule3      = isES ? "3. Ruptura Punto Medio 15m"     : "3. Gap breaks mid+line"
-t_rule4      = isES ? "4. Apertura Dentro de Bollinger": "4. Opening volatility"
+t_rule1      = isES ? "1. Tendencia Previa B15m"        : "1. Previous trend"
+t_rule2      = isES ? "2. Ruptura Línea de Tendencia"   : "2. Trendline break"
+t_rule3      = isES ? "3. Ruptura Pto Medio día-previo" : "3. Prev-day midpoint break"
+t_rule4      = isES ? "4. Apertura Dentro de Bollinger" : "4. Open inside Bollinger"
 t_signals    = isES ? "Senales" : "Signals"
 t_opening    = isES ? "Vela apertura" : "Opening bar"
 
@@ -73,6 +73,8 @@ bbMult = input.float(2.0, "Desviacion BB", group=grpBB, minval=0.1, step=0.1)
 grpLine        = "Linea de tendencia (auto-detectada)"
 pivotLen       = input.int(3, "Pivot strength (left/right)", group=grpLine, minval=1, maxval=20,
      tooltip="Velas a cada lado para confirmar pivot. Default 3 para 15m.")
+trendlineLookback = input.int(40, "Lookback de pivots para la trendline (15m)", group=grpLine, minval=6, maxval=300,
+     tooltip="Ventana de velas hacia atras de la que se toman los pivots para AJUSTAR la trendline multi-punto (best-fit, tocando la mayor cantidad de puntos). Default 40 = ~1.5 dias en 15m: cubre la baja/subida previa hasta la apertura.")
 maxBarsForward = input.int(20, "Extension forward (bars)", group=grpLine, minval=5, maxval=100,
      tooltip="Cuantas velas adelante se extiende la linea desde el ultimo pivot. Default 20 = 5 horas en 15m.")
 maxLinesKeep   = input.int(30, "Max lineas dibujadas (por direccion)", group=grpLine, minval=5, maxval=200)
@@ -97,12 +99,21 @@ useVolFilter  = input.bool(true, "Activar filtro de volatilidad", group=grpR4)
 volMultATR    = input.float(1.0, "Rango minimo / ATR(14)", group=grpR4, minval=0.1, step=0.1,
      tooltip="El rango (high - low) de la vela de apertura debe ser >= X * ATR(14). Default 1.0.")
 
+// Modo intradia (cruces en toda la sesion, no solo la apertura)
+grpIntra       = "Modo intradia"
+intraday       = input.bool(true,  "Detectar en TODA la sesion (cruces, no solo apertura)", group=grpIntra,
+     tooltip="ON (default): dispara cuando el CIERRE CRUZA la trendline en cualquier vela de la sesion regular. OFF: solo la vela de apertura (gap del open).")
+cooldownBars   = input.int(8, "Cooldown tras senal (velas)", group=grpIntra, minval=0, maxval=200,
+     tooltip="Velas de espera tras una senal intradia (evita clusters de senales seguidas).")
+requireInBands = input.bool(true, "Intradia: exigir cierre DENTRO de las Bandas", group=grpIntra,
+     tooltip="Filtro de sobre-extension: descarta cruces con el precio fuera de las bandas de Bollinger.")
+
 // Activacion de reglas (debug)
 grpToggles    = "Activacion de reglas (para pruebas)"
 useRule1      = input.bool(true, "Activar Regla 1 (tendencia previa)", group=grpToggles)
 useRule2      = input.bool(true, "Activar Regla 2 (trendline)", group=grpToggles)
-useRule3      = input.bool(true, "Activar Regla 3 (gap rompe midpoint+linea)", group=grpToggles)
-useRule4      = input.bool(true, "Activar Regla 4 (volatilidad)", group=grpToggles)
+useRule3      = input.bool(true, "Activar Regla 3 (rompe punto medio BB)", group=grpToggles)
+useRule4      = input.bool(true, "Activar Regla 4 (apertura dentro de bandas)", group=grpToggles)
 showPrePostSignals = input.bool(false, "Mostrar senales en premarket/postmarket", group=grpToggles,
      tooltip="OFF (default): la senal solo dispara en la primera vela de la sesion REGULAR (9:30 AM ET para US stocks). ON: tambien dispara en la apertura del premarket (~4:00 AM ET) o cualquier otra apertura de sesion.")
 
@@ -155,104 +166,129 @@ ruleUp1 = basisChangePct <= lateralThreshold
 ruleDn1 = basisChangePct >= -lateralThreshold
 
 // =============================================================
-// REGLA 2 (UP) - Trendline BAJISTA (pivots HIGHS descendentes)
+// REGLA 2 (UP) - Trendline BAJISTA multi-punto (resistencia, máximos decrecientes)
 // =============================================================
+// Doc: trendline diagonal por la parte alta tocando la mayor cantidad de máximos
+// decrecientes (lower highs). Se juntan los pivots high de la ventana y se traza la
+// RESISTENCIA como borde superior: ancla en el pivot MÁS ALTO y se elige la pendiente
+// que deja a TODOS los demás pivots por debajo (toca el máximo de puntos posible).
 ph = ta.pivothigh(high, pivotLen, pivotLen)
 
-var float prevHighUp = na
-var int   prevBarUp  = na
-
-var float upLineStartPrice = na
-var int   upLineStartBar   = na
-var float upLineSlope      = na
-var int   upLineEndBar     = na
-
-var line  upCurrentLine     = na
-var bool  upCurrentHadSignal = false
-var array<line> upVisualLines = array.new<line>()
+var array<float> phP = array.new<float>()
+var array<int>   phB = array.new<int>()
 
 if not na(ph)
-    chU = ph
-    cbU = bar_index - pivotLen
+    array.push(phP, ph)
+    array.push(phB, bar_index - pivotLen)
 
-    if not na(prevHighUp) and chU < prevHighUp
-        bdU = cbU - prevBarUp
-        slU = (chU - prevHighUp) / float(bdU)
-        fbU = cbU + maxBarsForward
-        fpU = chU + slU * maxBarsForward
+while array.size(phB) > 0 and array.get(phB, 0) < bar_index - trendlineLookback
+    array.shift(phP)
+    array.shift(phB)
 
-        upLineStartPrice := prevHighUp
-        upLineStartBar   := prevBarUp
-        upLineSlope      := slU
-        upLineEndBar     := fbU
+float upLineStartPrice = na
+int   upLineStartBar   = na
+float upLineSlope      = na
+int   upLineEndBar     = na
 
-        if showLines and enableUp
-            if not na(upCurrentLine)
-                if upCurrentHadSignal or not onlySignalLines
-                    array.push(upVisualLines, upCurrentLine)
-                    if array.size(upVisualLines) > maxLinesKeep
-                        oldL = array.shift(upVisualLines)
-                        line.delete(oldL)
-                else
-                    line.delete(upCurrentLine)
+int _nU = array.size(phP)
+if _nU >= 2
+    int   _aiU   = 0
+    float _amaxU = array.get(phP, 0)
+    for _i = 1 to _nU - 1
+        if array.get(phP, _i) > _amaxU
+            _amaxU := array.get(phP, _i)
+            _aiU   := _i
+    int   _aBarU   = array.get(phB, _aiU)
+    float _aPriceU = array.get(phP, _aiU)
+    float _bestU   = na
+    for _k = 0 to _nU - 1
+        int _dbU = array.get(phB, _k) - _aBarU
+        if _dbU > 0
+            float _rU = (array.get(phP, _k) - _aPriceU) / _dbU
+            if na(_bestU) or _rU > _bestU
+                _bestU := _rU
+    if not na(_bestU) and _bestU < 0
+        upLineStartPrice := _aPriceU
+        upLineStartBar   := _aBarU
+        upLineSlope      := _bestU
+        upLineEndBar     := array.get(phB, _nU - 1) + maxBarsForward
 
-            upCurrentLine     := line.new(prevBarUp, prevHighUp, fbU, fpU,
-                 extend=extend.none, color=color.new(color.red, 0),
-                 width=2, style=line.style_dashed)
-            upCurrentHadSignal := false
-
-    prevHighUp := chU
-    prevBarUp  := cbU
+// Línea VIVA de resistencia (punteada), se actualiza cada barra
+var line upLine = na
+bool _drawUpLive = showLines and enableUp and not onlySignalLines and not na(upLineStartPrice) and bar_index <= upLineEndBar
+if _drawUpLive
+    float _uy2 = upLineStartPrice + upLineSlope * (upLineEndBar - upLineStartBar)
+    if na(upLine)
+        upLine := line.new(upLineStartBar, upLineStartPrice, upLineEndBar, _uy2, color=color.new(color.red, 0), width=2, style=line.style_dashed)
+    else
+        line.set_xy1(upLine, upLineStartBar, upLineStartPrice)
+        line.set_xy2(upLine, upLineEndBar, _uy2)
+else
+    if not na(upLine)
+        line.delete(upLine)
+        upLine := na
 
 // =============================================================
-// REGLA 2 (DOWN) - Trendline ALCISTA (pivots LOWS ascendentes)
+// REGLA 2 (DOWN) - Trendline ALCISTA multi-punto (soporte, mínimos crecientes)
 // =============================================================
+// Doc: línea diagonal por debajo del precio conectando la mayor cantidad de mínimos
+// crecientes (higher lows). SOPORTE como borde inferior: ancla en el pivot MÁS BAJO y
+// se elige la pendiente que deja a TODOS los demás pivots por encima.
 pl = ta.pivotlow(low, pivotLen, pivotLen)
 
-var float prevLowDn = na
-var int   prevBarDn = na
-
-var float dnLineStartPrice = na
-var int   dnLineStartBar   = na
-var float dnLineSlope      = na
-var int   dnLineEndBar     = na
-
-var line  dnCurrentLine     = na
-var bool  dnCurrentHadSignal = false
-var array<line> dnVisualLines = array.new<line>()
+var array<float> plP = array.new<float>()
+var array<int>   plB = array.new<int>()
 
 if not na(pl)
-    clD = pl
-    cbD = bar_index - pivotLen
+    array.push(plP, pl)
+    array.push(plB, bar_index - pivotLen)
 
-    if not na(prevLowDn) and clD > prevLowDn
-        bdD = cbD - prevBarDn
-        slD = (clD - prevLowDn) / float(bdD)
-        fbD = cbD + maxBarsForward
-        fpD = clD + slD * maxBarsForward
+while array.size(plB) > 0 and array.get(plB, 0) < bar_index - trendlineLookback
+    array.shift(plP)
+    array.shift(plB)
 
-        dnLineStartPrice := prevLowDn
-        dnLineStartBar   := prevBarDn
-        dnLineSlope      := slD
-        dnLineEndBar     := fbD
+float dnLineStartPrice = na
+int   dnLineStartBar   = na
+float dnLineSlope      = na
+int   dnLineEndBar     = na
 
-        if showLines and enableDown
-            if not na(dnCurrentLine)
-                if dnCurrentHadSignal or not onlySignalLines
-                    array.push(dnVisualLines, dnCurrentLine)
-                    if array.size(dnVisualLines) > maxLinesKeep
-                        oldL = array.shift(dnVisualLines)
-                        line.delete(oldL)
-                else
-                    line.delete(dnCurrentLine)
+int _nD = array.size(plP)
+if _nD >= 2
+    int   _aiD   = 0
+    float _aminD = array.get(plP, 0)
+    for _i = 1 to _nD - 1
+        if array.get(plP, _i) < _aminD
+            _aminD := array.get(plP, _i)
+            _aiD   := _i
+    int   _aBarD   = array.get(plB, _aiD)
+    float _aPriceD = array.get(plP, _aiD)
+    float _bestD   = na
+    for _k = 0 to _nD - 1
+        int _dbD = array.get(plB, _k) - _aBarD
+        if _dbD > 0
+            float _rD = (array.get(plP, _k) - _aPriceD) / _dbD
+            if na(_bestD) or _rD < _bestD
+                _bestD := _rD
+    if not na(_bestD) and _bestD > 0
+        dnLineStartPrice := _aPriceD
+        dnLineStartBar   := _aBarD
+        dnLineSlope      := _bestD
+        dnLineEndBar     := array.get(plB, _nD - 1) + maxBarsForward
 
-            dnCurrentLine     := line.new(prevBarDn, prevLowDn, fbD, fpD,
-                 extend=extend.none, color=color.new(color.lime, 0),
-                 width=2, style=line.style_dashed)
-            dnCurrentHadSignal := false
-
-    prevLowDn := clD
-    prevBarDn := cbD
+// Línea VIVA de soporte (punteada), se actualiza cada barra
+var line dnLine = na
+bool _drawDnLive = showLines and enableDown and not onlySignalLines and not na(dnLineStartPrice) and bar_index <= dnLineEndBar
+if _drawDnLive
+    float _dy2 = dnLineStartPrice + dnLineSlope * (dnLineEndBar - dnLineStartBar)
+    if na(dnLine)
+        dnLine := line.new(dnLineStartBar, dnLineStartPrice, dnLineEndBar, _dy2, color=color.new(color.lime, 0), width=2, style=line.style_dashed)
+    else
+        line.set_xy1(dnLine, dnLineStartBar, dnLineStartPrice)
+        line.set_xy2(dnLine, dnLineEndBar, _dy2)
+else
+    if not na(dnLine)
+        line.delete(dnLine)
+        dnLine := na
 
 plotshape(showPivots and not na(ph), title="Pivot High",
      style=shape.circle, location=location.abovebar,
@@ -267,26 +303,27 @@ upTrendlineNow    = upTrendlineActive ? upLineStartPrice + upLineSlope * (bar_in
 dnTrendlineActive = not na(dnLineStartPrice) and not na(dnLineEndBar) and bar_index <= dnLineEndBar
 dnTrendlineNow    = dnTrendlineActive ? dnLineStartPrice + dnLineSlope * (bar_index - dnLineStartBar) : na
 
-ruleUp2 = upTrendlineActive
-ruleDn2 = dnTrendlineActive
+// =============================================================
+// REGLA 2 - Ruptura de la Línea de Tendencia (el precio ROMPE la trendline)
+//   Apertura (intraday OFF): el gap del OPEN cruza la trendline.
+//   Intradia (intraday ON):  el CIERRE cruza la trendline en cualquier vela.
+// =============================================================
+upCross = not na(upTrendlineNow) and not na(upTrendlineNow[1]) and close > upTrendlineNow and close[1] <= upTrendlineNow[1]
+dnCross = not na(dnTrendlineNow) and not na(dnTrendlineNow[1]) and close < dnTrendlineNow and close[1] >= dnTrendlineNow[1]
+ruleUp2 = intraday ? upCross : (upTrendlineActive and not na(upTrendlineNow) and open > upTrendlineNow)
+ruleDn2 = intraday ? dnCross : (dnTrendlineActive and not na(dnTrendlineNow) and open < dnTrendlineNow)
 
 // =============================================================
-// REGLA 3 - Gap en apertura que rompe midpoint Y trendline
+// REGLA 3 - Ruptura del Punto Medio del DÍA PREVIO (da mejor rendimiento que el basis)
 // =============================================================
-upGapBreaksMid  = not na(prevMidpoint) and open > prevMidpoint
-upGapBreaksLine = not na(upTrendlineNow) and open > upTrendlineNow
-ruleUp3 = isOpeningBar and upGapBreaksMid and upGapBreaksLine
-
-dnGapBreaksMid  = not na(prevMidpoint) and open < prevMidpoint
-dnGapBreaksLine = not na(dnTrendlineNow) and open < dnTrendlineNow
-ruleDn3 = isOpeningBar and dnGapBreaksMid and dnGapBreaksLine
+ruleUp3 = intraday ? (not na(prevMidpoint) and close > prevMidpoint) : (isOpeningBar and not na(prevMidpoint) and open > prevMidpoint)
+ruleDn3 = intraday ? (not na(prevMidpoint) and close < prevMidpoint) : (isOpeningBar and not na(prevMidpoint) and open < prevMidpoint)
 
 // =============================================================
-// REGLA 4 - Volatilidad en la apertura (compartida)
+// REGLA 4 - Apertura DENTRO de las Bandas de Bollinger (compartida)
 // =============================================================
-atr14   = ta.atr(14)
-barRng  = high - low
-rule4   = (not useVolFilter) or (barRng >= volMultATR * atr14)
+priceR4 = intraday ? close : open
+rule4   = (not na(upper)) and (not na(lower)) and priceR4 >= lower and priceR4 <= upper
 
 // =============================================================
 // SENAL COMPLETA por direccion
@@ -301,16 +338,38 @@ effDn2 = (not useRule2) or ruleDn2
 effDn3 = (not useRule3) or ruleDn3
 effDn4 = (not useRule4) or rule4
 
-fullSignalUp = enableUp   and effUp1 and effUp2 and effUp3 and effUp4
-fullSignalDn = enableDown and effDn1 and effDn2 and effDn3 and effDn4
+// Cooldown del modo intradia (evita clusters de senales seguidas).
+var int lastSigBarUp = na
+var int lastSigBarDn = na
+gateCdUp = (not intraday) or na(lastSigBarUp) or (bar_index - lastSigBarUp >= cooldownBars)
+gateCdDn = (not intraday) or na(lastSigBarDn) or (bar_index - lastSigBarDn >= cooldownBars)
+
+fullSignalUp = enableUp   and effUp1 and effUp2 and effUp3 and effUp4 and gateCdUp
+fullSignalDn = enableDown and effDn1 and effDn2 and effDn3 and effDn4 and gateCdDn
 
 breakoutUp = fullSignalUp and not fullSignalUp[1]
 breakoutDn = fullSignalDn and not fullSignalDn[1]
 
 if breakoutUp
-    upCurrentHadSignal := true
+    lastSigBarUp := bar_index
 if breakoutDn
-    dnCurrentHadSignal := true
+    lastSigBarDn := bar_index
+
+// Snapshot SÓLIDO de la trendline que disparó la señal (queda fija en el chart)
+var array<line> upFrozen = array.new<line>()
+var array<line> dnFrozen = array.new<line>()
+
+if breakoutUp and showLines and enableUp and not na(upLineStartPrice)
+    line _flU = line.new(upLineStartBar, upLineStartPrice, bar_index, upTrendlineNow, color=color.new(color.red, 0), width=2, style=line.style_solid)
+    array.push(upFrozen, _flU)
+    if array.size(upFrozen) > maxLinesKeep
+        line.delete(array.shift(upFrozen))
+
+if breakoutDn and showLines and enableDown and not na(dnLineStartPrice)
+    line _flD = line.new(dnLineStartBar, dnLineStartPrice, bar_index, dnTrendlineNow, color=color.new(color.lime, 0), width=2, style=line.style_solid)
+    array.push(dnFrozen, _flD)
+    if array.size(dnFrozen) > maxLinesKeep
+        line.delete(array.shift(dnFrozen))
 
 // =============================================================
 // CONTADORES por direccion

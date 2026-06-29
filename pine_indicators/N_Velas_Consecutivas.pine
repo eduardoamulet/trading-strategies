@@ -1,0 +1,164 @@
+//@version=5
+indicator("N Velas Consecutivas (Alcista / Bajista)", overlay=true, max_labels_count=500)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+grpMain = "Configuración"
+n         = input.int(5, "Cantidad de velas consecutivas (n)", minval=2, group=grpMain)
+showBull  = input.bool(true,  "Vela Alcista", group=grpMain, tooltip="Detectar y marcar rachas de N velas alcistas consecutivas (close > open).")
+showBear  = input.bool(false, "Vela Bajista", group=grpMain, tooltip="Detectar y marcar rachas de N velas bajistas consecutivas (close < open).")
+countDoji = input.bool(false, "Contar dojis como válidas", group=grpMain, tooltip="ON: cada doji dentro de una racha cuenta como una vela válida (alcista o bajista) → la racha llega más rápido a n. OFF: los dojis no cuentan pero TAMPOCO rompen la racha (pass-through). Ejemplo con n=5: si hay 7 velas seguidas y 2 son doji → ON dispara en la 5ª · OFF dispara en la 7ª.")
+sameDay   = input.bool(true,  "Todas las velas deben estar en el mismo día", group=grpMain, tooltip="Activado: el contador se resetea al inicio de cada día. Una racha que cruza medianoche NO cuenta como continua. Útil en charts intradía (1m / 5m / 1H). En charts diarios o superiores no tiene efecto (cada bar es un día).")
+
+grpSession   = "Horario de Mercado"
+useSession   = input.bool(true, "Solo contar velas en horario de mercado", group=grpSession, tooltip="ON: bares fuera del horario de sesión (pre-market, after-hours, fines de semana) NO cuentan y resetean el contador. Útil cuando 'Extended Hours' está activo en el chart. OFF: cuentan todas las velas que el chart muestre.")
+sessionHours = input.session("0930-1600", "Horario de sesión", group=grpSession, tooltip="Formato HHMM-HHMM. Default: 0930-1600 = Regular Trading Hours del mercado US.")
+sessionTz    = input.string("America/New_York", "Zona horaria", options=["America/New_York", "America/Chicago", "America/Los_Angeles", "Europe/London", "Europe/Berlin", "Asia/Tokyo", "Asia/Hong_Kong", "Australia/Sydney"], group=grpSession)
+
+grpStyle = "Estilo"
+markStyle    = input.string("Triángulo", "Forma de la marca", options=["Triángulo", "Flecha", "Etiqueta"], group=grpStyle)
+bullColor    = input.color(color.new(color.lime,  0), "Color marca Alcista", group=grpStyle)
+bearColor    = input.color(color.new(color.red,   0), "Color marca Bajista", group=grpStyle)
+labelSize    = input.string("normal", "Tamaño etiqueta/contador", options=["tiny", "small", "normal", "large", "huge"], group=grpStyle, tooltip="Aplica solo a modo Etiqueta y al contador opcional. Los triángulos/flechas tienen tamaño fijo (limitación de Pine v5).")
+showCounter  = input.bool(false, "Mostrar contador sobre cada vela",  group=grpStyle, tooltip="Imprime el número de velas consecutivas actuales sobre cada bar (útil para debug).")
+highlightSeq = input.bool(true,  "Pintar fondo durante la racha ≥ n", group=grpStyle)
+
+// ============================================================================
+// CLASIFICACIÓN DE VELAS — estricta + doji por separado
+// ============================================================================
+isBull = close > open
+isBear = close < open
+isDoji = close == open
+
+// ============================================================================
+// DETECCIÓN DE NUEVO DÍA (para resetear el contador en frontera diaria)
+// ============================================================================
+// time("1D") devuelve el timestamp de inicio del día actual. Cuando cambia,
+// estamos en el primer bar de un nuevo día. En charts diarios o superiores,
+// `applyDayReset` será siempre true → cada bar se trata como racha de 1 (sin
+// efecto real, porque ya cada bar es 1 día completo).
+isNewDay      = ta.change(time("1D")) != 0
+applyDayReset = sameDay and isNewDay
+
+// ============================================================================
+// DETECCIÓN DE HORARIO DE MERCADO
+// ============================================================================
+// time(timeframe.period, session, tz) devuelve NA si el bar está fuera del
+// horario indicado. `inSession` = true cuando estamos dentro del horario.
+inSession      = not na(time(timeframe.period, sessionHours, sessionTz))
+outsideSession = useSession and not inSession
+
+// ============================================================================
+// CONTADORES PERSISTENTES — racha bull/bear con doji pass-through
+// ============================================================================
+// Reglas (mismo espejo bull/bear):
+//   - Bear bar  → bull streak se resetea (0)
+//   - Bull bar  → bull streak +1 (o = 1 si nuevo día)
+//   - Doji bar  → si countDoji ON: cuenta como bull (+1) · si OFF: pass-through (no toca el contador)
+//   - Nuevo día + sameDay ON: cualquier bar reinicia (1 si extiende, 0 si no)
+extendBull = isBull or (isDoji and countDoji)
+extendBear = isBear or (isDoji and countDoji)
+
+var int streakBull = 0
+var int streakBear = 0
+
+// Si el bar está fuera del horario de mercado: streak = 0 (reseteo total).
+// Adentro de la sesión: aplican las reglas habituales bull/bear/doji.
+streakBull := outsideSession ? 0 :
+              isBear ? 0 :
+              extendBull ? (applyDayReset ? 1 : streakBull + 1) :
+              (applyDayReset ? 0 : streakBull)
+
+streakBear := outsideSession ? 0 :
+              isBull ? 0 :
+              extendBear ? (applyDayReset ? 1 : streakBear + 1) :
+              (applyDayReset ? 0 : streakBear)
+
+// ============================================================================
+// DETECCIÓN: fired = bar que completa exactamente n; matched = racha activa ≥ n
+// ============================================================================
+firedBull   = streakBull == n
+firedBear   = streakBear == n
+matchedBull = streakBull >= n
+matchedBear = streakBear >= n
+
+// Visibilidad de cada tipo controlada por su checkbox independiente
+signalBull = showBull and firedBull
+signalBear = showBear and firedBear
+
+inSeqBull = showBull and matchedBull
+inSeqBear = showBear and matchedBear
+
+// ============================================================================
+// TAMAÑO (solo para label.new — plotshape exige const string, no input)
+// ============================================================================
+labelSizeVal = labelSize == "tiny"   ? size.tiny :
+               labelSize == "small"  ? size.small :
+               labelSize == "normal" ? size.normal :
+               labelSize == "large"  ? size.large :
+               size.huge
+
+// ============================================================================
+// MARCAS — TRIÁNGULO (size.normal hardcoded)
+// ============================================================================
+plotshape(signalBull and markStyle == "Triángulo", title="N Alcistas",
+          style=shape.triangleup, location=location.belowbar,
+          color=bullColor, size=size.normal)
+
+plotshape(signalBear and markStyle == "Triángulo", title="N Bajistas",
+          style=shape.triangledown, location=location.abovebar,
+          color=bearColor, size=size.normal)
+
+// ============================================================================
+// MARCAS — FLECHA (size.normal hardcoded)
+// ============================================================================
+plotshape(signalBull and markStyle == "Flecha", title="N Alcistas (flecha)",
+          style=shape.arrowup, location=location.belowbar,
+          color=bullColor, size=size.normal)
+
+plotshape(signalBear and markStyle == "Flecha", title="N Bajistas (flecha)",
+          style=shape.arrowdown, location=location.abovebar,
+          color=bearColor, size=size.normal)
+
+// ============================================================================
+// MARCAS — ETIQUETA (texto rico, tamaño configurable)
+// ============================================================================
+if markStyle == "Etiqueta" and signalBull
+    label.new(bar_index, low,
+              text=str.tostring(n) + " alcistas",
+              style=label.style_label_up,
+              color=bullColor, textcolor=color.white, size=labelSizeVal)
+
+if markStyle == "Etiqueta" and signalBear
+    label.new(bar_index, high,
+              text=str.tostring(n) + " bajistas",
+              style=label.style_label_down,
+              color=bearColor, textcolor=color.white, size=labelSizeVal)
+
+// ============================================================================
+// CONTADOR EN CADA VELA (opcional, útil para debug)
+// ============================================================================
+if showCounter
+    if showBull and streakBull > 0
+        label.new(bar_index, low, text=str.tostring(streakBull),
+                  style=label.style_none, textcolor=bullColor, size=size.tiny,
+                  yloc=yloc.belowbar)
+    if showBear and streakBear > 0
+        label.new(bar_index, high, text=str.tostring(streakBear),
+                  style=label.style_none, textcolor=bearColor, size=size.tiny,
+                  yloc=yloc.abovebar)
+
+// ============================================================================
+// FONDO DURANTE LA RACHA ≥ n
+// ============================================================================
+bgcolor(highlightSeq and inSeqBull ? color.new(bullColor, 88) : na, title="Fondo racha Alcista")
+bgcolor(highlightSeq and inSeqBear ? color.new(bearColor, 88) : na, title="Fondo racha Bajista")
+
+// ============================================================================
+// ALERTAS
+// ============================================================================
+alertcondition(signalBull, title="N velas Alcistas consecutivas",
+               message="Racha de N velas ALCISTAS completada en {{ticker}} {{interval}} @ {{close}}")
+alertcondition(signalBear, title="N velas Bajistas consecutivas",
+               message="Racha de N velas BAJISTAS completada en {{ticker}} {{interval}} @ {{close}}")

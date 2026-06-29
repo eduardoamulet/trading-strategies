@@ -917,6 +917,7 @@ def run_next_iteration(
     exit_plus_time: Optional[time] = None,
     refuerzo_loss_threshold_pct: float = 0.50,
     refuerzo_max_count: int = 2,
+    apply_refuerzo: bool = False,
     selection_criterion: str = "itm",
     value_target: float = 2.0,
     dte: int = 0,
@@ -926,10 +927,15 @@ def run_next_iteration(
     exit_at_bid: bool = False,
     nbbo_timeline: bool = False,
     search_window_min: float = 0.0,
+    option_expiry: Optional[str] = None,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
-    engine. Use for manual mode (one iteration per UI click)."""
+    engine. Use for manual mode (one iteration per UI click).
+
+    `option_expiry`: vencimiento del contrato a usar. None = 0DTE (vence `date`). Con un
+    valor (Auto-DTE intradía) usa el contrato que vence en esa fecha, PERO la reproduce
+    INTRADÍA sobre `date` (entra y sale el mismo día, no la retiene a vencimiento)."""
     if premium_min >= premium_max:
         raise ValueError(f"premium_min ({premium_min}) must be < premium_max ({premium_max})")
     if premium_min < 0:
@@ -957,9 +963,10 @@ def run_next_iteration(
     if under_full.empty:
         raise ValueError(f"No underlying data for {ticker} on {date}")
 
-    chain = downloader.chain(ticker, date)
+    _exp = option_expiry or date   # 0DTE = vence `date`; Auto-DTE intradía = venc. más cercano
+    chain = downloader.chain(ticker, _exp)
     if chain.empty:
-        raise ValueError(f"Empty 0 DTE chain for {ticker} on {date}")
+        raise ValueError(f"Empty option chain for {ticker} expiring {_exp}")
 
     calls_chain = chain[chain["contract_type"].str.lower() == "call"].copy()
     puts_chain = chain[chain["contract_type"].str.lower() == "put"].copy()
@@ -996,6 +1003,7 @@ def run_next_iteration(
         exit_plus_time=exit_plus_time,
         refuerzo_loss_threshold_pct=refuerzo_loss_threshold_pct,
         refuerzo_max_count=refuerzo_max_count,
+        apply_refuerzo=apply_refuerzo,
         selection_criterion=selection_criterion,
         value_target=value_target,
         spread_cfg=spread_cfg,
@@ -1240,6 +1248,7 @@ def _run_one_iteration(
     exit_plus_time: Optional[time] = None,
     refuerzo_loss_threshold_pct: float = 0.50,
     refuerzo_max_count: int = 2,
+    apply_refuerzo: bool = False,
     selection_criterion: str = "itm",
     value_target: float = 2.0,
     spread_cfg: Optional[dict] = None,
@@ -1251,9 +1260,9 @@ def _run_one_iteration(
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
     # diluiría el ROI: ej. call_only con invest_put=10k haría ROI = pct_call / 2).
-    if mode == "call_only":
+    if mode in ("call_only", "call_only_eod"):
         invest_put = 0.0
-    elif mode == "put_only":
+    elif mode in ("put_only", "put_only_eod"):
         invest_call = 0.0
 
     if under_full[(under_full["timestamp"] >= start_ts)
@@ -1278,7 +1287,7 @@ def _run_one_iteration(
         _spot = float(_under.iloc[0]["open"])
         _calls = calls_chain.assign(_d=(calls_chain["strike_price"] - _spot).abs()).sort_values(["_d", "strike_price"])
         _puts = puts_chain.assign(_d=(puts_chain["strike_price"] - _spot).abs()).sort_values(["_d", "strike_price"])
-        if mode != "put_only":
+        if mode not in ("put_only", "put_only_eod"):
             _cp, _cprobes, _ctier = _probe_premium_range(
                 downloader, ticker, date, _calls, "C", probe_ts, end_ts,
                 premium_min, premium_max, max_strikes_to_probe, ext_min=ext_min, ext_max=ext_max,
@@ -1289,7 +1298,7 @@ def _run_one_iteration(
         else:
             _cp, _cprobes, _ctier, _dfc = (StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False),
                                            [], "", _empty_leg(_under))
-        if mode != "call_only":
+        if mode not in ("call_only", "call_only_eod"):
             _pp, _pprobes, _ptier = _probe_premium_range(
                 downloader, ticker, date, _puts, "P", probe_ts, end_ts,
                 premium_min, premium_max, max_strikes_to_probe, ext_min=ext_min, ext_max=ext_max,
@@ -1443,7 +1452,7 @@ def _run_one_iteration(
     put_exit_idx: Optional[int] = None
     call_exit_reason = ""
     put_exit_reason = ""
-    _refuerzo = None   # solo se llena en mode == "both_refuerzo" (martingala)
+    _refuerzo = None   # solo se llena en mode "both_refuerzo"/"both_refuerzo_eod" (martingala)
 
     def _first_pos(mask) -> Optional[int]:
         return int(mask.values.argmax()) if bool(mask.any()) else None
@@ -1470,6 +1479,13 @@ def _run_one_iteration(
             exit_reason = "session_end"
             call_exit_reason = put_exit_reason = "session_end"
             merged = merged.reset_index(drop=True)
+    elif mode in ("call_or_put_eod", "call_only_eod", "put_only_eod"):
+        # ----- *(End of Day): se compran la(s) pierna(s) requerida(s) y se venden al CIERRE del
+        # día. Sin +100%, sin Umbral de ROI, sin Stop loss: corren toda la sesión. En las variantes
+        # single-leg, la pierna no usada ya viene con inversión 0 y no se selecciona. -----
+        exit_reason = "session_end"
+        call_exit_reason = put_exit_reason = "session_end"
+        merged = merged.reset_index(drop=True)
     elif mode == "call_or_put_plus":
         # ----- CALL o PUT (plus): umbral de salida + recuperar inversión total -----
         # 1) La PRIMERA pierna (A) que alcanza `exit_plus_threshold_pct` se vende y
@@ -1537,15 +1553,20 @@ def _run_one_iteration(
         trigger_pos = None
         exit_reason = "session_end"
         merged = merged.reset_index(drop=True)
-    elif mode == "both_refuerzo":
+    elif mode in ("both_refuerzo", "both_refuerzo_eod") or (apply_refuerzo and mode in (
+            "call_only", "put_only", "both", "call_only_eod", "put_only_eod")):
         # ----- CALL y PUT (Refuerzo): MARTINGALA POR PIERNA del MISMO tipo. Cada pierna mira SU
         # propio ROI y, cuando cae a <= -refuerzo_loss_threshold_pct, compra MÁS de la MISMA
         # pierna (nunca la contraria). Sale por: ROI TOTAL >= Umbral de ROI (gana); ROI TOTAL
         # <= stop_loss_pct (stop sobre el TOTAL, no por pierna); o cierre. ROI/valor/invertido
-        # TOTAL por minuto quedan en merged (ref_roi/ref_value/ref_invested) para el display. ---
+        # TOTAL por minuto quedan en merged (ref_roi/ref_value/ref_invested) para el display.
+        # Variante "_eod" (End of Day): IGNORA el Umbral de ROI (profit_target enorme) → solo sale
+        # por stop sobre el TOTAL o al cierre del día. ---
+        _ref_profit = (1e9 if mode in ("both_refuerzo_eod", "call_only_eod", "put_only_eod")
+                       else exit_threshold_pct)
         _exi, exit_reason, _rroi, _rval, _rinv, _events = _simulate_refuerzo(
             merged["call_px"].values, merged["put_px"].values, call_entry, put_entry,
-            invest_call, invest_put, exit_threshold_pct, float(refuerzo_loss_threshold_pct),
+            invest_call, invest_put, _ref_profit, float(refuerzo_loss_threshold_pct),
             int(refuerzo_max_count), stop_thr=float(stop_loss_pct),
             call_buy_px=(_ask_c_ser.values if _ask_c_ser is not None else None),
             put_buy_px=(_ask_p_ser.values if _ask_p_ser is not None else None))

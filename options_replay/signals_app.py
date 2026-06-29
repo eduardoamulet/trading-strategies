@@ -84,7 +84,7 @@ def _opt_icon(v) -> str:
 
 # ── Importar ─────────────────────────────────────────────────────────────────
 with st.expander("📥 Importar señales", expanded=False):
-    t_eml, t_mail = st.tabs(["Subir email (.eml)", "Revisar correo (auto)"])
+    t_eml, t_mail, t_api = st.tabs(["Subir email (.eml)", "Revisar correo (auto)", "📡 API directa"])
     with t_eml:
         _files = st.file_uploader("Emails (.eml)", type=["eml"], accept_multiple_files=True,
                                   label_visibility="collapsed")
@@ -100,6 +100,20 @@ with st.expander("📥 Importar señales", expanded=False):
                 st.warning(str(e))
             except Exception as e:
                 st.error(f"Error IMAP: {e}")
+    with t_api:
+        st.caption("Baja directo de la API de Investep (signals/history). En `signals_secrets.py` poné "
+                   "`INVESTEP_USER` + `INVESTEP_PASSWORD` (recomendado: se loguea solo y refresca el "
+                   "token), o un `INVESTEP_TOKEN` temporal (Bearer, vence ~1h).")
+        _api_days = st.number_input("Días hacia atrás", min_value=1, max_value=90, value=7,
+                                    step=1, key="api_days_back")
+        if st.button("📡 Bajar de la API ahora"):
+            try:
+                _n = xs.fetch_from_api(days_back=int(_api_days), now_iso=_now())
+                st.success(f"Importadas {_n} señales nuevas de la API.")
+            except xs.ScraperNotConfigured as e:
+                st.warning(str(e))
+            except Exception as e:
+                st.error(f"Error API: {e}")
 
     st.divider()
     if st.button(f"🧹 Limpiar duplicados existentes ({db.count()} señales)",
@@ -126,11 +140,21 @@ sel_estr = f1.selectbox("Estrategia", ["(todas)"] + sorted(df["estrategia"].drop
 # símbolos que ya tienen señales (por si alguno no está en ticker_info). Así META/NVDA/
 # GOOG aparecen aunque todavía no tengan señales importadas.
 _sym_opts = sorted(set(_ticker_universe()) | set(df["symbol"].dropna().astype(str).tolist()))
-# Preselección por defecto = los líquidos (los que verificamos que operan limpio).
-_DEFAULT_SYMS = ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META", "MSFT", "GOOG", "AAPL"]
-sel_sym = f2.multiselect("Acción", _sym_opts,
-                         default=[s for s in _DEFAULT_SYMS if s in _sym_opts],
-                         placeholder="(todas)")
+# Preselección por defecto = tickers marcados como PREFERENCIALES en Configuración
+# (tabla ticker_prefs); si la base no está / vacía, cae a los 11 líquidos de siempre.
+try:
+    import ticker_prefs as _tp_pref
+    _DEFAULT_SYMS = _tp_pref.preferred_tickers()
+except Exception:
+    _DEFAULT_SYMS = []
+_DEFAULT_SYMS = _DEFAULT_SYMS or ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META", "MSFT", "GOOG", "AAPL"]
+# Re-sincroniza EN VIVO: si cambiás los preferenciales (Configuración), este multiselect se
+# re-siembra solo (solo cuando la lista cambia → no pisa tu filtro manual).
+_valid_pref = [s for s in _DEFAULT_SYMS if s in _sym_opts]
+if st.session_state.get("_pref_sig_acc") != tuple(_valid_pref):
+    st.session_state["_pref_sig_acc"] = tuple(_valid_pref)
+    st.session_state["sig_accion_ms"] = _valid_pref
+sel_sym = f2.multiselect("Acción", _sym_opts, key="sig_accion_ms", placeholder="(todas)")
 sel_est = f3.selectbox("Estado", ["(todos)"] + xs.ESTADOS)
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
 _fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
@@ -393,6 +417,7 @@ else:
              "tipo": str(r["tipo"]), "prob": r.get("probabilidad"),
              "estrategia": str(r.get("estrategia") or "")} for _, r in _sel_df.iterrows()]
         st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
+        st.session_state["bt_sidebar_collapse"] = True   # llegar a Backtesting con la sidebar contraída
         st.switch_page("options_replay/app.py")
     if _b2.button(f"🟢 Operar {len(_sel_rows)} (paper)  →  Live", use_container_width=True,
                   help="Abre 1 posición por alerta en el sandbox (paper, NO dinero real). El "

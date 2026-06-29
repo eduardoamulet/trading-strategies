@@ -118,12 +118,15 @@ def top_user_menu(user, perfil_page=None) -> None:
     # estire a todo el ancho (Streamlit le pone width:100% al contenedor por defecto).
     st.markdown(
         "<style>"
-        "div[data-testid='stPopover']{position:fixed !important; top:6px; right:16px;"
-        " left:auto !important; width:auto !important; min-width:0 !important;"
+        ".st-key-ccd_user_menu{position:absolute !important; height:0 !important;"
+        " width:0 !important; margin:0 !important; padding:0 !important;}"
+        ".st-key-ccd_user_menu div[data-testid='stPopover']{position:fixed !important; top:6px;"
+        " right:16px; left:auto !important; width:auto !important; min-width:0 !important;"
         " z-index:9999999 !important;}"
-        "div[data-testid='stPopover'] > button{width:auto !important;}"
+        ".st-key-ccd_user_menu div[data-testid='stPopover'] > button{width:auto !important;}"
         "</style>", unsafe_allow_html=True)
-    with st.popover(f"👤 {_initials(user)}"):
+    _menu_box = st.container(key="ccd_user_menu")
+    with _menu_box.popover(f"👤 {_initials(user)}"):
         st.markdown(
             f"**{user.get('nombre') or user['email']}**  \n"
             f"<span style='color:#888;font-size:12px'>{user['email']} · "

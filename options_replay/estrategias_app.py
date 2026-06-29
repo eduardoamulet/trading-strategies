@@ -28,6 +28,41 @@ ESTRATEGIAS = [
     ("Efecto Imán", "magnet-effect",
      "Atracción del precio hacia un nivel/medida de referencia."),
 ]
+# Estrategias de BACKTESTING de SignalForge (modos del motor — los de «Estrategia / Tipo de operación»).
+ESTRATEGIAS_SF = [
+    ("CALL y PUT",
+     "Se compran ambas piernas (50/50) y la salida es combinada por ROI total (Umbral de ROI / Stop "
+     "loss sobre la suma de las dos). Termina al umbral, al stop o al cierre del día."),
+    ("CALL y PUT (Refuerzo)",
+     "Martingala por pierna. Igual que CALL y PUT (50/50): cada pierna mira su propio ROI y, cuando cae "
+     "a ≤ −Umbral de pérdida refuerzo (%), se refuerza la pierna que más pierde comprando más de ESA "
+     "misma pierna (mismo tipo, nunca la contraria) con su inversión inicial. Termina cuando el ROI "
+     "total (ambas piernas) alcanza el Umbral de ROI (%) (gana) o cae al −Stop loss (%) (corta — stop "
+     "sobre el TOTAL, no por pierna), o al cierre del día."),
+    ("CALL y PUT (plus)",
+     "Se compran ambas piernas (50/50) y se venden las dos solo en el Horario de salida (sin Umbral de "
+     "ROI ni Stop loss). Termina al horario o al cierre del día."),
+    ("Sólo CALL",
+     "Una sola pierna (100% CALL). Sale por su Umbral de ROI o su Stop loss. Termina al umbral, al stop "
+     "o al cierre del día."),
+    ("Sólo PUT",
+     "Una sola pierna (100% PUT). Sale por su Umbral de ROI o su Stop loss. Termina al umbral, al stop "
+     "o al cierre del día."),
+    ("CALL o PUT",
+     "Se compran ambas piernas y se venden las dos en cuanto cualquiera alcanza +100% (se duplica). No "
+     "depende de Umbral de ROI ni Stop loss. Termina al +100% o al cierre del día."),
+    ("CALL o PUT (plus)",
+     "Se compran ambas piernas. La 1ª pierna que alcanza el Umbral de salida (%) se vende; la otra se "
+     "vende cuando, entre lo bancado y su valor, se recupera la inversión total. Termina ahí o al "
+     "cierre del día."),
+    ("CALL o PUT (End of Day)",
+     "Se compran ambas piernas (50/50) y se venden las dos al cierre del día. No depende de Umbral de "
+     "ROI ni Stop loss."),
+    ("Sólo CALL (End of Day)",
+     "Una sola pierna (100% CALL) que se vende al cierre del día. No depende de Umbral de ROI ni Stop loss."),
+    ("Sólo PUT (End of Day)",
+     "Una sola pierna (100% PUT) que se vende al cierre del día. No depende de Umbral de ROI ni Stop loss."),
+]
 CRITERIOS = {
     "trend-reversal": ["Tendencia Previa (+2 días)", "Ruptura Línea de Tendencia y MM20H",
                        "Tendencia B15m", "Integridad MM"],
@@ -45,19 +80,22 @@ st.title("🎯 Estrategias")
 st.markdown("#### Filtros")
 q = st.text_input("🔍 Buscar por nombre de estrategia", "", label_visibility="collapsed").strip().lower()
 items = [e for e in ESTRATEGIAS if q in e[0].lower()] if q else ESTRATEGIAS
+items_sf = [e for e in ESTRATEGIAS_SF if q in e[0].lower()] if q else ESTRATEGIAS_SF
 
 
-@st.dialog("Detalle de la estrategia")
+@st.dialog("Detalle de la estrategia", width="large")
 def _detalle(nombre, clave, desc):
-    st.subheader(nombre)
-    st.caption(f"`{clave}`")
-    st.write(desc)
-    if clave in CRITERIOS:
-        st.markdown("**Criterios de la estrategia:**")
-        for c in CRITERIOS[clave]:
-            st.markdown(f"- {c}")
-    if len(sig):
-        s = sig[sig["estrategia"] == nombre]
+    _izq, _der = st.columns([1, 1.4])
+    with _izq:
+        st.subheader(nombre)
+        st.caption(f"`{clave}`")
+        st.write(desc)
+        if clave in CRITERIOS:
+            st.markdown("**Criterios de la estrategia:**")
+            for c in CRITERIOS[clave]:
+                st.markdown(f"- {c}")
+    with _der:
+        s = sig[sig["estrategia"] == nombre] if len(sig) else pd.DataFrame()
         if len(s):
             st.markdown(f"**Señales de esta estrategia ({len(s)}):**")
             st.dataframe(
@@ -67,6 +105,9 @@ def _detalle(nombre, clave, desc):
             st.info("Sin señales registradas de esta estrategia.")
 
 
+st.subheader("🏛️ Estrategias Investep Academy")
+if not items:
+    st.caption("Ninguna estrategia coincide con la búsqueda.")
 for row in range(0, len(items), 3):
     cols = st.columns(3)
     for j, (nombre, clave, desc) in enumerate(items[row:row + 3]):
@@ -86,3 +127,17 @@ for row in range(0, len(items), 3):
                     st.caption("✅ Cumpliendo: " + ", ".join(cumpliendo))
                 else:
                     st.caption("No hay acciones cumpliendo actualmente")
+
+st.divider()
+st.subheader("⚙️ Estrategias SignalForge")
+st.caption("Modos de operación del motor de backtesting — los que elegís en «Estrategia» (antes «Tipo "
+           "de operación») del backtest manual y de señales.")
+if not items_sf:
+    st.caption("Ninguna estrategia coincide con la búsqueda.")
+for _row in range(0, len(items_sf), 2):
+    _cols = st.columns(2)
+    for _j, (_nombre, _desc) in enumerate(items_sf[_row:_row + 2]):
+        with _cols[_j]:
+            with st.container(border=True):
+                st.markdown(f"**{_nombre}**")
+                st.caption(_desc)
