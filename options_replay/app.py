@@ -2636,7 +2636,11 @@ if _batch_pending:
     # lanzado dentro de Streamlit. Combinado con el cache de parquets del Downloader → speedup real.
     _bp_tmp = None
     try:
-        _bp_tmp = Path(_tempfile.mkdtemp(prefix="sf_batch_"))
+        # Carpeta temporal LOCAL al proyecto. En AppData\Temp daba [WinError 5] Access denied al lanzar
+        # el subproceso (permisos/antivirus sobre %TEMP%) → la ponemos junto a los datos del proyecto.
+        _bp_tmp = Path(_bp_dl.data_dir) / ".batch_tmp"
+        _shutil.rmtree(_bp_tmp, ignore_errors=True)
+        _bp_tmp.mkdir(parents=True, exist_ok=True)
         _req_f, _res_f, _prog_f = _bp_tmp / "req.pkl", _bp_tmp / "res.json", _bp_tmp / "prog.json"
         with open(_req_f, "wb") as _f:
             _pickle.dump({"configs": _batch_pending["configs"], "tickers": _batch_pending["tickers"],
@@ -2668,7 +2672,9 @@ if _batch_pending:
         else:
             raise RuntimeError(f"subproceso terminó con código {_proc.returncode}")
     except Exception as _se:   # noqa: BLE001 — cualquier falla del multiproceso → hilos (más lento pero seguro)
-        st.caption(f"⚙️ Multiproceso no disponible ({_se}); usando hilos…")
+        st.warning(f"⚙️ Multiproceso no disponible ({type(_se).__name__}: {_se}) → corriendo con **hilos** "
+                   f"(más lento; OK para lotes chicos). Para lotes grandes conviene el runner de terminal: "
+                   f"`python options_replay/run_batch.py` (ver consola).  [python: {_sys.executable}]")
         _bp_res = brunner.run_batch(
             _bp_dl, _batch_pending["configs"], _batch_pending["tickers"], _batch_pending["dates"],
             _batch_pending["tipo"], progress_cb=lambda d, t: _bp_cb(d, t, _p="hilos"),

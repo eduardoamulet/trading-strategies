@@ -282,12 +282,17 @@ def run_batch_parallel(data_dir, api_key, configs: list, tickers: list, dates: l
     dates = [str(d).strip() for d in dates]
     if not processes:
         processes = auto_processes()
-    tasks = [(m, d, tickers, tipo) for m in mapped for d in dates]
+    # Orden por FECHA (no por config): así las tareas de la MISMA fecha quedan contiguas y, con un
+    # chunksize ≈ nº de configs, cada proceso procesa una fecha completa → el cache de parquets del
+    # Downloader (por-proceso) rinde (1 lectura fría + el resto en caliente). Sin esto, en multiproceso
+    # cada tarea cae en una fecha distinta y el cache no sirve.
+    tasks = [(m, d, tickers, tipo) for d in dates for m in mapped]
     processes = max(1, min(processes, len(tasks)))
+    _chunk = max(1, min(len(mapped), 200))
     total_bt = len(tasks) * max(1, len(tickers))
     out, done = [], 0
     with mp.Pool(processes=processes, initializer=_mp_init, initargs=(str(data_dir), api_key)) as pool:
-        for rows in pool.imap_unordered(_mp_run_config_date, tasks):
+        for rows in pool.imap_unordered(_mp_run_config_date, tasks, chunksize=_chunk):
             out.extend(rows)
             done += len(tickers)
             if progress_cb:
