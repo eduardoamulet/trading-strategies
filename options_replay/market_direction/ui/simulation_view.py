@@ -11,6 +11,20 @@ import json
 
 ACTION_COLOR = {"CALL": "#16a34a", "PUT": "#dc2626", "NO TRADE": "#9ca3af"}
 
+
+def _heat_color(action: str, confidence) -> str:
+    """Color de celda en modo HEATMAP: verde (CALL) / rojo (PUT) con la LIGHTNESS según la confianza
+    (más confianza → más oscuro), gris para NO TRADE. Confianza 0.4 → claro · 1.0 → oscuro."""
+    if action == "CALL":
+        hue, sat = 142, 62
+    elif action == "PUT":
+        hue, sat = 2, 68
+    else:
+        return "#6b7280"   # NO TRADE — gris fijo
+    c = max(0.0, min(1.0, float(confidence or 0.0)))
+    t = max(0.0, min(1.0, (c - 0.4) / 0.6))
+    return f"hsl({hue}, {sat}%, {72 - 47 * t:.0f}%)"
+
 # CSS/JS constantes (no f-string → sin escapar llaves). El JSON de datos se injecta por replace.
 _MATRIX_CSS = """
 <style>
@@ -87,8 +101,9 @@ _MATRIX_JS = """
 """
 
 
-def build_matrix_html(sim: dict) -> tuple[str, int]:
-    """Devuelve (html, alto_px) de la matriz Activo×minuto (solo color + tooltip en hover)."""
+def build_matrix_html(sim: dict, *, heatmap: bool = False) -> tuple[str, int]:
+    """Devuelve (html, alto_px) de la matriz Activo×minuto (color + tooltip en hover). `heatmap=True`
+    → la intensidad del color refleja la confianza (mapa de calor); si no, color plano por acción."""
     minutes = sim.get("minutes", [])
     tickers = sim.get("tickers", [])
     results = sim.get("results", {})
@@ -113,8 +128,10 @@ def build_matrix_html(sim: dict) -> tuple[str, int]:
     for tk in tickers:
         cells = ""
         for mn in minutes:
-            act = results.get(tk, {}).get(mn, {}).get("action", "NO TRADE")
-            color = ACTION_COLOR.get(act, "#9ca3af")
+            _sig = results.get(tk, {}).get(mn, {})
+            act = _sig.get("action", "NO TRADE")
+            color = (_heat_color(act, _sig.get("confidence")) if heatmap
+                     else ACTION_COLOR.get(act, "#9ca3af"))
             cells += f'<td class="simx-c" style="background:{color}" data-tk="{tk}" data-mn="{mn}"></td>'
         body_rows += f'<tr><th class="simx-tk">{tk}</th>{cells}</tr>'
 
@@ -128,13 +145,28 @@ def build_matrix_html(sim: dict) -> tuple[str, int]:
     return html, height
 
 
-def legend_html() -> str:
-    """Leyenda 🟢 CALL · 🔴 PUT · ⚪ NO TRADE."""
+def legend_html(heatmap: bool = False) -> str:
+    """Leyenda. Plano: 🟢 CALL · 🔴 PUT · ⚪ NO TRADE. Heatmap: barras de gradiente (claro→oscuro =
+    confianza) para CALL y PUT + gris NO TRADE."""
+    if not heatmap:
+        return (
+            '<div style="display:flex;gap:16px;align-items:center;font-size:13px;margin:2px 0 6px 0;">'
+            '<span><span style="color:#16a34a;font-size:15px;">■</span> CALL</span>'
+            '<span><span style="color:#dc2626;font-size:15px;">■</span> PUT</span>'
+            '<span><span style="color:#9ca3af;font-size:15px;">■</span> NO TRADE</span>'
+            '</div>'
+        )
+    _bar = ("display:inline-block;width:96px;height:13px;border-radius:3px;"
+            "vertical-align:middle;border:1px solid #33384a;")
+    _green = "linear-gradient(to right, hsl(142,62%,72%), hsl(142,62%,25%))"
+    _red = "linear-gradient(to right, hsl(2,68%,72%), hsl(2,68%,25%))"
     return (
-        '<div style="display:flex;gap:16px;align-items:center;font-size:13px;margin:2px 0 6px 0;">'
-        '<span><span style="color:#16a34a;font-size:15px;">■</span> CALL</span>'
-        '<span><span style="color:#dc2626;font-size:15px;">■</span> PUT</span>'
+        '<div style="display:flex;gap:18px;align-items:center;font-size:12px;margin:2px 0 6px 0;'
+        'flex-wrap:wrap;">'
+        f'<span>CALL <span style="{_bar}background:{_green};"></span></span>'
+        f'<span>PUT <span style="{_bar}background:{_red};"></span></span>'
         '<span><span style="color:#9ca3af;font-size:15px;">■</span> NO TRADE</span>'
+        '<span style="color:#8b93a7;">← claro ≈60% · oscuro ≈100% (confianza)</span>'
         '</div>'
     )
 

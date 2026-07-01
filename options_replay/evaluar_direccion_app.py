@@ -204,8 +204,12 @@ with st.expander("🎬 Simulación Intradía", expanded=bool(st.session_state.ge
                     st.session_state["sim_pick_mn"] = _qmn
             except Exception:
                 pass
-        st.markdown(_msv.legend_html(), unsafe_allow_html=True)
-        _mx_html, _mx_h = _msv.build_matrix_html(_sim)
+        _heat = st.toggle("🔥 Heatmap — la intensidad del color refleja la **confianza** de la señal",
+                          key="sim_heatmap",
+                          help="Verde/rojo más OSCURO = mayor confianza (CALL/PUT); gris = NO TRADE. "
+                               "Convierte la matriz en un mapa de calor de la calidad de las señales.")
+        st.markdown(_msv.legend_html(heatmap=_heat), unsafe_allow_html=True)
+        _mx_html, _mx_h = _msv.build_matrix_html(_sim, heatmap=_heat)
         _components.html(_mx_html, height=_mx_h)
 
         # Inspección de una celda → el MISMO gráfico de Backtesting + panel lateral con el TradeSignal.
