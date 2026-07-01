@@ -240,3 +240,68 @@ with st.expander("3 · Tickers preferenciales y vencimiento más temprano por d�
             st.rerun()
         except Exception as _e:
             st.error(f"No se pudo recalcular: {_e}")
+
+
+# ═══════ 4) Tickers que vencen ese mismo día de la semana ═══════
+with st.expander("4 · Tickers que vencen ese mismo día de la semana", expanded=False):
+    st.caption("Para cada día de la semana, los tickers con **vencimiento 0DTE** ese día — derivado de "
+               "la base de §3 («mismo día» = vence ese día). Si está vacío o desactualizado, tocá "
+               "**🔄 Recalcular vencimientos** en §3 (arriba).")
+    _tp.seed()
+    _pref4 = _tp.load()
+    _dias4 = [("Lun", "exp_lun"), ("Mar", "exp_mar"), ("Mié", "exp_mie"),
+              ("Jue", "exp_jue"), ("Vie", "exp_vie")]
+    if _pref4.empty:
+        st.info("No hay tickers en la base.")
+    else:
+        # Un ticker vence el día W ⟺ entrando ese día su vencimiento más cercano es el MISMO día (0DTE).
+        _buck4 = {lbl: _pref4.loc[_pref4[col] == "mismo día", "ticker"].tolist() for lbl, col in _dias4}
+        _maxn4 = max((len(v) for v in _buck4.values()), default=0)
+        if _maxn4 == 0:
+            st.warning("Ningún ticker tiene vencimientos calculados todavía. Tocá "
+                       "**🔄 Recalcular vencimientos** en §3.")
+        else:
+            # 5 columnas (Lun–Vie); cada columna lista los tickers que vencen ese día (relleno parejo).
+            _tbl4 = pd.DataFrame({lbl: _buck4[lbl] + [""] * (_maxn4 - len(_buck4[lbl]))
+                                  for lbl, _ in _dias4})
+            st.dataframe(_tbl4, hide_index=True, use_container_width=True,
+                         height=min(38 + 35 * _maxn4, 560))
+            st.caption("Cuántos vencen cada día: "
+                       + " · ".join(f"**{lbl}** {len(_buck4[lbl])}" for lbl, _ in _dias4)
+                       + f"  ·  ({len(_pref4)} tickers en la base)")
+
+# ═══════ 5) Universo 0DTE — gran movimiento vs vencimiento ═══════
+with st.expander("5 · Universo 0DTE — gran movimiento vs vencimiento", expanded=False):
+    st.caption("Los activos operables clasificados por **gran movimiento** (rango medio intradía) y "
+               "**disponibilidad de 0DTE**. El 0DTE **diario** existe solo en índices "
+               "(SPX/SPY/QQQ/IWM/DIA); acciones y ETFs no-core = **solo viernes**. Objetivo: cazar "
+               "grandes movimientos que valoricen el contrato del día — pero el edge está en la "
+               "**dirección**, no en la volatilidad (que ya está en la prima).")
+    try:
+        from market_direction.ui.universe_view import build_verdict_df
+        from market_direction.data.universe_scan import scan_universe, save_scan, load_scan
+        from market_direction.domain import ticker_profile as _tpr
+
+        _SCAN_PATH = HERE / "data" / "market_direction" / "universe_metrics.json"
+        _scan = load_scan(_SCAN_PATH)
+        if _scan and _scan.get("_as_of"):
+            st.caption(f"📊 Medición fresca: **{_scan['_as_of']}** (~{_scan.get('_days', 60)} días).")
+        else:
+            st.caption("📊 Mostrando el **snapshot base** (jun-2026). Tocá **Actualizar** para recalcular "
+                       "con datos frescos del cache.")
+
+        st.dataframe(build_verdict_df(_scan), hide_index=True, use_container_width=True, height=560)
+        st.caption("**Movimiento:** ✓✓✓ ≥4% · ✓✓ 2.8–4% · ✓ 1.8–2.8% · ~ 1.2–1.8% · ✗ <1.2% "
+                   "(SPY ≈ 1%/día). ⚠️ **Earnings:** evitá 0DTE de acciones en su semana de reporte "
+                   "(IV inflada → puede perder aunque acierte el movimiento).")
+
+        if st.button("🔄 Actualizar volatilidad (~30 s)", key="scan_universe_btn"):
+            from datetime import datetime as _dt
+            with st.spinner("Midiendo volatilidad de los activos con datos frescos del cache…"):
+                _m = scan_universe(HERE / "data" / "underlying", list(_tpr.PROFILES.keys()),
+                                   days=60, as_of=_dt.now().strftime("%Y-%m-%d %H:%M"))
+                save_scan(_m, _SCAN_PATH)
+            st.success(f"✅ Actualizado — {len(_m.get('metrics', {}))} activos medidos.")
+            st.rerun()
+    except Exception as _e:
+        st.error(f"No se pudo cargar el universo: {_e}")

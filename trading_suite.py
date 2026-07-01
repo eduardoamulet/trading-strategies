@@ -74,6 +74,9 @@ estrategias = st.Page("options_replay/estrategias_app.py", title="Estrategias", 
                       url_path="estrategias")
 activos = st.Page("options_replay/activos_app.py", title="Activos", icon="📈",
                   url_path="activos")
+evaluar_direccion = st.Page("options_replay/evaluar_direccion_app.py",
+                            title="Evaluar dirección del mercado", icon="🧭",
+                            url_path="evaluar_direccion")
 perfil = st.Page("options_replay/perfil_app.py", title="Perfil", icon="👤", url_path="perfil")
 ayuda = st.Page("options_replay/ayuda_app.py", title="Ayuda", icon="❓", url_path="ayuda")
 backtesting = st.Page("options_replay/app.py", title="Backtesting", icon="🔬",
@@ -92,7 +95,7 @@ usuarios = st.Page("options_replay/usuarios_app.py", title="Usuarios", icon="�
 
 # ── 3) Navegación según rol ──────────────────────────────────────────────────
 nav = {
-    "Menú": [dashboard, estrategias, activos, perfil, ayuda],
+    "Menú": [dashboard, estrategias, activos, evaluar_direccion, perfil, ayuda],
     "Alertas": [alertas, trading_view],
     "Herramientas": [backtesting, live, registro, datos, tareas, configuracion],
 }

@@ -32,7 +32,6 @@ from predictor import (  # noqa: E402
 )
 import signals_backtest as sbt  # noqa: E402
 from portfolio_exit import apply_collective_exit  # noqa: E402
-import batch_runner as brunner  # noqa: E402   # batch desde Excel (modo «Cargar backtesting file»)
 
 DATA_DIR = HERE / "data"
 TICKER_INFO_PATH = HERE / "ticker_info.json"
@@ -1447,17 +1446,37 @@ def _render_iters_panel(_iters_seed):
     # ───────────────────────── CONDICIONES DE SALIDA ─────────────────────────
     with st.container(border=True):
         st.markdown("<h5 style='text-align:center;'>🚪 CONDICIONES DE SALIDA</h5>", unsafe_allow_html=True)
-        _section_rule("🎯 Condiciones para tickers")
+        # Default dinámico según el nº de tickers en DATOS DE ITERACIÓN: con 1 solo ticker el
+        # colectivo es redundante (la cartera ES ese ticker) → «solo a tickers»; con varios →
+        # «a tickers y colectivo». Se re-aplica al cambiar el nº de tickers, sin pisar un cambio
+        # manual mientras ese nº no cambie.
+        _n_tk = len({s["ticker"] for s in _specs}) if _specs else 0
+        _alcance_opts = ["Aplicar a tickers y colectivo", "Aplicar solo a tickers", "Aplicar solo a colectivo"]
+        if st.session_state.get("_sig_alcance_ntk") != _n_tk:
+            st.session_state["sig_alcance"] = "Aplicar solo a tickers" if _n_tk == 1 else "Aplicar a tickers y colectivo"
+            st.session_state["_sig_alcance_ntk"] = _n_tk
+        _alcance = st.radio(
+            "Alcance de salida", options=_alcance_opts, horizontal=True, key="sig_alcance",
+            help="Qué condiciones de salida se APLICAN y se VALIDAN:\n\n"
+                 "• **a tickers y colectivo**: ambas secciones activas.\n\n"
+                 "• **solo a tickers**: el colectivo se deshabilita y se ignora.\n\n"
+                 "• **solo a colectivo**: las condiciones por ticker se deshabilitan y se ignoran.\n\n"
+                 "_Default automático: «solo a tickers» con 1 ticker (el colectivo no aplica); "
+                 "«a tickers y colectivo» con varios. Podés cambiarlo a mano._")
+        _tk_on = _alcance != "Aplicar solo a colectivo"
+        _col_on = _alcance != "Aplicar solo a tickers"
+        _section_rule("🎯 Aplicar condiciones para tickers")
         # ── Salida POR TICKER (umbral ROI / stop loss) — cada una con su checkbox que la activa ──
         _so1, _so2 = st.columns(2)
         with _so1:
             _sig_apply_umb = st.checkbox(
                 "Cerrar si cumple Umbral ROI (%) del ticker", value=True, key="sig_apply_umb",
+                disabled=not _tk_on,
                 help="Si está activo, cada iteración/pierna cierra en GANANCIA al tocar el Umbral ROI de "
                      "abajo. Si NO, no hay salida por ganancia (corre hasta stop / cierre / otra condición).")
             _sig_umb = float(st.number_input(
                 "Umbral ROI (%) del ticker", value=15.0, step=5.0, key="sig_umb",
-                disabled=not _sig_apply_umb,
+                disabled=not _sig_apply_umb or not _tk_on,
                 help="ROI(%) al que CADA iteración/pierna cierra en GANANCIA (por contrato del ticker, no la "
                      "cartera). Ej: 15 = vende al +15%."))
             if not _sig_apply_umb:
@@ -1465,13 +1484,14 @@ def _render_iters_panel(_iters_seed):
         with _so2:
             _sig_apply_stop = st.checkbox(
                 "Cerrar si cumple Stop loss (%) del ticker", value=True, key="sig_apply_stop",
+                disabled=not _tk_on,
                 help="Si está activo, cada iteración/pierna CORTA la pérdida al tocar el Stop loss de "
                      "abajo. Si NO, no hay stop (aguanta hasta cierre / otra condición).")
             if float(st.session_state.get("sig_stop", -80.0)) > 0:   # el stop SIEMPRE es ≤ 0
                 st.session_state["sig_stop"] = -abs(float(st.session_state["sig_stop"]))
             _sig_stop = float(st.number_input(
                 "Stop loss (%) del ticker", value=-80.0, step=10.0, key="sig_stop",
-                max_value=0.0, disabled=not _sig_apply_stop,
+                max_value=0.0, disabled=not _sig_apply_stop or not _tk_on,
                 help="ROI(%) NEGATIVO (≤ 0; el campo no acepta positivos) al que CADA iteración/pierna CORTA "
                      "la pérdida (por contrato del ticker). Ej: −80 = corta al perder 80%; −100 = sin stop efectivo."))
             if not _sig_apply_stop:
@@ -1482,7 +1502,7 @@ def _render_iters_panel(_iters_seed):
             _sig_conf_mode = st.radio(
                 "Filtro de confirmación de la 1ª vela",
                 options=["No filtrar", "Dar vuelta (flip) si va en contra", "Cerrar si va en contra"],
-                index=1, key="sig_conf_mode",
+                index=1, key="sig_conf_mode", disabled=not _tk_on,
                 help="A los 15 min de la entrada, si la 1ª vela de 15m DESDE la hora de entrada (cualquiera, NO "
                      "solo las 9:30) cerró EN CONTRA de la señal:\n\n"
                      "• **No filtrar**: no hace nada (corre hasta su salida normal / cierre).\n\n"
@@ -1520,23 +1540,29 @@ def _render_iters_panel(_iters_seed):
                          "movimiento adverso SUPERA el umbral; dentro de ±umbral (ruido tipo −0.01%) corta, no "
                          "invierte. 0 = comportamiento original (flipea con cualquier negativo). Típico ≤0.10; "
                          "subilo para exigir velas adversas más grandes antes de flipear."))
-        _section_rule("🌐 Condiciones para colectivo")
+        if not _tk_on:   # «solo colectivo»: las condiciones por ticker NO se aplican ni validan
+            _sig_umb, _sig_stop = 100000.0, -100000.0
+            _sig_confirm = _sig_flip = False
+            _sig_min_body = 0.0
+        _section_rule("🌐 Aplicar condiciones para colectivo")
         _cc1, _cc2 = st.columns(2)
         with _cc1:
             _sig_coll = st.checkbox(
                 "Cerrar si cumple Umbral de ROI colectivo (%)", value=True, key="sig_coll_exit",
+                disabled=not _col_on,
                 help="Salida A NIVEL CARTERA: dentro de cada día, cuando el ROI de CARTERA de las posiciones "
                      "abiertas (ganancia $ ÷ invertido $ = el TOTAL en pantalla) alcanza el umbral, vende TODAS "
                      "de golpe (motivo «ROI colectivo»). Las que ya salieron por su umbral/stop no cuentan "
                      "después. Puede dispararse varias veces por día si entran nuevas señales.")
             _sig_coll_thr = float(st.number_input(
                 "Umbral de ROI colectivo (%)", value=5.0, step=1.0, key="sig_coll_thr",
-                disabled=not _sig_coll,
+                disabled=not _sig_coll or not _col_on,
                 help="Cuando el ROI de CARTERA de las posiciones abiertas (ganancia ÷ invertido = el TOTAL) "
                      "≥ este valor, se cierran TODAS en ese minuto, con motivo «ROI colectivo»."))
         with _cc2:
             _sig_coll_stop = st.checkbox(
                 "Cerrar si cumple Stop loss (%) del colectivo", value=False, key="sig_coll_stop",
+                disabled=not _col_on,
                 help="STOP A NIVEL CARTERA — solo con >1 TICKER abierto: cuando el ROI de CARTERA de las "
                      "posiciones abiertas cae a ≤ «Stop loss (%) de colectivo» (la pérdida llega a ese %), "
                      "vende TODAS de golpe (motivo «Stop colectivo»). Con un solo ticker abierto NO aplica "
@@ -1546,7 +1572,7 @@ def _render_iters_panel(_iters_seed):
                 st.session_state["sig_coll_stop_thr"] = -abs(float(st.session_state["sig_coll_stop_thr"]))
             _sig_coll_stop_thr = float(st.number_input(
                 "Stop loss (%) de colectivo", value=-80.0, step=5.0, key="sig_coll_stop_thr",
-                max_value=0.0, disabled=not _sig_coll_stop,
+                max_value=0.0, disabled=not _sig_coll_stop or not _col_on,
                 help="ROI(%) NEGATIVO de CARTERA (≤ 0; el campo no acepta positivos). Cuando el ROI de las "
                      "abiertas (ganancia ÷ invertido = el TOTAL) ≤ este valor y hay >1 ticker abierto, se "
                      "cierran TODAS (motivo «Stop colectivo»). Ej: −80 = corta si la cartera pierde 80% o más."))
@@ -1611,8 +1637,8 @@ def _render_iters_panel(_iters_seed):
         # Salidas A NIVEL CARTERA (ROI colectivo / Stop colectivo): post-procesan los resultados YA
         # completos en UNA pasada cronológica por día (gana el primer trigger). El STOP colectivo solo
         # dispara con >1 ticker abierto. NO se aplica en los renders parciales (timeline incompleto).
-        _profit_frac = (_sig_coll_thr / 100.0) if _sig_coll else None
-        _stop_frac = (-abs(_sig_coll_stop_thr) / 100.0) if _sig_coll_stop else None   # SIEMPRE negativo (guard)
+        _profit_frac = (_sig_coll_thr / 100.0) if (_sig_coll and _col_on) else None
+        _stop_frac = (-abs(_sig_coll_stop_thr) / 100.0) if (_sig_coll_stop and _col_on) else None   # SIEMPRE negativo (guard)
         if _profit_frac is not None or _stop_frac is not None:
             try:
                 _ncoll = apply_collective_exit(_res, _profit_frac, _stop_frac, stop_require_multi=True)
@@ -1804,7 +1830,14 @@ _ticker_legend = (
 # El selector "Ticker" + "Granularidad temporal de las barras" viven DENTRO del expander "Parámetros de sesión"
 # (Ticker primero, antes del "Modo de fecha"). Creamos el expander acá y rendeamos en él con
 # `_sesion_exp.X`. La "Info {ticker}" queda como expander SEPARADO después (no se pueden anidar).
-_sesion_exp = st.sidebar.expander("Parámetros de sesión", expanded=True)
+# «Modo de backtesting» — contenedor propio del sidebar, ARRIBA de «Parámetros de sesión».
+# Es un placeholder: el radio + uploader se renderizan acá más abajo (vía `_btmode_box`).
+_btmode_box = st.sidebar.container()
+# «Parámetros de sesión» arranca EXPANDIDO en «Backtest visual paso a paso» (el default) y se CONTRAE en
+# «Cargar backtesting file». El valor del radio ya vive en session_state aunque el widget se renderice más
+# abajo; al hacer clic, el rerun re-evalúa esto y abre/cierra el expander.
+_sesion_expanded = st.session_state.get("bt_mode_radio", "Backtest visual paso a paso") == "Backtest visual paso a paso"
+_sesion_exp = st.sidebar.expander("Parámetros de sesión", expanded=_sesion_expanded)
 _sesion_exp.markdown(
     "<p style='display:flex; justify-content:space-between; align-items:center; "
     "font-weight:bold; margin: 0.3rem 0 0.3rem 0;'>"
@@ -2253,17 +2286,18 @@ with st.sidebar.container():
         with _estrat_box:
             st.caption(_desc)
     # Modo de backtest: visual (flujo de siempre) o cargar un Excel de configuraciones (batch desde archivo).
-    with _estrat_box:
-        _bt_mode = st.radio(
-            "Modo de backtest",
-            ["Backtest visual paso a paso", "Cargar backtesting file"],
-            index=0, key="bt_mode_radio",
-            help="**Visual paso a paso**: el flujo de siempre (las filas se cargan en «Options Replay» y "
-                 "corrés ahí). **Cargar backtesting file**: subís un Excel de configuraciones y, al tocar el "
-                 "botón rojo, se corre el backtest de CADA fila sobre los tickers / fecha(s) / tipo de arriba.")
-        if _bt_mode == "Cargar backtesting file":
-            st.file_uploader("📄 Backtesting file (.xlsx)", type=["xlsx"], key="bt_file_upload",
-                             help="Excel con una fila por configuración (como el que te generé).")
+    with _btmode_box:
+        with st.expander("Modo de backtesting", expanded=True):
+            _bt_mode = st.radio(
+                "Modo de backtest",
+                ["Backtest visual paso a paso", "Cargar backtesting file"],
+                index=0, key="bt_mode_radio", label_visibility="collapsed",
+                help="**Visual paso a paso**: el flujo de siempre (las filas se cargan en «Options Replay» y "
+                     "corrés ahí). **Cargar backtesting file**: subís un Excel de configuraciones y, al tocar el "
+                     "botón rojo, se corre el backtest de CADA fila sobre los tickers / fecha(s) / tipo de arriba.")
+            if _bt_mode == "Cargar backtesting file":
+                st.file_uploader("📄 Backtesting file (.xlsx)", type=["xlsx"], key="bt_file_upload",
+                                 help="Excel con una fila por configuración (como el que te generé).")
 
     # Refuerzo: ya NO se ingresa en el manual (Umbral de pérdida refuerzo + No. de veces a reforzar
     # se configuran en «Backtest de señales / iteraciones»). Defaults fijos para la corrida manual.
@@ -2520,24 +2554,49 @@ if st.sidebar.button("📤 Backtestear con TODAS las funciones →", type="prima
     _bt_mode = st.session_state.get("bt_mode_radio", "Backtest visual paso a paso")
     _bt_file = st.session_state.get("bt_file_upload")
     if _bt_mode == "Cargar backtesting file" and _bt_file is not None:
-        # === BATCH desde Excel: valida, BORRA todo lo de la derecha y ENCOLA el batch. Lo corre el
-        #     panel principal (así la derecha se limpia ANTES de correr — no queda el resultado viejo). ===
+        # === BATCH dirigido por el template (Data seed + scenarios). TODA la config sale del Data
+        #     seed (tickers, fechas, tipo, inversión, horarios…); se IGNORAN los Session Parameters.
+        #     Lanza run_ucbatch.py en una CONSOLA NUEVA (async): no bloquea la app, no se cuelga,
+        #     multiproceso. Ves el progreso en esa ventana; al terminar salta un aviso de Windows. ===
         try:
-            _cfgs = brunner.read_configs(_bt_file)
+            from ucbatch import reader as _ucr
+            _seed, _scens = _ucr.read_template(_bt_file)
         except Exception as _e:   # noqa: BLE001
-            _cfgs = []
-            st.sidebar.error(f"No pude leer el Excel: {_e}")
-        if not _cfgs:
-            st.sidebar.warning("⚠️ El Excel no tiene filas de configuración (hoja «Backtesting» con columna ID).")
-        elif not tickers or not _dates:
-            st.sidebar.warning("⚠️ Elegí ≥1 ticker y ≥1 fecha hábil (no feriado/fin de semana).")
+            _seed, _scens = None, []
+            st.sidebar.error(f"No pude leer el template: {_e}")
+        if not _scens:
+            st.sidebar.warning("⚠️ El template no tiene escenarios (hoja «Backtesting scenarios» con columna ID).")
+        elif not _seed.tickers:
+            st.sidebar.warning("⚠️ El «Data seed» no tiene Tickers cargados.")
         else:
-            for _k in ("batch_results", "batch_meta", "replay"):   # limpiar la derecha PRIMERO
-                st.session_state.pop(_k, None)
-            st.session_state["_batch_pending"] = {
-                "configs": _cfgs, "tickers": [str(t).upper() for t in tickers],
-                "dates": _dates, "tipo": _tipo}
-            st.rerun()
+            import datetime as _dt
+            import subprocess as _sp
+            import sys as _sysx
+            from ucbatch import report as _ucrep, runner as _ucrun
+            _dl0 = get_downloader(api_key)
+            _or_dir = Path(_dl0.data_dir).parent                         # options_replay/
+            _job_id = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            _jobs = Path(_dl0.data_dir) / ".batch_jobs" / _job_id
+            _jobs.mkdir(parents=True, exist_ok=True)
+            _in_xlsx = _jobs / "input.xlsx"
+            _in_xlsx.write_bytes(_bt_file.getvalue())
+            _res_dir = _or_dir.parent / "resultados"                     # <Traiding>/resultados/
+            _res_dir.mkdir(parents=True, exist_ok=True)
+            _out_xlsx = _res_dir / _ucrep.output_filename(_seed)
+            _days = _ucrun.trading_days(_seed.fecha_inicial, _seed.fecha_final)
+            _cmd = [_sysx.executable, str(_or_dir / "run_ucbatch.py"),
+                    "--excel", str(_in_xlsx), "--out", str(_res_dir), "--notify"]
+            try:
+                _sp.Popen(_cmd, creationflags=getattr(_sp, "CREATE_NEW_CONSOLE", 0), cwd=str(_or_dir))
+                for _k in ("batch_results", "batch_meta", "replay", "_batch_pending"):
+                    st.session_state.pop(_k, None)
+                st.session_state["batch_job"] = {
+                    "out": str(_out_xlsx), "n": len(_scens) * len(_days) * len(_seed.tickers),
+                    "n_cfg": len(_scens), "tickers": _seed.tickers, "dates": _days, "at": _job_id}
+                st.rerun()
+            except Exception as _le:   # noqa: BLE001
+                st.sidebar.error(f"No pude lanzar el runner en consola ({_le}). Corrélo a mano: "
+                                 f"`python options_replay/run_ucbatch.py --excel \"{_in_xlsx}\"`")
     else:
         # === Puente normal: manda las filas (ticker × fecha) al panel de señales. ===
         _rows = [{"Ticker": str(tk).upper(), "Fecha": d, "Hora": _hora, "Tipo": _tipo}
@@ -2607,154 +2666,48 @@ def _validate_form() -> bool:
     return True
 
 
-# === Corre el batch ENCOLADO (tras limpiar la derecha) — patrón «borrar primero, después correr». ===
-_batch_pending = st.session_state.get("_batch_pending")
-if _batch_pending:
-    st.markdown("### 📄 Resultados del batch (desde archivo)")
-    _bp_total = (len(_batch_pending["configs"]) * len(_batch_pending["tickers"])
-                 * len(_batch_pending["dates"]))
-    import json as _json
-    import math as _math
-    import pickle as _pickle
-    import shutil as _shutil
-    import subprocess as _subprocess
-    import sys as _sys
-    import tempfile as _tempfile
-    _bp_t0 = time.perf_counter()
-    _bp_pr = st.progress(0.0, text=f"Corriendo batch… 0/{_bp_total}")
-    _bp_dl = get_downloader(api_key)
-    # Procesos escalados al tamaño del lote: el arranque de procesos (importar el motor) no compensa en
-    # lotes chicos → pocos procesos para pocos backtests, hasta cores−1 para los grandes.
-    _bp_procs = max(2, min(brunner.auto_processes(), round(_math.sqrt(max(1, _bp_total) / 12)) or 2))
-
-    def _bp_cb(done, total, _pr=_bp_pr, _t0=_bp_t0, _p="hilos"):
-        _pr.progress(min(done / max(total, 1), 1.0),
-                     text=f"⏱️ {time.perf_counter() - _t0:0.0f}s · {done}/{total} backtests · {_p}")
-
-    _bp_res = None
-    # Multiproceso REAL aislado en batch_cli.py (subprocess) — NO se cuelga como `multiprocessing`
-    # lanzado dentro de Streamlit. Combinado con el cache de parquets del Downloader → speedup real.
-    _bp_tmp = None
-    try:
-        # Carpeta temporal LOCAL al proyecto. En AppData\Temp daba [WinError 5] Access denied al lanzar
-        # el subproceso (permisos/antivirus sobre %TEMP%) → la ponemos junto a los datos del proyecto.
-        _bp_tmp = Path(_bp_dl.data_dir) / ".batch_tmp"
-        _shutil.rmtree(_bp_tmp, ignore_errors=True)
-        _bp_tmp.mkdir(parents=True, exist_ok=True)
-        _req_f, _res_f, _prog_f = _bp_tmp / "req.pkl", _bp_tmp / "res.json", _bp_tmp / "prog.json"
-        with open(_req_f, "wb") as _f:
-            _pickle.dump({"configs": _batch_pending["configs"], "tickers": _batch_pending["tickers"],
-                          "dates": _batch_pending["dates"], "tipo": _batch_pending["tipo"],
-                          "data_dir": str(_bp_dl.data_dir), "api_key": api_key,
-                          "processes": _bp_procs}, _f)
-        _cli = str(Path(_bp_dl.data_dir).parent / "batch_cli.py")
-        _proc = _subprocess.Popen([_sys.executable, _cli, str(_req_f), str(_res_f), str(_prog_f)])
-        _last, _last_chg = -1, time.time()
-        while _proc.poll() is None:
-            _done = 0
-            try:
-                with open(_prog_f, encoding="utf-8") as _f:
-                    _done = int(_json.load(_f).get("done", 0))
-            except Exception:
-                pass
-            _bp_cb(_done, _bp_total, _p=f"{_bp_procs} procesos")
-            if _done != _last:
-                _last, _last_chg = _done, time.time()
-            elif time.time() - _last_chg > 150:   # 150 s sin avanzar → asumimos colgado → fallback
-                _proc.kill()
-                raise RuntimeError("el subproceso no avanza")
-            time.sleep(0.5)
-        if _proc.wait() == 0 and _res_f.exists():
-            _data = _json.load(open(_res_f, encoding="utf-8"))
-            if not _data.get("ok"):
-                raise RuntimeError(_data.get("error", "batch_cli sin resultado"))
-            _bp_res = _data["rows"]
-        else:
-            raise RuntimeError(f"subproceso terminó con código {_proc.returncode}")
-    except Exception as _se:   # noqa: BLE001 — cualquier falla del multiproceso → hilos (más lento pero seguro)
-        st.warning(f"⚙️ Multiproceso no disponible ({type(_se).__name__}: {_se}) → corriendo con **hilos** "
-                   f"(más lento; OK para lotes chicos). Para lotes grandes conviene el runner de terminal: "
-                   f"`python options_replay/run_batch.py` (ver consola).  [python: {_sys.executable}]")
-        _bp_res = brunner.run_batch(
-            _bp_dl, _batch_pending["configs"], _batch_pending["tickers"], _batch_pending["dates"],
-            _batch_pending["tipo"], progress_cb=lambda d, t: _bp_cb(d, t, _p="hilos"),
-            max_workers=brunner.auto_workers(len(_batch_pending["tickers"]), len(_batch_pending["dates"])))
-    finally:
-        if _bp_tmp is not None:
-            _shutil.rmtree(_bp_tmp, ignore_errors=True)
-    _bp_pr.empty()
-    st.session_state["batch_results"] = _bp_res
-    st.session_state["batch_meta"] = {"n_cfg": len(_batch_pending["configs"]),
-                                      "tickers": _batch_pending["tickers"], "dates": _batch_pending["dates"],
-                                      "tipo": _batch_pending["tipo"], "elapsed": time.perf_counter() - _bp_t0}
-    st.session_state.pop("_batch_pending", None)
-    st.rerun()
-
-
-# === Resultados del BATCH desde archivo (modo «Cargar backtesting file») ===
-_batch = st.session_state.get("batch_results")
-if _batch:
-    _meta = st.session_state.get("batch_meta", {})
-    st.markdown("### 📄 Resultados del batch (desde archivo)")
-    _n_ok = sum(1 for _r in _batch if _r.get("status") == "ok")
-    st.caption(f"{_meta.get('n_cfg', '?')} configs × {len(_meta.get('tickers', []))} ticker(s) × "
-               f"{len(_meta.get('dates', []))} fecha(s) = **{len(_batch)}** backtests · "
-               f"{_n_ok} ok / {len(_batch) - _n_ok} sin datos · {_meta.get('elapsed', 0):.0f}s · "
-               f"{_meta.get('tipo', '')}")
-    # Panel de TOTALES (Σ sobre todos los config × ticker × fecha) — mismo estilo que «Totales del backtest».
-    _tot = brunner.batch_totals(_batch)
-    _tc = st.columns(6)
-    _tc[0].metric("Backtests procesados", f"{_tot['n_ok']} / {_tot['n_total']}")
-    _tc[1].metric("Inversión total", f"${_tot['inv']:,.2f}")
-    if _tot["gain"] > 0:
-        _gbg, _gdc, _garr = "rgba(33, 195, 84, 0.1)", "#2e7d32", "▲"
-    elif _tot["gain"] < 0:
-        _gbg, _gdc, _garr = "#ffcdd2", "#b71c1c", "▼"
-    else:
-        _gbg, _gdc, _garr = "#f0f2f6", "#555", "–"
-    _gdt = f"{_garr} {abs(_tot['roi']):.1%}" if _tot["inv"] else ""
-    _tc[2].markdown(
-        f"<div style='border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem; "
-        f"padding:0.85rem 1rem; background-color:{_gbg};'>"
-        f"<div style='font-size:0.85rem; font-weight:bold; color:rgba(49,51,63,0.65); "
-        f"margin-bottom:0.35rem;'>Ganancia total</div>"
-        f"<div style='font-size:1.75rem; font-weight:600; line-height:1.15;'>${_tot['gain']:+,.2f}</div>"
-        f"<div style='font-size:0.85rem; color:{_gdc}; margin-top:0.25rem;'>{_gdt}</div></div>",
-        unsafe_allow_html=True)
-    _tc[3].metric("Capital final", f"${_tot['capital']:,.2f}")
-    _tc[4].metric("Ganadores / perdedores", f"{_tot['wins']} / {_tot['losses']}")
-    _tc[5].metric("Win rate", f"{_tot['win_rate']:.1%}",
-                  help="Backtests ganadores / (ganadores + perdedores); los de ganancia 0 se excluyen.")
-    _RS_B = {"100%_threshold": "umbral", "stop_loss": "stop loss", "session_end": "cierre de sesión",
-             "collective_roi": "ROI colectivo", "collective_stop": "stop colectivo",
-             "wrong_direction": "dirección equivocada", "weak_confirmation": "confirmación débil",
-             "overnight_1dte": "overnight"}
-    _rs_base = ["100%_threshold", "stop_loss", "session_end"]
-    _rsp = [f"**{_tot['reasons'].get(_k, 0)}** {_RS_B[_k]}" for _k in _rs_base]
-    _rsp += [f"**{_v}** {_RS_B.get(_k, _k)}" for _k, _v in _tot["reasons"].items()
-             if _k not in _rs_base and _v > 0]
-    st.caption(f"📊 Razones de salida: {' · '.join(_rsp)}  ·  💹 **Ganancia total** = suma de las "
-               f"ganancias ($) de los {_tot['n_ok']} backtests OK (sobre TODAS las configs/tickers/fechas)")
-    _summ_df = pd.DataFrame(brunner.summarize(_batch))
-    if not _summ_df.empty:
-        _summ_df = _summ_df.sort_values("Ganancia Total", ascending=False)
-        st.markdown("**Resumen por config** (mejor Ganancia arriba):")
-        st.dataframe(_summ_df[["ID", "Inversión Total", "Ganancia Total", "ROI %", "ok", "error"]],
-                     use_container_width=True, hide_index=True)
-    with st.expander(f"📋 Detalle — {len(_batch)} filas (config × ticker × fecha)", expanded=False):
-        st.dataframe(pd.DataFrame(_batch)[["ID", "Fecha", "Ticker", "Operación", "Inversión Total",
-                                           "Ganancia Total", "ROI %", "status", "error"]],
-                     use_container_width=True, hide_index=True)
-    _cda, _cdb = st.columns([2, 1])
-    _cda.download_button("💾 Descargar resultados (.xlsx)", brunner.results_to_xlsx(_batch, _meta),
-                         file_name="Backtesting_resultados.xlsx",
-                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                         use_container_width=True)
-    if _cdb.button("🗑️ Limpiar", use_container_width=True):
-        st.session_state.pop("batch_results", None)
-        st.session_state.pop("batch_meta", None)
+# === Aviso de un backtest lanzado en SEGUNDO PLANO (consola aparte; modo «Cargar backtesting file»). ===
+_job = st.session_state.get("batch_job")
+if _job:
+    st.markdown("### 🚀 Backtest en segundo plano")
+    st.success("Lo lancé en una **ventana de terminal aparte** — rápido (multiproceso) y sin bloquear la "
+               "app. Mirá esa ventana para el **progreso / ETA**; al terminar salta un **aviso de Windows** "
+               "y el Excel queda guardado.")
+    st.markdown(f"📄 **Resultados** (cuando termine): `{_job.get('out', '')}`")
+    st.caption(f"{_job.get('n_cfg', '?')} configs × {len(_job.get('tickers', []))} ticker(s) × "
+               f"{len(_job.get('dates', []))} fecha(s) = {_job.get('n', 0):,} backtests · lanzado {_job.get('at', '')}")
+    _cja, _cjb = st.columns(2)
+    if _cja.button("📂 Abrir carpeta de resultados", use_container_width=True):
+        try:
+            import os as _os2
+            _os2.startfile(str(Path(_job["out"]).parent))   # noqa: S606  (abrir Explorer en Windows)
+        except Exception as _oe:   # noqa: BLE001
+            st.caption(f"No pude abrir la carpeta: {_oe}")
+    if _cjb.button("🗑️ Limpiar aviso", use_container_width=True):
+        st.session_state.pop("batch_job", None)
         st.rerun()
     st.stop()
+
+
+# === Modo «Cargar backtesting file»: mostrar el Data seed (config global del batch) en Options Replay. ===
+if (st.session_state.get("bt_mode_radio") == "Cargar backtesting file"
+        and st.session_state.get("bt_file_upload") is not None):
+    st.markdown("### 📄 Data seed — configuración del batch")
+    try:
+        from ucbatch import reader as _ucr2
+        _seed2, _scens2 = _ucr2.read_template(st.session_state["bt_file_upload"])
+        st.caption(f"**{len(_scens2)} escenarios** × {len(_seed2.tickers)} tickers "
+                   f"({', '.join(_seed2.tickers)}) × días hábiles {_seed2.fecha_inicial} → "
+                   f"{_seed2.fecha_final}. Toda la config sale de acá; **los Parámetros de sesión se "
+                   "ignoran** en este modo.")
+        st.dataframe(pd.DataFrame(_seed2.display, columns=["Parámetro", "Valor"]),
+                     hide_index=True, use_container_width=True)
+        st.info("Tocá el botón rojo **Backtest** (panel izquierdo) para lanzar el batch en segundo plano.")
+    except Exception as _se:   # noqa: BLE001
+        st.warning(f"No pude leer el Data seed del archivo: {_se}")
+    st.stop()
+
+
 
 replay_state = st.session_state.get("replay")
 if replay_state is None:
@@ -3595,7 +3548,7 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
 
 # Modo SEÑALES (multi-iteración): cada señal = 1 "sesión" rica, REUSANDO render_iteration
 # (Totales + detalle por iteración), igual que un backtest manual.
-def render_roi_heatmap(records: list, key_prefix: str = "roi_hm") -> None:
+def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr: float | None = None) -> None:
     """Heatmap ROI por ticker × intervalo de tiempo, para UNA fecha. `records` = lista de dicts
     con 'ticker', 'fecha', 'hora', 'iteration'. Fila TOTAL agregada arriba (ΣROI$ / Σinvertido)
     con umbral de ROI colectivo que resalta los mejores intervalos. Reusable: señales + manual."""
@@ -3618,7 +3571,9 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm") -> None:
         st.caption("Para una FECHA específica: cada celda = **ROI(%) / ROI($)** del ticker en ese "
                    "instante · **CLOSED** = sin posición · 🟢 ganancia / 🔴 pérdida. La fila **TOTAL** "
                    "(arriba) agrega todos los tickers por intervalo; verde OSCURO = mejor (máx +) · "
-                   "rojo OSCURO = peor (mín −).")
+                   "rojo OSCURO = peor (mín −) · **🟡 amarillo** = primer intervalo donde el TOTAL "
+                   "alcanza el **Umbral de ROI colectivo de las Condiciones de salida** (ahí dispara "
+                   "el corte). El «Filtro de columnas» de abajo es aparte — solo visual, no toca el backtest.")
         _hdates = sorted({r.get("fecha") for r in _oks if r.get("fecha")})
         if not _hdates:
             st.caption("Sin fechas para mostrar.")
@@ -3695,11 +3650,13 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm") -> None:
             st.divider()
             st.markdown("**Detalle minuto a minuto** — todas las fechas (1 fila por señal · "
                         "columnas = hora del día):")
+        # FILTRO local del heatmap (independiente de las Condiciones de salida): alimenta el checkbox
+        # «Solo columnas con ROI colectivo > filtro». NO es una condición de salida.
         _thr = float(_hc1.number_input(
-            "Umbral de ROI colectivo (%)", value=5.0, step=1.0, key=f"{key_prefix}_thr",
-            help="Umbral del filtro «Solo columnas con ROI(%) > Umbral»: deja solo los intervalos "
-                 "cuyo ROI agregado (fila TOTAL) supera este valor. No afecta los colores."))
-        _hres = _hc2.radio("Rango temporal", ["15 segundos", "30 segundos", "1 minuto"],
+            "Filtro de columnas — ROI colectivo ≥ (%)", value=5.0, step=1.0, key=f"{key_prefix}_thr",
+            help="Filtro de VISUALIZACIÓN (no toca el backtest): con «Solo columnas > filtro» deja "
+                 "solo los intervalos cuyo ROI colectivo (fila TOTAL) supera este valor."))
+        _hres = _hc2.radio("Rango temporal de verificación de ROI (%)", ["15 segundos", "30 segundos", "1 minuto"],
                            index=2, horizontal=True, key=f"{key_prefix}_res")
         _hsec = {"15 segundos": 15, "30 segundos": 30, "1 minuto": 60}[_hres]
         _oks_date = _oks if _hdate == "(todas)" else [r for r in _oks if r.get("fecha") == _hdate]
@@ -3716,10 +3673,10 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm") -> None:
                                     key=f"{key_prefix}_tks")
         _only_pos = _ft2.checkbox("Solo columnas con ROI% > 0", value=False, key=f"{key_prefix}_pos")
         _only_thr = _ft2.checkbox(
-            "Solo columnas con ROI (%) > Umbral de ROI colectivo (%)", value=False,
+            "Solo columnas con ROI colectivo (%) > filtro", value=False,
             key=f"{key_prefix}_thrcol",
-            help="Deja solo los intervalos cuyo ROI agregado (fila TOTAL) SUPERA el Umbral de "
-                 "ROI colectivo de arriba.")
+            help="Deja solo los intervalos cuyo ROI agregado (fila TOTAL) SUPERA el «Filtro de "
+                 "columnas» de arriba.")
         _full_range = _ft2.checkbox(
             "🕘 Rango horario completo (en una fecha única)", value=False,
             key=f"{key_prefix}_fullrange",
@@ -3862,6 +3819,22 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm") -> None:
         _full = pd.DataFrame([_total] + _hdata)[["Ticket"] + _cols]
         def _style(df):
             sty = pd.DataFrame("", index=df.index, columns=df.columns)
+            # 🟡 Corte por ROI colectivo: PRIMER intervalo donde el TOTAL (%) ALCANZA el Umbral de
+            # ROI colectivo de las CONDICIONES DE SALIDA (coll_exit_thr) → ahí dispara el corte.
+            # (Es el umbral REAL del backtest, NO el filtro visual de arriba.)
+            _trig_col = None
+            if coll_exit_thr is not None:
+                _tot_ix = [_i for _i in df.index if df.at[_i, "Ticket"] == "TOTAL"]
+                if _tot_ix:
+                    for _c in _cols:
+                        _tv = df.at[_tot_ix[0], _c]
+                        if isinstance(_tv, str) and "%" in _tv:
+                            try:
+                                if float(_tv.split("%")[0]) >= coll_exit_thr:
+                                    _trig_col = _c
+                                    break
+                            except Exception:
+                                pass
             # Por CADA fila (TOTAL y tickers): el MÁXIMO de sus positivos → verde OSCURO; el
             # MÍNIMO de sus negativos → rojo OSCURO; el resto, verde/rojo claro según signo.
             for _i in df.index:
@@ -3896,6 +3869,9 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm") -> None:
                         sty.at[_i, _c] = "background-color:#c8e6c9" + _bold   # verde claro
                     elif _p < 0:
                         sty.at[_i, _c] = "background-color:#ffcdd2" + _bold   # rojo claro
+                    # 🟡 la celda del corte por ROI colectivo (fila TOTAL) manda sobre el color de signo
+                    if _is_tot and _trig_col is not None and _c == _trig_col:
+                        sty.at[_i, _c] = "background-color:#ffeb3b; color:#000; font-weight:bold"
             return sty
 
         st.dataframe(_full.style.apply(_style, axis=None), use_container_width=True,
@@ -3920,6 +3896,35 @@ def _render_signals_session(rs):
     # win rate, razones de salida + panel de riesgo).
     render_batch_totals(oks, total_days=len(results),
                         title="💼 Totales del backtest", show_risk=True)
+
+    # Iteraciones que el motor RECHAZÓ (sin contrato, hora/tipo inválidos, etc.). Antes se
+    # calculaban (errs) pero NO se mostraban → el usuario veía "0 procesados" sin saber por qué.
+    if errs:
+        _all_failed = not oks
+        st.warning(f"⚠️ **{len(errs)} de {len(results)}** iteración(es) no generaron operación."
+                   + (" Por eso los totales están en cero." if _all_failed else ""))
+        with st.expander(f"🔎 Ver por qué ({len(errs)} sin operación)", expanded=_all_failed):
+            _cat: dict = {}
+            for _e in errs:
+                _msg = str(_e.get("error", "error"))
+                if "Sin contrato" in _msg:
+                    _k = "Sin contrato — ningún strike 0DTE pasó el filtro de spread/rango"
+                elif "incompleta" in _msg or "inválid" in _msg:
+                    _k = "Iteración inválida (Tipo u hora)"
+                else:
+                    _k = _msg[:70]
+                _cat[_k] = _cat.get(_k, 0) + 1
+            for _k, _v in sorted(_cat.items(), key=lambda x: -x[1]):
+                st.markdown(f"- **{_v}×** — {_k}")
+            st.dataframe(
+                pd.DataFrame([{"Ticker": _e.get("ticker", "?"), "Fecha": _e.get("fecha", ""),
+                               "Hora": _e.get("hora", ""), "Tipo": _e.get("tipo", ""),
+                               "Motivo": str(_e.get("error", "error"))} for _e in errs]),
+                use_container_width=True, hide_index=True)
+            st.caption("💡 **«Sin contrato»** casi siempre es **spread demasiado ancho** (opciones "
+                       "ilíquidas). Ajustá el filtro en **Configuración → §1** o usá tickers más "
+                       "líquidos (QQQ/SPY/IWM). No es un error del backtest — es la compuerta "
+                       "protegiéndote de un fill malo.")
 
     # Totales AGRUPADOS por semana / ticker / grupo (sector) — igual que el rango.
     if oks:
@@ -3961,7 +3966,9 @@ def _render_signals_session(rs):
                                  chart_key="temporal_chart_sig")
 
     # --- 🗓️ Heatmap: ROI por ticker × intervalo de tiempo (función reusable, con fila TOTAL) ---
-    render_roi_heatmap(oks, "sig_heatmap")
+    render_roi_heatmap(oks, "sig_heatmap",
+                       coll_exit_thr=(st.session_state.get("sig_coll_thr")
+                                      if st.session_state.get("sig_coll_exit") else None))
 
     # Resumen por día — agrega TODAS las señales de cada fecha (1 fila por día).
     if oks:
