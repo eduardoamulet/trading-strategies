@@ -2251,11 +2251,13 @@ with st.sidebar.container():
         with st.expander("Modo de backtesting", expanded=True):
             _bt_mode = st.radio(
                 "Modo de backtest",
-                ["Backtest visual paso a paso", "Cargar backtesting file"],
+                ["Backtest visual paso a paso", "Cargar backtesting file", "Interpretar resultados"],
                 index=0, key="bt_mode_radio", label_visibility="collapsed",
                 help="**Visual paso a paso**: el flujo de siempre (las filas se cargan en «Options Replay» y "
                      "corrés ahí). **Cargar backtesting file**: subís un Excel de configuraciones y, al tocar el "
-                     "botón rojo, se corre el backtest de CADA fila sobre los tickers / fecha(s) / tipo de arriba.")
+                     "botón rojo, se corre el backtest de CADA fila. **Interpretar resultados**: subís un "
+                     "results file y el motor lo analiza (robustez, correlaciones, clustering, día de la "
+                     "semana, playbook + JSON).")
             if _bt_mode == "Cargar backtesting file":
                 st.file_uploader("📄 Template de entrada — Data seed + scenarios (.xlsx)", type=["xlsx"],
                                  key="bt_file_upload",
@@ -2618,6 +2620,33 @@ if (st.session_state.get("bt_mode_radio") == "Cargar backtesting file"
         st.warning(f"No pude leer el Data seed del archivo: {_se}")
     st.stop()
 
+
+# === Modo «Interpretar resultados»: motor de interpretación de un results file (bt_analysis). ===
+if st.session_state.get("bt_mode_radio") == "Interpretar resultados":
+    st.markdown("### 🔬 Interpretación de resultados de backtesting")
+    st.caption("Subí un **results file** (el Excel que llena el batch). Opcionales: el **template** "
+               "(para correlacionar condición→ROI) y un file **ID×día** (Analisis_ID_x_diasemana) para "
+               "el análisis por día de la semana. El motor prioriza **robustez y consistencia**, no el "
+               "mayor ROI aislado, y concluye **NO OPERAR** cuando no hay ventaja estadística.")
+    _iu1, _iu2, _iu3 = st.columns(3)
+    _res_up = _iu1.file_uploader("📊 Results file (.xlsx)", type=["xlsx"], key="bta_results")
+    _tpl_up = _iu2.file_uploader("📄 Template (opcional)", type=["xlsx"], key="bta_template")
+    _dow_up = _iu3.file_uploader("📅 ID×día (opcional)", type=["xlsx"], key="bta_dow")
+    if _res_up is None:
+        st.info("Subí al menos el **results file** para interpretar.")
+        st.stop()
+    try:
+        from bt_analysis import engine as _bte, loader as _btl, ui as _btu
+        _rdf, _gran = _btl.load_results(_res_up)
+        _bseed, _bsc = _btl.load_template(_tpl_up) if _tpl_up is not None else ({}, None)
+        _bdow = _btl.load_dow(_dow_up) if _dow_up is not None else None
+        with st.spinner("Analizando…"):
+            _rep = _bte.analyze(_rdf, _gran, scenarios_df=_bsc, dow_df=_bdow, seed=_bseed)
+        _btu.render(_rep)
+    except Exception as _ie:   # noqa: BLE001
+        st.error(f"No pude interpretar el file: {_ie}")
+        st.exception(_ie)
+    st.stop()
 
 
 replay_state = st.session_state.get("replay")

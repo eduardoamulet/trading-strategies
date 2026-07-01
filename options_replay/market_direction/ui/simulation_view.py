@@ -7,8 +7,6 @@ tooltip flotante los muestra por JS. `legend_html` y `signal_lines` son helpers 
 """
 from __future__ import annotations
 
-import json
-
 ACTION_COLOR = {"CALL": "#16a34a", "PUT": "#dc2626", "NO TRADE": "#9ca3af"}
 
 
@@ -25,124 +23,67 @@ def _heat_color(action: str, confidence) -> str:
     t = max(0.0, min(1.0, (c - 0.4) / 0.6))
     return f"hsl({hue}, {sat}%, {72 - 47 * t:.0f}%)"
 
-# CSS/JS constantes (no f-string → sin escapar llaves). El JSON de datos se injecta por replace.
+# CSS del mapa. Se renderiza en el DOM PRINCIPAL (st.markdown) → los enlaces de celda funcionan y NO
+# hay iframe que recorte ni deje espacio en blanco. Tooltip = atributo `title` nativo (no se recorta).
 _MATRIX_CSS = """
 <style>
-.simx-wrap{overflow:auto;max-height:200px;border:1px solid #2a2e39;border-radius:8px;background:#0e1117;}
+.simx-wrap{overflow:auto;max-height:230px;border:1px solid #2a2e39;border-radius:8px;background:#0e1117;
+  margin:2px 0 6px 0;}
 .simx-wrap table{border-collapse:separate;border-spacing:0;font-family:ui-sans-serif,system-ui;}
 .simx-wrap th.simx-corner,.simx-wrap th.simx-tk{position:sticky;left:0;z-index:3;background:#161a23;
   color:#d1d4dc;font-size:11px;font-weight:600;text-align:right;padding:2px 8px;white-space:nowrap;}
 .simx-wrap thead th{position:sticky;top:0;z-index:2;background:#161a23;color:#8b93a7;font-size:9px;
   font-weight:500;padding:2px 0;white-space:nowrap;}
 .simx-wrap th.simx-corner{z-index:4;top:0;}
-.simx-wrap td.simx-c{width:9px;min-width:9px;height:22px;padding:0;cursor:pointer;border:none;}
-.simx-wrap td.simx-c:hover{outline:2px solid #facc15;outline-offset:-2px;}
-#simx-tt{position:fixed;z-index:99999;display:none;pointer-events:none;max-width:280px;
-  background:#1b1f2a;color:#e5e7eb;border:1px solid #333a4d;border-radius:8px;padding:10px 12px;
-  font-family:ui-sans-serif,system-ui;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.5);}
-#simx-tt .h{font-size:14px;font-weight:700;margin-bottom:4px;}
-#simx-tt .g{display:grid;grid-template-columns:auto auto;gap:1px 10px;margin:5px 0;}
-#simx-tt .k{color:#8b93a7;} #simx-tt .v{text-align:right;font-weight:600;}
-#simx-tt .r{color:#cbd5e1;margin-top:4px;} #simx-tt .r div{margin:1px 0;}
+.simx-wrap td{padding:0;}
+.simx-wrap a.simx-c{display:block;width:10px;min-width:10px;height:22px;text-decoration:none;}
+.simx-wrap a.simx-c:hover{outline:2px solid #facc15;outline-offset:-2px;}
 </style>
 """
 
-_MATRIX_JS = """
-<script>
-(function(){
-  const DATA = /*DATA*/;
-  const COL = {"CALL":"#16a34a","PUT":"#dc2626","NO TRADE":"#9ca3af"};
-  const tt = document.getElementById('simx-tt');
-  function pct(x){ return x==null? '—' : Math.round(x*100)+'%'; }
-  function num(x){ return x==null? '—' : x; }
-  function rr(x){ return x==null? '—' : ('1:'+x); }
-  function show(tk, mn, ev){
-    const s = (DATA[tk]||{})[mn]; if(!s){ return; }
-    const rs = (s.rs||[]).map(function(r){ return '<div>✓ '+r+'</div>'; }).join('');
-    tt.innerHTML =
-      '<div class="h" style="color:'+(COL[s.a]||'#9ca3af')+'">'+tk+' · '+mn+' · '+s.a+'</div>'+
-      '<div class="g">'+
-      '<span class="k">Confianza</span><span class="v">'+pct(s.c)+'</span>'+
-      '<span class="k">Score</span><span class="v">'+num(s.s)+'</span>'+
-      '<span class="k">Market Strength</span><span class="v">'+num(s.ms)+'</span>'+
-      '<span class="k">Trend</span><span class="v">'+num(s.tr)+'</span>'+
-      '<span class="k">Entry</span><span class="v">'+num(s.ep)+'</span>'+
-      '<span class="k">Stop</span><span class="v">'+num(s.sl)+'</span>'+
-      '<span class="k">Target</span><span class="v">'+num(s.tg)+'</span>'+
-      '<span class="k">Risk Reward</span><span class="v">'+rr(s.rr)+'</span>'+
-      '</div>'+ (rs? '<div class="r">'+rs+'</div>' : '');
-    tt.style.display='block';
-    let x=ev.clientX+14, y=ev.clientY+14;
-    if(x+290>window.innerWidth){ x=ev.clientX-294; }
-    if(y+220>window.innerHeight){ y=Math.max(8, ev.clientY-224); }
-    tt.style.left=x+'px'; tt.style.top=y+'px';
-  }
-  document.querySelectorAll('td.simx-c').forEach(function(td){
-    td.addEventListener('mousemove', function(ev){ show(td.dataset.tk, td.dataset.mn, ev); });
-    td.addEventListener('mouseleave', function(){ tt.style.display='none'; });
-    // Click en la celda → setea ?sim_cell=TICKER|MINUTO en la ventana top (con nonce _sn para que
-    // reclickear la MISMA celda también dispare). pushState+popstate = rerun SUAVE de la página;
-    // si el iframe fuese cross-origin, cae a location.search (recarga, igual funciona).
-    td.addEventListener('click', function(){
-      var v = td.dataset.tk + '|' + td.dataset.mn;
-      try {
-        var w = window.top;
-        var u = new URL(w.location.href);
-        u.searchParams.set('sim_cell', v);
-        u.searchParams.set('_sn', String(Date.now()));
-        w.history.pushState({}, '', u.toString());
-        w.dispatchEvent(new PopStateEvent('popstate'));
-      } catch(e) {
-        window.top.location.search = '?sim_cell=' + encodeURIComponent(v) + '&_sn=' + Date.now();
-      }
-    });
-})();
-</script>
-"""
+
+def _tooltip(tk: str, mn: str, s: dict) -> str:
+    """Texto del tooltip nativo (atributo title) — el TradeSignal completo con saltos de línea."""
+    def _n(x):
+        return "—" if x is None else x
+    rr = s.get("risk_reward")
+    lines = [
+        f"{tk} · {mn} · {s.get('action', '—')}",
+        f"Confianza: {round((s.get('confidence') or 0) * 100)}%  ·  Score: {_n(s.get('score'))}",
+        f"Market Strength: {_n(s.get('market_strength'))}  ·  Trend: {_n(s.get('trend'))}",
+        f"Entry: {_n(s.get('entry_price'))}  ·  Stop: {_n(s.get('stop'))}  ·  Target: {_n(s.get('target'))}",
+        f"Risk Reward: {'—' if rr is None else '1:' + str(rr)}",
+    ]
+    rs = s.get("reasons") or []
+    if rs:
+        lines.append("Razones: " + " · ".join(map(str, rs)))
+    esc = [ln.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;") for ln in lines]
+    return "&#10;".join(esc)
 
 
-def build_matrix_html(sim: dict, *, heatmap: bool = False) -> tuple[str, int]:
-    """Devuelve (html, alto_px) de la matriz Activo×minuto (color + tooltip en hover). `heatmap=True`
-    → la intensidad del color refleja la confianza (mapa de calor); si no, color plano por acción."""
+def build_matrix_html(sim: dict, *, heatmap: bool = False) -> str:
+    """HTML de la matriz Activo×minuto para **st.markdown** (DOM principal). Cada celda es un ENLACE
+    clicable (`?sim_cell=TICKER|MINUTO`) con tooltip nativo (title). `heatmap=True` → intensidad =
+    confianza; si no, color plano por acción."""
     minutes = sim.get("minutes", [])
     tickers = sim.get("tickers", [])
     results = sim.get("results", {})
-
-    # Datos compactos para el tooltip (un blob JSON; las celdas solo referencian tk/mn).
-    data: dict = {}
-    for tk in tickers:
-        d = {}
-        for mn, sig in results.get(tk, {}).items():
-            d[mn] = {"a": sig.get("action"), "c": sig.get("confidence"), "s": sig.get("score"),
-                     "ms": sig.get("market_strength"), "tr": sig.get("trend"),
-                     "ep": sig.get("entry_price"), "sl": sig.get("stop"), "tg": sig.get("target"),
-                     "rr": sig.get("risk_reward"), "rs": sig.get("reasons") or []}
-        data[tk] = d
-
-    # Encabezado: etiqueta de minuto solo en los múltiplos de 15 (si no, ilegible con 390 columnas).
     head_cells = "".join(
         f'<th>{mn if mn.endswith((":00", ":15", ":30", ":45")) else ""}</th>' for mn in minutes)
     head = f'<thead><tr><th class="simx-corner">Activo \\ Hora</th>{head_cells}</tr></thead>'
-
     body_rows = ""
     for tk in tickers:
         cells = ""
         for mn in minutes:
-            _sig = results.get(tk, {}).get(mn, {})
-            act = _sig.get("action", "NO TRADE")
-            color = (_heat_color(act, _sig.get("confidence")) if heatmap
+            s = results.get(tk, {}).get(mn, {})
+            act = s.get("action", "NO TRADE")
+            color = (_heat_color(act, s.get("confidence")) if heatmap
                      else ACTION_COLOR.get(act, "#9ca3af"))
-            cells += f'<td class="simx-c" style="background:{color}" data-tk="{tk}" data-mn="{mn}"></td>'
+            cells += (f'<td><a class="simx-c" style="background:{color}" href="?sim_cell={tk}|{mn}" '
+                      f'target="_self" title="{_tooltip(tk, mn, s)}">&#8203;</a></td>')
         body_rows += f'<tr><th class="simx-tk">{tk}</th>{cells}</tr>'
-
-    table = f'<div class="simx-wrap"><table>{head}<tbody>{body_rows}</tbody></table></div>'
-    js = _MATRIX_JS.replace("/*DATA*/", json.dumps(data))
-    html = _MATRIX_CSS + table + '<div id="simx-tt"></div>' + js
-    # Alto del iframe = grid visible + espacio para el tooltip flotante (el iframe recorta lo que
-    # sobresale; el JS reposiciona el tooltip para que quede dentro de este alto).
-    grid_h = min(200, (len(tickers) + 1) * 26 + 40)
-    height = grid_h + 190
-    return html, height
+    return (_MATRIX_CSS
+            + f'<div class="simx-wrap"><table>{head}<tbody>{body_rows}</tbody></table></div>')
 
 
 def legend_html(heatmap: bool = False) -> str:

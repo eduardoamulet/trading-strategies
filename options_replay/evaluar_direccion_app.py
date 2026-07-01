@@ -48,10 +48,6 @@ with st.expander("📋 Universo operable", expanded=False):
 
 # ── Sección 2 · Dirección del mercado (motor) ──────────────────────────────────
 st.divider()
-st.header("🧭 Dirección del mercado")
-st.caption("Dirección probable de un activo en un minuto dado — **sin look-ahead** (usa solo velas "
-           "≤ la hora). Combina indicadores propios + confirmación cross-asset (SPY ancla) + reglas "
-           "ponderadas. La confianza aún es heurística; se calibrará con el backtest.")
 
 import datetime as _dt
 import streamlit.components.v1 as _components
@@ -79,42 +75,47 @@ _tks = [p.ticker for p in _mdtp.all_profiles()]
 import pandas as _pd
 _now_et = _pd.Timestamp.now(tz="America/New_York")
 st.session_state.setdefault("md_time", _dt.time(_now_et.hour, _now_et.minute))
-_c1, _c2, _c3, _c4 = st.columns([2, 1.8, 2.4, 1.3])
-_md_tk = _c1.selectbox("Activo", _tks, index=(_tks.index("SPY") if "SPY" in _tks else 0), key="md_tk")
-_md_date = _c2.date_input("Fecha", value=_now_et.date(), key="md_date")
-with _c3:
-    _md_time = st.time_input("Hora (ET)", key="md_time")
-    _bm1, _bm2 = st.columns(2)
-    _bm1.button("− 1 min", on_click=_md_bump, args=(-1,), use_container_width=True, key="md_minus")
-    _bm2.button("+ 1 min", on_click=_md_bump, args=(1,), use_container_width=True, key="md_plus")
-_go = _c4.button("Evaluar", type="primary", use_container_width=True, key="md_eval")
+with st.container(border=True):
+    st.header("🧭 Dirección del mercado")
+    st.caption("Dirección probable de un activo en un minuto dado — **sin look-ahead** (usa solo velas "
+               "≤ la hora). Combina indicadores propios + confirmación cross-asset (SPY ancla) + reglas "
+               "ponderadas. La confianza aún es heurística; se calibrará con el backtest.")
+    _c1, _c2, _c3, _c4 = st.columns([2, 1.8, 2.4, 1.3])
+    _md_tk = _c1.selectbox("Activo", _tks, index=(_tks.index("SPY") if "SPY" in _tks else 0), key="md_tk")
+    _md_date = _c2.date_input("Fecha", value=_now_et.date(), key="md_date")
+    with _c3:
+        _md_time = st.time_input("Hora (ET)", key="md_time")
+        _bm1, _bm2 = st.columns(2)
+        _bm1.button("− 1 min", on_click=_md_bump, args=(-1,), use_container_width=True, key="md_minus")
+        _bm2.button("+ 1 min", on_click=_md_bump, args=(1,), use_container_width=True, key="md_plus")
+    _go = _c4.button("Evaluar", type="primary", use_container_width=True, key="md_eval")
 
-if _go or st.session_state.pop("md_do_eval", False):
-    _sig = market_direction_engine(_md_tk, _md_date.isoformat(), _md_time.strftime("%H:%M"),
-                                   provider=_md_provider())
-    st.session_state["md_sig"] = _sig.to_dict()
-    st.session_state["md_svg"] = build_gauge_html(_sig)
+    if _go or st.session_state.pop("md_do_eval", False):
+        _sig = market_direction_engine(_md_tk, _md_date.isoformat(), _md_time.strftime("%H:%M"),
+                                       provider=_md_provider())
+        st.session_state["md_sig"] = _sig.to_dict()
+        st.session_state["md_svg"] = build_gauge_html(_sig)
 
-if st.session_state.get("md_sig"):
-    _d = st.session_state["md_sig"]
-    _gc, _mc = st.columns([1.4, 1])
-    with _gc:
-        _components.html(st.session_state["md_svg"], height=215)
-    with _mc:
-        st.metric("Acción", _d["action"])
-        _r1, _r2 = st.columns(2)
-        _r1.metric("Fuerza", f"{_d['score']:.0f}/100")
-        _r2.metric("Confianza", f"{_d['confidence']:.0%}")
-        st.caption(f"{_d['ticker']} · {_d['date']} · {_d['entry_time']} ET · tendencia **{_d['trend']}**")
-    if _d["action"] != "NO TRADE":
-        _l1, _l2, _l3, _l4 = st.columns(4)
-        _l1.metric("Entry", _d["entry_price"])
-        _l2.metric("Stop", _d["stop"])
-        _l3.metric("Target", _d["target"])
-        _l4.metric("R:R", _d["risk_reward"])
-    with st.expander("🔎 Razones — desglose del score", expanded=False):
-        for _rz in _d["reasons"]:
-            st.markdown(f"- {_rz}")
+    if st.session_state.get("md_sig"):
+        _d = st.session_state["md_sig"]
+        _gc, _mc = st.columns([1.4, 1])
+        with _gc:
+            _components.html(st.session_state["md_svg"], height=215)
+        with _mc:
+            st.metric("Acción", _d["action"])
+            _r1, _r2 = st.columns(2)
+            _r1.metric("Fuerza", f"{_d['score']:.0f}/100")
+            _r2.metric("Confianza", f"{_d['confidence']:.0%}")
+            st.caption(f"{_d['ticker']} · {_d['date']} · {_d['entry_time']} ET · tendencia **{_d['trend']}**")
+        if _d["action"] != "NO TRADE":
+            _l1, _l2, _l3, _l4 = st.columns(4)
+            _l1.metric("Entry", _d["entry_price"])
+            _l2.metric("Stop", _d["stop"])
+            _l3.metric("Target", _d["target"])
+            _l4.metric("R:R", _d["risk_reward"])
+        with st.expander("🔎 Razones — desglose del score", expanded=False):
+            for _rz in _d["reasons"]:
+                st.markdown(f"- {_rz}")
 
 # ── Sección 3 · Gráfico de TradingView (activo seleccionado) ────────────────────
 st.divider()
@@ -194,9 +195,9 @@ with st.expander("🎬 Simulación Intradía", expanded=bool(st.session_state.ge
         # Click en una celda → llega como ?sim_cell=TICKER|MINUTO (+ nonce _sn). Lo aplicamos al
         # selector (que rige el gráfico) ANTES de crear los widgets. El guard por _sn evita re-aplicar
         # en reruns que no vienen de un click (p.ej. mover el selector a mano).
-        _qp_cell, _qp_sn = st.query_params.get("sim_cell"), st.query_params.get("_sn")
-        if _qp_cell and _qp_sn and _qp_sn != st.session_state.get("_sim_last_sn"):
-            st.session_state["_sim_last_sn"] = _qp_sn
+        _qp_cell = st.query_params.get("sim_cell")
+        if _qp_cell and _qp_cell != st.session_state.get("_sim_last_cell"):
+            st.session_state["_sim_last_cell"] = _qp_cell
             try:
                 _qtk, _qmn = _qp_cell.split("|", 1)
                 if _qtk in _sim["tickers"] and _qmn in _sim["minutes"]:
@@ -209,8 +210,8 @@ with st.expander("🎬 Simulación Intradía", expanded=bool(st.session_state.ge
                           help="Verde/rojo más OSCURO = mayor confianza (CALL/PUT); gris = NO TRADE. "
                                "Convierte la matriz en un mapa de calor de la calidad de las señales.")
         st.markdown(_msv.legend_html(heatmap=_heat), unsafe_allow_html=True)
-        _mx_html, _mx_h = _msv.build_matrix_html(_sim, heatmap=_heat)
-        _components.html(_mx_html, height=_mx_h)
+        # Matriz en el DOM principal (no iframe) → celdas clicables + sin espacio en blanco.
+        st.markdown(_msv.build_matrix_html(_sim, heatmap=_heat), unsafe_allow_html=True)
 
         # Inspección de una celda → el MISMO gráfico de Backtesting + panel lateral con el TradeSignal.
         st.markdown("**🔍 Inspeccionar** — **clic en una celda** (o elegí abajo); la matriz muestra el "
