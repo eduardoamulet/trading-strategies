@@ -102,3 +102,58 @@ def write(seed, rows: list, out_dir, listas_src=None) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
     return out
+
+
+# ── Modo «rellenar el results file provisto»: 1 fila por ESCENARIO (agrega sus runs) ──────────
+def aggregate_by_scenario(rows: list) -> dict:
+    """Agrega las filas por-posición → resumen por ID usando el ROI FINAL de cada run.
+    Valor mín/máx = peor/mejor run · Promedios = media de los runs · Inversión/Ganancia = sumas."""
+    from collections import defaultdict
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[str(r.get("ID"))].append(r)
+    out = {}
+    for sid, rs in groups.items():
+        inv_tot = sum(float(r.get("inversion") or 0.0) for r in rs)
+        gan_tot = sum(float(r.get("ganancia") or 0.0) for r in rs)
+        ok = [r for r in rs if not r.get("n_err")]
+        usds = [float(r.get("ganancia") or 0.0) for r in ok]
+        pcts = [float(r["ganancia"]) / float(r["inversion"]) * 100.0
+                for r in ok if float(r.get("inversion") or 0.0) > 0]
+        out[sid] = {
+            "inversion": inv_tot, "ganancia": gan_tot,
+            "roi_min_pct": min(pcts) if pcts else 0.0, "roi_min_usd": min(usds) if usds else 0.0,
+            "roi_max_pct": max(pcts) if pcts else 0.0, "roi_max_usd": max(usds) if usds else 0.0,
+            "roi_avg_pct": (sum(pcts) / len(pcts)) if pcts else 0.0,
+            "roi_avg_usd": (sum(usds) / len(usds)) if usds else 0.0,
+            "n_roi_pos": sum(1 for u in usds if u > 0),
+            "n_roi_neg": sum(1 for u in usds if u <= 0),
+            "n_err": sum(int(r.get("n_err") or 0) for r in rs),
+        }
+    return out
+
+
+def fill_results(seed, rows: list, template_path, out_path) -> Path:
+    """Rellena el results file provisto (hoja «Backtesting Results»): 1 fila por escenario,
+    matcheado por ID en la col A (filas 4+). Preserva formato/estructura del archivo. Devuelve el Path."""
+    from openpyxl import load_workbook
+    agg = aggregate_by_scenario(rows)
+    tickers_lbl = ", ".join(seed.tickers)
+    fecha_lbl = f"{seed.fecha_inicial} → {seed.fecha_final}"
+    wb = load_workbook(Path(template_path))
+    ws = wb["Backtesting Results"] if "Backtesting Results" in wb.sheetnames else wb.active
+    _decs = [0, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0]   # D..N (mismo orden que _DATA)
+    for row in ws.iter_rows(min_row=4):
+        sid = str(row[0].value or "").strip()
+        a = agg.get(sid)
+        if not sid or a is None:
+            continue
+        row[1].value = tickers_lbl          # B · Ticker (alcance)
+        row[2].value = fecha_lbl            # C · Fecha (rango)
+        for i, (key, dec) in enumerate(zip([k for k, _ in _DATA], _decs)):
+            v = a.get(key)
+            row[3 + i].value = round(v, dec) if isinstance(v, (int, float)) else v
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out)
+    return out

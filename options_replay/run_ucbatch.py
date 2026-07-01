@@ -34,6 +34,8 @@ def main() -> None:
     ap.add_argument("--processes", type=int, default=0, help="Nº de procesos (0 = automático).")
     ap.add_argument("--limit", type=int, default=0, help="Correr solo los primeros N escenarios (0 = todos).")
     ap.add_argument("--notify", action="store_true", help="Popup + consola abierta al terminar (lo usa la app).")
+    ap.add_argument("--fill", default="", help="Results file a RELLENAR (1 fila por escenario, agregando "
+                                               "sus runs y matcheando por ID). Si se da, no genera un workbook nuevo.")
     a = ap.parse_args()
 
     import config
@@ -54,7 +56,11 @@ def main() -> None:
     rows, days = runner.run(seed, mapped, str(HERE / "data"), config.POLYGON_API_KEY,
                             processes=procs, progress_cb=lambda d, t: cli_progress(d, t, t0))
     print()
-    out = report.write(seed, rows, a.out, listas_src=a.excel)
+    if a.fill:
+        out = report.fill_results(seed, rows, a.fill, Path(a.out) / report.output_filename(seed))
+        print(f"   (modo RELLENAR: 1 fila por escenario sobre {Path(a.fill).name})")
+    else:
+        out = report.write(seed, rows, a.out, listas_src=a.excel)
     n_err = sum(1 for r in rows if r.get("n_err"))
     el = time.time() - t0
     print(f"\n✅ Listo en {el / 60:.1f} min → {out}")

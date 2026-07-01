@@ -1,5 +1,6 @@
-data/
-!data/.gitkeep
+# Solo la cache de parquets del nivel superior (NO market_direction/data/, que es CÓDIGO)
+/data/
+!/data/.gitkeep
 __pycache__/
 *.py[cod]
 .streamlit/secrets.toml

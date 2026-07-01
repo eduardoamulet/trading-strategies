@@ -2296,8 +2296,13 @@ with st.sidebar.container():
                      "corrés ahí). **Cargar backtesting file**: subís un Excel de configuraciones y, al tocar el "
                      "botón rojo, se corre el backtest de CADA fila sobre los tickers / fecha(s) / tipo de arriba.")
             if _bt_mode == "Cargar backtesting file":
-                st.file_uploader("📄 Backtesting file (.xlsx)", type=["xlsx"], key="bt_file_upload",
-                                 help="Excel con una fila por configuración (como el que te generé).")
+                st.file_uploader("📄 Template de entrada — Data seed + scenarios (.xlsx)", type=["xlsx"],
+                                 key="bt_file_upload",
+                                 help="Backtesting_use_cases_template.xlsx: globales (tickers/fechas/tipo/…) + escenarios C001…")
+                st.file_uploader("📊 Results file a LLENAR — salida (.xlsx)", type=["xlsx"],
+                                 key="bt_fill_upload",
+                                 help="Backtesting_Results_….xlsx con los IDs C001… pre-cargados; se rellena 1 fila por escenario "
+                                      "(agregando sus 3 tickers × N días).")
 
     # Refuerzo: ya NO se ingresa en el manual (Umbral de pérdida refuerzo + No. de veces a reforzar
     # se configuran en «Backtest de señales / iteraciones»). Defaults fijos para la corrida manual.
@@ -2553,7 +2558,8 @@ if st.sidebar.button("📤 Backtestear con TODAS las funciones →", type="prima
     _dates = [d for d in _dates if _non_trading_reason(d) is None]   # sin feriados / fin de semana
     _bt_mode = st.session_state.get("bt_mode_radio", "Backtest visual paso a paso")
     _bt_file = st.session_state.get("bt_file_upload")
-    if _bt_mode == "Cargar backtesting file" and _bt_file is not None:
+    _bt_fill = st.session_state.get("bt_fill_upload")
+    if _bt_mode == "Cargar backtesting file" and _bt_file is not None and _bt_fill is not None:
         # === BATCH dirigido por el template (Data seed + scenarios). TODA la config sale del Data
         #     seed (tickers, fechas, tipo, inversión, horarios…); se IGNORAN los Session Parameters.
         #     Lanza run_ucbatch.py en una CONSOLA NUEVA (async): no bloquea la app, no se cuelga,
@@ -2580,12 +2586,15 @@ if st.sidebar.button("📤 Backtestear con TODAS las funciones →", type="prima
             _jobs.mkdir(parents=True, exist_ok=True)
             _in_xlsx = _jobs / "input.xlsx"
             _in_xlsx.write_bytes(_bt_file.getvalue())
+            _fill_xlsx = _jobs / "results_fill.xlsx"                      # el results file a rellenar
+            _fill_xlsx.write_bytes(_bt_fill.getvalue())
             _res_dir = _or_dir.parent / "resultados"                     # <Traiding>/resultados/
             _res_dir.mkdir(parents=True, exist_ok=True)
             _out_xlsx = _res_dir / _ucrep.output_filename(_seed)
             _days = _ucrun.trading_days(_seed.fecha_inicial, _seed.fecha_final)
             _cmd = [_sysx.executable, str(_or_dir / "run_ucbatch.py"),
-                    "--excel", str(_in_xlsx), "--out", str(_res_dir), "--notify"]
+                    "--excel", str(_in_xlsx), "--fill", str(_fill_xlsx),
+                    "--out", str(_res_dir), "--notify"]
             try:
                 _sp.Popen(_cmd, creationflags=getattr(_sp, "CREATE_NEW_CONSOLE", 0), cwd=str(_or_dir))
                 for _k in ("batch_results", "batch_meta", "replay", "_batch_pending"):
@@ -2597,6 +2606,8 @@ if st.sidebar.button("📤 Backtestear con TODAS las funciones →", type="prima
             except Exception as _le:   # noqa: BLE001
                 st.sidebar.error(f"No pude lanzar el runner en consola ({_le}). Corrélo a mano: "
                                  f"`python options_replay/run_ucbatch.py --excel \"{_in_xlsx}\"`")
+    elif _bt_mode == "Cargar backtesting file":
+        st.sidebar.warning("⚠️ Subí **ambos** archivos: el **template de entrada** y el **results file a llenar**.")
     else:
         # === Puente normal: manda las filas (ticker × fecha) al panel de señales. ===
         _rows = [{"Ticker": str(tk).upper(), "Fecha": d, "Hora": _hora, "Tipo": _tipo}

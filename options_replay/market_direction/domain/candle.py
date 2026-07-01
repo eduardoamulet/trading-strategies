@@ -82,6 +82,8 @@ class Session:
     # ── causalidad: la sub-sesión hasta el minuto `t` (inclusive) ────────────
     def up_to(self, t) -> "Session":
         """Sub-sesión con las velas cuyo timestamp es ≤ `t`. `t` puede ser un Timestamp o «HH:MM»."""
+        if self.empty:                       # sesión vacía → nada que cortar (evita comparar dtypes)
+            return self
         ts = self._coerce(t)
         return Session(self._df[self._df["timestamp"] <= ts], self.ticker, self.date)
 
