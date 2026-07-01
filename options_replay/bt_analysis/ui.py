@@ -29,6 +29,7 @@ def render(report: dict) -> None:
         st.warning(w)
 
     _exec_summary(report)
+    _export(report)
     _eda(report)
     _by_ticker(report)
     _rankings(report)
@@ -83,6 +84,34 @@ def _exec_summary(report: dict) -> None:
         _no = [d for d, i in dow.get("per_day", {}).items() if i.get("recommendation") == "NO OPERAR"]
         st.success(f"**Veredicto por día**: OPERAR **{_n_op}/{_n}** días"
                    + (f" · **NO OPERAR**: {', '.join(_no)}" if _no else ""))
+
+
+def _export(report: dict) -> None:
+    from . import export as _exp
+    st.markdown("### 📤 Exportar Interpretación para Análisis Cuantitativo")
+    st.caption("Genera un documento **Markdown LLM-ready** (+ JSON / CSV / Excel) con todo el análisis, "
+               "listo para que Claude/ChatGPT descubran patrones. Prioriza **probabilidad de ROI>0 y "
+               "robustez**, no el ROI máximo histórico.")
+    rk = _exp.probability_ranking(report)
+    if not rk.empty:
+        st.markdown("**Ranking — Probabilidad de ROI>0 (priorizando robustez):**")
+        st.dataframe(rk.head(25).style.map(
+            lambda v: f"color:{_REC_COLOR.get(v, '')};font-weight:700" if v in _REC_COLOR else "",
+            subset=["Recomendación"]), use_container_width=True, hide_index=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.download_button("⬇ Markdown (IA)", _exp.to_markdown(report).encode("utf-8"),
+                       file_name="interpretacion_backtesting.md", mime="text/markdown",
+                       use_container_width=True)
+    c2.download_button("⬇ JSON", _exp.scenarios_json_bytes(report), file_name="escenarios.json",
+                       mime="application/json", use_container_width=True)
+    c3.download_button("⬇ CSV", _exp.scored_csv(report), file_name="escenarios.csv", mime="text/csv",
+                       use_container_width=True)
+    c4.download_button("⬇ Excel", _exp.to_excel(report), file_name="interpretacion.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       use_container_width=True)
+    st.markdown("**¿Qué falta capturar para el análisis profundo?** (sugerencias)")
+    for g in _exp.data_gaps(report):
+        st.markdown(f"- {g}")
 
 
 def _eda(report: dict) -> None:

@@ -89,11 +89,20 @@ with st.container(border=True):
         _bm1.button("− 1 min", on_click=_md_bump, args=(-1,), use_container_width=True, key="md_minus")
         _bm2.button("+ 1 min", on_click=_md_bump, args=(1,), use_container_width=True, key="md_plus")
     _go = _c4.button("Evaluar", type="primary", use_container_width=True, key="md_eval")
+    _md_volf = st.checkbox(
+        "Filtro de volatilidad — solo operar días de **gran movimiento**", value=True,
+        key="md_vol_filter",
+        help="ON: si el día viene chato (rango implícito < 60% del típico), la acción es NO TRADE "
+             "aunque la dirección sea clara (el objetivo es capturar movimientos grandes en 0DTE). "
+             "OFF: da CALL/PUT según la dirección + VWAP, sin bloquear por volatilidad.")
 
     if _go or st.session_state.pop("md_do_eval", False):
-        _sig = market_direction_engine(_md_tk, _md_date.isoformat(), _md_time.strftime("%H:%M"),
-                                       provider=_md_provider())
+        from market_direction.decision import SignalGenerator
+        _sig = market_direction_engine(
+            _md_tk, _md_date.isoformat(), _md_time.strftime("%H:%M"),
+            provider=_md_provider(), generator=SignalGenerator(vol_filter=_md_volf))
         st.session_state["md_sig"] = _sig.to_dict()
+        st.session_state["md_sig"]["eval_time"] = _md_time.strftime("%H:%M")
         st.session_state["md_svg"] = build_gauge_html(_sig)
 
     if st.session_state.get("md_sig"):
@@ -106,7 +115,18 @@ with st.container(border=True):
             _r1, _r2 = st.columns(2)
             _r1.metric("Fuerza", f"{_d['score']:.0f}/100")
             _r2.metric("Confianza", f"{_d['confidence']:.0%}")
-            st.caption(f"{_d['ticker']} · {_d['date']} · {_d['entry_time']} ET · tendencia **{_d['trend']}**")
+            st.caption(f"{_d['ticker']} · {_d['date']} · "
+                       f"{_d.get('eval_time') or _d.get('entry_time') or '—'} ET · tendencia **{_d['trend']}**")
+        # Cuando la dirección es clara (score en zona CALL/PUT) pero la acción es NO TRADE, explicar
+        # POR QUÉ (típicamente el filtro de volatilidad) — antes se veía «NO TRADE» del lado de CALL sin
+        # contexto y parecía un bug.
+        if _d["action"] == "NO TRADE" and (_d["score"] >= 75 or _d["score"] <= 25):
+            _lean = "ALCISTA (CALL)" if _d["score"] >= 75 else "BAJISTA (PUT)"
+            _volr = next((r for r in _d.get("reasons", []) if str(r).startswith("Volatilidad baja")), None)
+            st.warning(
+                f"La **dirección es {_lean}** (fuerza {_d['score']:.0f}/100), pero la acción es "
+                f"**NO TRADE**" + (f" — {_volr}." if _volr else " (el precio no acompaña al VWAP).")
+                + (" Desactivá el *filtro de volatilidad* de arriba para operarla igual." if _volr else ""))
         if _d["action"] != "NO TRADE":
             _l1, _l2, _l3, _l4 = st.columns(4)
             _l1.metric("Entry", _d["entry_price"])

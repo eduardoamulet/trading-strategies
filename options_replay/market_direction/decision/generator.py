@@ -32,9 +32,11 @@ class SignalGenerator:
     PUT_THRESHOLD = 25.0
     MIN_VOL_RATIO = 0.60      # el día debe implicar ≥60% del rango diario típico del ticker
 
-    def __init__(self, calibrator=None, levels: Optional[LevelCalculator] = None):
+    def __init__(self, calibrator=None, levels: Optional[LevelCalculator] = None,
+                 vol_filter: bool = True):
         self._cal = calibrator or make_calibrator()
         self._lev = levels or LevelCalculator()
+        self._vol_filter = vol_filter      # False → no bloquea por vol (da CALL/PUT según score+VWAP)
 
     def _vol_ok(self, features: FeatureSet, profile):
         """(ok, nota). El día viene chato si el ATR implica un rango diario < MIN_VOL_RATIO×típico."""
@@ -56,7 +58,7 @@ class SignalGenerator:
         reasons = list(score.reasons)
         entry_time = f"{features.hour:02d}:{features.minute:02d}"
 
-        vol_ok, vol_note = self._vol_ok(features, prof)
+        vol_ok, vol_note = self._vol_ok(features, prof) if self._vol_filter else (True, "")
         if not vol_ok:
             reasons.append(vol_note)
 
