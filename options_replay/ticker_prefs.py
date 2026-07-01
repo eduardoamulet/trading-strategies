@@ -106,6 +106,35 @@ def preferred_tickers() -> list:
             "SELECT ticker FROM ticker_prefs WHERE preferencia=1 ORDER BY orden")]
 
 
+# ── Autocompletado de tickers por día de la semana ──────────────────────────────────────────────
+# Fuente ÚNICA: la config §4 «Tickers que vencen ese mismo día de la semana» (columnas exp_*, donde
+# "mismo día" = ese ticker tiene 0DTE ese día). Centralizado acá para que Backtesting y el Historial
+# de Señales lo reusen sin duplicar lógica.
+_WEEKDAY_EXP_COL = {0: "exp_lun", 1: "exp_mar", 2: "exp_mie", 3: "exp_jue", 4: "exp_vie"}
+
+
+def default_tickers() -> list:
+    """Lista de tickers por defecto (los 11 prioritarios) — cuando no aplica la lógica por día."""
+    return list(PRIORITY)
+
+
+def tickers_for_weekday(weekday: int) -> list:
+    """Tickers con vencimiento 0DTE («mismo día») ese `weekday` (0=Lun … 4=Vie), leídos de la config
+    §4 (columnas exp_*). Cae a `default_tickers()` si es fin de semana, la tabla no existe / no está
+    calculada, o ese día no tiene ninguno configurado."""
+    col = _WEEKDAY_EXP_COL.get(weekday)
+    if col is not None:
+        try:
+            df = load()
+            if not df.empty and col in df.columns:
+                tks = df.loc[df[col] == "mismo día", "ticker"].astype(str).tolist()
+                if tks:
+                    return tks
+        except Exception:
+            pass
+    return default_tickers()
+
+
 def _cell(dl, ticker: str, date_str: str) -> str:
     """Vencimiento más temprano entrando en `date_str`, como texto display."""
     try:

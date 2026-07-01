@@ -140,16 +140,29 @@ sel_estr = f1.selectbox("Estrategia", ["(todas)"] + sorted(df["estrategia"].drop
 # símbolos que ya tienen señales (por si alguno no está en ticker_info). Así META/NVDA/
 # GOOG aparecen aunque todavía no tengan señales importadas.
 _sym_opts = sorted(set(_ticker_universe()) | set(df["symbol"].dropna().astype(str).tolist()))
-# Preselección por defecto = tickers marcados como PREFERENCIALES en Configuración
-# (tabla ticker_prefs); si la base no está / vacía, cae a los 11 líquidos de siempre.
+# Preselección por defecto de "Acción" según el DÍA DE LA SEMANA (config §4 «Tickers que vencen ese
+# mismo día», centralizada en ticker_prefs): si la tabla está filtrada a UNA fecha (filtro de tabla ≠
+# «(todas las fechas)») o Desde==Hasta, se prepopula con los tickers que vencen 0DTE ese día; si no,
+# la lista por defecto. Las fechas se leen del session_state (esos widgets se crean más abajo).
+import ticker_prefs as _tp_pref
+_TODAS = "(todas las fechas)"                       # (también lo usa la navegación por fecha, abajo)
+_acc_target = None
+_dp_prev = st.session_state.get("sig_date_pick")
+if _dp_prev and _dp_prev != _TODAS:                 # condición 2: filtro de tabla en una fecha puntual
+    try:
+        _acc_target = pd.to_datetime(_dp_prev).date()
+    except Exception:
+        _acc_target = None
+if _acc_target is None:                             # condición 1: Desde == Hasta
+    _de, _ha = st.session_state.get("sig_desde"), st.session_state.get("sig_hasta")
+    if _de is not None and _de == _ha:
+        _acc_target = _de
 try:
-    import ticker_prefs as _tp_pref
-    _DEFAULT_SYMS = _tp_pref.preferred_tickers()
+    _DEFAULT_SYMS = (_tp_pref.tickers_for_weekday(_acc_target.weekday())
+                     if _acc_target is not None else _tp_pref.default_tickers())
 except Exception:
-    _DEFAULT_SYMS = []
-_DEFAULT_SYMS = _DEFAULT_SYMS or ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META", "MSFT", "GOOG", "AAPL"]
-# Re-sincroniza EN VIVO: si cambiás los preferenciales (Configuración), este multiselect se
-# re-siembra solo (solo cuando la lista cambia → no pisa tu filtro manual).
+    _DEFAULT_SYMS = ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META", "MSFT", "GOOG", "AAPL"]
+# Re-siembra SOLO cuando la lista por defecto cambia (cambió el día/fecha) → no pisa tu filtro manual.
 _valid_pref = [s for s in _DEFAULT_SYMS if s in _sym_opts]
 if st.session_state.get("_pref_sig_acc") != tuple(_valid_pref):
     st.session_state["_pref_sig_acc"] = tuple(_valid_pref)
@@ -159,8 +172,10 @@ sel_est = f3.selectbox("Estado", ["(todos)"] + xs.ESTADOS)
 sel_tipo = f4.selectbox("Tipo", ["(todos)", "CALL", "PUT"])
 _fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
 g1, g2, g3, g4 = st.columns(4)
-d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) else datetime.now().date()))
-d_hasta = g2.date_input("Hasta", value=(_fechas.max().date() if len(_fechas) else datetime.now().date()))
+d_desde = g1.date_input("Desde", value=(_fechas.min().date() if len(_fechas) else datetime.now().date()),
+                        key="sig_desde")
+d_hasta = g2.date_input("Hasta", value=(_fechas.max().date() if len(_fechas) else datetime.now().date()),
+                        key="sig_hasta")
 pmin = g3.slider("% Cumplimiento mínimo", 0, 100, 90, step=5,
                  help="Muestra solo señales con % de cumplimiento ≥ este valor (0 = todas).")
 g4.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)  # alinea con los date_input
@@ -293,8 +308,7 @@ fdf = fdf.sort_values(["fecha", "hora"], ascending=False).reset_index(drop=True)
 # botones (Ver/Eliminar/Backtest) operan sobre 'view'.
 _dates = sorted(fdf["fecha"].astype(str).unique().tolist(), reverse=True)   # recientes primero
 _ndays = len(_dates)
-_TODAS = "(todas las fechas)"
-_opts = [_TODAS] + _dates
+_opts = [_TODAS] + _dates                           # _TODAS ya definido arriba (filtros de "Acción")
 st.session_state["_sig_dates"] = _dates   # para los callbacks de ◀/▶
 # Selección del dropdown; default = "(todas las fechas)" → la tabla muestra TODAS las
 # alertas (de todos los días). Si quedó inválida (cambió un filtro), se resetea a ese valor.

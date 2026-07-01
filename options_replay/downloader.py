@@ -49,6 +49,11 @@ class Downloader:
         self._pq_cache: "OrderedDict[str, pd.DataFrame]" = OrderedDict()
         self._pq_cache_lock = threading.Lock()
         self._pq_cache_max = 6000
+        # Memo de vencimiento más cercano por (ticker, fecha). Con lock: en el backtest de señales
+        # varios hilos comparten el Downloader y llaman nearest_expiry → sin lock, el `hasattr`+dict
+        # era la ÚNICA costura sin proteger (race de lectura/escritura + fetches duplicados a la API).
+        self._ne_cache: dict = {}
+        self._ne_cache_lock = threading.Lock()
 
     def _lock_for(self, path) -> threading.Lock:
         key = str(path)
@@ -221,16 +226,18 @@ class Downloader:
 
         Fallback: el filtro `expiration_date.gte` de Polygon a veces NO incluye la
         expiración del MISMO día (el 0DTE de hoy), aunque los contratos existan."""
-        if not hasattr(self, "_ne_cache"):
-            self._ne_cache = {}
         _k = (ticker, on_or_after)
-        if _k in self._ne_cache:
-            return self._ne_cache[_k]
+        with self._ne_cache_lock:              # lectura cacheada bajo lock (rápida)
+            if _k in self._ne_cache:
+                return self._ne_cache[_k]
+        # Cache-miss: se pega a la API FUERA del lock (no serializa a los demás hilos; a lo sumo dos
+        # hilos hacen el mismo fetch una vez → mismo resultado, inofensivo).
         try:
             _r = self.adapter.first_expiration(ticker, on_or_after)
         except Exception:
             _r = None
         if _r is None and not self.adapter.options_chain(ticker, on_or_after).empty:
             _r = on_or_after   # 0DTE existe pero el filtro gte no lo listó
-        self._ne_cache[_k] = _r
+        with self._ne_cache_lock:              # escritura bajo lock
+            self._ne_cache[_k] = _r
         return _r

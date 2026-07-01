@@ -112,3 +112,27 @@ if st.session_state.get("md_sig"):
     with st.expander("🔎 Razones — desglose del score", expanded=False):
         for _rz in _d["reasons"]:
             st.markdown(f"- {_rz}")
+
+# ── Sección 3 · Gráfico de TradingView (activo seleccionado) ────────────────────
+st.divider()
+_tv_show = st.checkbox(
+    "📈 Ver gráfico de TradingView del activo", value=False, key="md_tv_show",
+    help="Chart en vivo del activo seleccionado. El widget gratuito de TradingView abre en los datos "
+         "MÁS RECIENTES (no salta a una fecha histórica puntual): la fecha/hora elegida se muestra "
+         "como referencia y hay un link para navegar al símbolo en TradingView.")
+if _tv_show:
+    from market_direction.ui.tradingview import (build_tradingview_html, tradingview_symbol,
+                                                 tradingview_url)
+    _tv_sym = tradingview_symbol(_md_tk)
+    _tv_theme = "dark" if str(st.get_option("theme.base") or "light").lower() == "dark" else "light"
+    _ivc, _txc = st.columns([1, 3])
+    _tv_int = _ivc.selectbox(
+        "Intervalo", ["1", "5", "15", "60", "D"], index=1, key="md_tv_int",
+        format_func=lambda x: {"1": "1 min", "5": "5 min", "15": "15 min", "60": "1 h", "D": "Diario"}[x])
+    with _txc:
+        st.markdown(f"**{_tv_sym}** · zona horaria **ET**")
+        st.caption(f"Referencia elegida: **{_md_date.isoformat()} · {_md_time.strftime('%H:%M')} ET** — "
+                   f"el widget abre en los datos más recientes · "
+                   f"[Abrir en TradingView ↗]({tradingview_url(_tv_sym, _tv_int)})")
+    _components.html(build_tradingview_html(_tv_sym, interval=_tv_int, theme=_tv_theme, height=500),
+                     height=520)

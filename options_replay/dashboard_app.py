@@ -27,7 +27,7 @@ c4.metric("Ganancia acumulada",
 
 st.divider()
 if len(df):
-    st.markdown("#### 🔔 Últimas señales")
+    st.subheader("🔔 Últimas señales")
     last = df.head(8)[["symbol", "tipo", "estrategia", "probabilidad", "fecha", "hora", "estado"]]
     last = last.rename(columns={"symbol": "Acción", "tipo": "Tipo", "estrategia": "Estrategia",
                                 "probabilidad": "% Cumpl.", "fecha": "Fecha", "hora": "Hora",

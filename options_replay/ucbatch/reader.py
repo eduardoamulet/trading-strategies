@@ -115,8 +115,17 @@ def read_scenarios(ws) -> list:
 
 
 def read_template(path) -> tuple:
-    """Devuelve (Seed, list[Scenario]). Lanza si faltan las hojas requeridas."""
-    wb = load_workbook(Path(path), read_only=True, data_only=True)
+    """Devuelve (Seed, list[Scenario]). Acepta un path (str/Path) O un file-like
+    (UploadedFile de Streamlit / BytesIO). Lanza si faltan las hojas requeridas."""
+    if hasattr(path, "read"):            # file-like → openpyxl lo lee directo (Path() lo rompería)
+        try:
+            path.seek(0)                 # rebobinar por si ya se leyó antes en el mismo rerun
+        except Exception:
+            pass
+        src = path
+    else:
+        src = Path(path)
+    wb = load_workbook(src, read_only=True, data_only=True)
     if SEED_SHEET not in wb.sheetnames or SCEN_SHEET not in wb.sheetnames:
         raise ValueError(f"El Excel debe tener las hojas «{SEED_SHEET}» y «{SCEN_SHEET}». "
                          f"Encontradas: {wb.sheetnames}")

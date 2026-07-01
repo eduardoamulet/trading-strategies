@@ -27,7 +27,7 @@ def _read_json(path: Path, default):
         return default
 
 
-st.header("⚙️ Configuración")
+st.title("⚙️ Configuración")
 st.caption("Estas tablas alimentan el motor de backtest (Opción 1). Se guardan a JSON — no están "
            "hardcodeadas — y el motor las toma en el **siguiente backtest** (sin reiniciar).")
 

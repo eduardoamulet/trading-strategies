@@ -82,7 +82,7 @@ def _params() -> dict:
 
 
 # ════════════════════════════════════ Render ════════════════════════════════════
-st.header("🟢 Operar — paper trading en vivo")
+st.title("🟢 Operar — paper trading en vivo")
 st.caption("La MISMA estrategia que el backtest (trading_core), en tiempo real. "
            "**SANDBOX/paper** — no mueve dinero real; las órdenes las confirmás vos con un click.")
 # Que el contenido que se re-renderiza (la captura en vivo) NO se atenúe / vea deshabilitado.

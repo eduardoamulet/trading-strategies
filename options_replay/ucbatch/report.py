@@ -1,11 +1,12 @@
 """Excel Report Generator — workbook de salida con el formato del template.
 
 Independiente del engine: recibe `seed` + `rows` (dicts escalares del runner) y arma el .xlsx.
-Layout (hoja «Backtesting Results»):
-  r1: 📝 Meta | título «RESULTADOS DE SALIDA - Operación <TIPO>» (merge sobre las columnas de datos)
-  r2: headers agrupados (Ticker, Fecha, Inversión total, Ganancia, Valor mín/máx/prom ROI, #ROI, #err)
-  r3: sub-headers (ID | ROI(%)/ROI($) … | >0 / <=0)
-  r4+: una fila por (ticker × día × escenario), ordenadas por Ticker → Fecha → ID.
+Layout (hoja «Backtesting Results») — header de UNA fila → columnas PLANAS y ORDENABLES (Excel
+Data→Sort/Filter necesita el header en la fila 1, sin celdas combinadas):
+  r1: ID | Ticker | Fecha | Inversión total | Ganancia | Valor mínimo ROI (%/$) | Valor máximo ROI
+      (%/$) | Promedios de todos los ROI (%/$) | Número ROI(%) >0 | <=0 | Número de errores  (+ auto-filtro)
+  r2+: una fila por (ticker × día × escenario), ordenadas por Ticker → Fecha → ID.
+Antes el header ocupaba 3 filas con merges (no ordenable); se aplanó a 1 fila.
 Naming: Backtesting_Results_<TIPO>_of_<T1_T2_…>_from_<inicio>_to_<fin>.xlsx (fechas con guión largo).
 """
 from __future__ import annotations
@@ -18,12 +19,19 @@ from openpyxl.utils import get_column_letter
 
 _CTR = Alignment(horizontal="center", vertical="center", wrap_text=True)
 _HFILL = PatternFill("solid", fgColor="DDEBF7")
-_TFILL = PatternFill("solid", fgColor="FCE4D6")
 
-# (clave-en-row, decimales) en orden de columna de datos (col 4 en adelante)
+# (clave-en-row, decimales) en orden de columna de datos (col D=4 en adelante).
 _DATA = [("inversion", 0), ("ganancia", 2),
          ("roi_min_pct", 2), ("roi_min_usd", 2), ("roi_max_pct", 2), ("roi_max_usd", 2),
          ("roi_avg_pct", 2), ("roi_avg_usd", 2), ("n_roi_pos", 0), ("n_roi_neg", 0), ("n_err", 0)]
+
+# Header PLANO de una sola fila (fila 1) → columnas ordenables. El ORDEN mapea 1:1 con [ID, Ticker,
+# Fecha] + _DATA (col D..N), así que fill_results/build escriben por posición sin ambigüedad.
+_HEADERS = ["ID", "Ticker", "Fecha", "Inversión total", "Ganancia",
+            "Valor mínimo ROI (%)", "Valor mínimo ROI ($)",
+            "Valor máximo ROI (%)", "Valor máximo ROI ($)",
+            "Promedios de todos los ROI (%)", "Promedios de todos los ROI ($)",
+            "Número ROI(%) > 0", "Número ROI(%) <= 0", "Número de errores"]
 
 
 def output_filename(seed) -> str:
@@ -34,29 +42,15 @@ def output_filename(seed) -> str:
     return f"Backtesting_Results_{tipo}_of_{tks}_from_{fi}_to_{ff}.xlsx"
 
 
-def _headers(ws, tipo: str) -> None:
-    ws["A1"] = "📝 Meta"
-    ws.merge_cells("B1:N1")
-    t = ws["B1"]; t.value = f"🚪 RESULTADOS DE SALIDA - Operación {tipo.upper()}"
-    t.font = Font(bold=True, size=12); t.alignment = _CTR; t.fill = _TFILL
-    # columnas que ocupan r2+r3 (merge vertical)
-    for col, name in (("A", "ID"), ("B", "Ticker"), ("C", "Fecha"),
-                      ("D", "Inversión total"), ("E", "Ganancia"), ("N", "Número de errores")):
-        ws.merge_cells(f"{col}2:{col}3")
-        ws[f"{col}2"] = name
-    # grupos (r2 merge horizontal) + sub-headers (r3)
-    for c0, c1, grp, sub0, sub1 in (("F", "G", "Valor mínimo", "ROI (%)", "ROI ($)"),
-                                    ("H", "I", "Valor máximo", "ROI (%)", "ROI ($)"),
-                                    ("J", "K", "Promedios de todos", "Los ROI (%)", "Los ROI ($)"),
-                                    ("L", "M", "Número ROI(%)", "> 0", "<= 0")):
-        ws.merge_cells(f"{c0}2:{c1}2")
-        ws[f"{c0}2"] = grp
-        ws[f"{c0}3"] = sub0; ws[f"{c1}3"] = sub1
-    for row in (2, 3):
-        for cc in range(1, 15):
-            cell = ws.cell(row, cc)
-            cell.font = Font(bold=True, size=9); cell.alignment = _CTR; cell.fill = _HFILL
-    ws.row_dimensions[2].height = 28
+def _headers(ws) -> None:
+    """Escribe el header PLANO en la fila 1 → columnas ordenables (Excel Data→Sort/Filter)."""
+    for i, name in enumerate(_HEADERS, 1):
+        cell = ws.cell(1, i)
+        cell.value = name
+        cell.font = Font(bold=True, size=9)
+        cell.alignment = _CTR
+        cell.fill = _HFILL
+    ws.row_dimensions[1].height = 30
 
 
 def _copy_listas(wb, listas_src) -> None:
@@ -78,7 +72,7 @@ def build(seed, rows: list, listas_src=None) -> Workbook:
     wb = Workbook()
     ws = wb.active
     ws.title = "Backtesting Results"
-    _headers(ws, seed.tipo)
+    _headers(ws)                                       # header plano en la fila 1
     _tk = {t: i for i, t in enumerate(seed.tickers)}   # orden del seed (QQQ→SPY→IWM), no alfabético
     ordered = sorted(rows, key=lambda r: (_tk.get(str(r.get("Ticker")), 999), str(r.get("Fecha")), str(r.get("ID"))))
     for r in ordered:
@@ -87,8 +81,9 @@ def build(seed, rows: list, listas_src=None) -> Workbook:
             v = r.get(key)
             vals.append(round(v, dec) if isinstance(v, (int, float)) else v)
         ws.append(vals)
-    ws.freeze_panes = "A4"
-    widths = [8, 8, 12, 13, 11, 10, 10, 10, 10, 11, 11, 9, 9, 11]
+    ws.freeze_panes = "A2"                              # fija el header (1 fila)
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(_HEADERS))}{max(1, ws.max_row)}"   # orden/filtro 1-clic
+    widths = [8, 8, 14, 13, 11, 17, 17, 17, 17, 20, 20, 15, 15, 12]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     _copy_listas(wb, listas_src)
@@ -135,7 +130,9 @@ def aggregate_by_scenario(rows: list) -> dict:
 
 def fill_results(seed, rows: list, template_path, out_path) -> Path:
     """Rellena el results file provisto (hoja «Backtesting Results»): 1 fila por escenario,
-    matcheado por ID en la col A (filas 4+). Preserva formato/estructura del archivo. Devuelve el Path."""
+    matcheada por ID en la col A. ROBUSTO al layout del header: rellena CUALQUIER fila cuyo col A sea
+    un ID de escenario conocido → funciona igual con el header nuevo de 1 fila (datos en r2+) que con
+    el viejo de 3 (datos en r4+), sin hardcodear la fila de inicio. Preserva formato. Devuelve el Path."""
     from openpyxl import load_workbook
     agg = aggregate_by_scenario(rows)
     tickers_lbl = ", ".join(seed.tickers)
@@ -143,16 +140,24 @@ def fill_results(seed, rows: list, template_path, out_path) -> Path:
     wb = load_workbook(Path(template_path))
     ws = wb["Backtesting Results"] if "Backtesting Results" in wb.sheetnames else wb.active
     _decs = [0, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0]   # D..N (mismo orden que _DATA)
-    for row in ws.iter_rows(min_row=4):
+    keys = [k for k, _ in _DATA]
+    n_filled = 0
+    for row in ws.iter_rows(min_row=1):
         sid = str(row[0].value or "").strip()
-        a = agg.get(sid)
-        if not sid or a is None:
+        a = agg.get(sid)                    # None si col A no es un ID conocido (headers/filas vacías)
+        if a is None:
             continue
         row[1].value = tickers_lbl          # B · Ticker (alcance)
         row[2].value = fecha_lbl            # C · Fecha (rango)
-        for i, (key, dec) in enumerate(zip([k for k, _ in _DATA], _decs)):
+        for i, (key, dec) in enumerate(zip(keys, _decs)):
             v = a.get(key)
             row[3 + i].value = round(v, dec) if isinstance(v, (int, float)) else v
+        n_filled += 1
+    if not n_filled:                        # ningún ID matcheó → header/columna A distinta: avisar, no fallar mudo
+        import obs_log
+        obs_log.get_logger("ucbatch").warning(
+            "fill_results: 0 filas rellenadas — ¿la col A del results file no tiene los IDs (C001…)? "
+            "IDs esperados: %s", sorted(agg)[:5])
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)

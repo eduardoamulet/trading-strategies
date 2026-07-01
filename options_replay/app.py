@@ -26,10 +26,6 @@ from engine import (  # noqa: E402
     run_next_iteration,
     validate_0dte_session,
 )
-from predictor import (  # noqa: E402
-    adjust_trading_parameters,
-    load_config as load_predictor_config,
-)
 import signals_backtest as sbt  # noqa: E402
 from portfolio_exit import apply_collective_exit  # noqa: E402
 
@@ -777,11 +773,10 @@ st.markdown(
     [data-testid="stAppViewContainer"] > .main > .block-container {
         padding-top: 1.5rem !important;
     }
+    /* Tamaño del título lo fija el tema global (ui_theme); acá solo lo pegamos al tope. */
     .main h1:first-child {
         margin-top: 0 !important;
         padding-top: 0 !important;
-        font-size: 1.5rem !important;
-        line-height: 1.2 !important;
     }
 
 
@@ -1604,6 +1599,15 @@ def _render_iters_panel(_iters_seed):
         _lv = st.empty()
         _t0 = time.perf_counter()
         _res = []
+        # Observabilidad del backtest CONCURRENTE (hilos comparten el Downloader): inicio/fin/duración
+        # + captura de cualquier excepción de hilo. A options_replay/logs/app.log; consola a WARNING
+        # (no ensucia el server de Streamlit). Correlation-id por corrida. NUNCA loguea la api_key.
+        import logging as _logging
+        from obs_log import get_logger as _get_logger, log_exception as _log_exc, set_correlation_id as _set_cid
+        _sig_log = _get_logger("signals", to_file="app.log", level=_logging.WARNING)
+        _set_cid(f"sig-{int(time.time())}")
+        _sig_log.info("SIGNALS start: %d iteracion(es) · %d hilos · resolución=%s · refuerzo=%s",
+                      _n, _wk, _sig_resolution, _sig_refuerzo)
         with ThreadPoolExecutor(max_workers=_wk) as _ex:
             _futs = []
             for _i, s in enumerate(_specs, start=1):
@@ -1626,6 +1630,7 @@ def _render_iters_panel(_iters_seed):
                 except Exception as _e:
                     _res.append({"ticker": "?", "status": "error", "iteration": None,
                                  "error": str(_e)})
+                    _log_exc(_sig_log, "SIGNALS: una iteración lanzó en el hilo (capturada)")
                 _dn += 1
                 _el = time.perf_counter() - _t0
                 _pr.progress(_dn / _n, text=(f"⏱️ {_el:0.1f}s · {_dn}/{_n} iteraciones "
@@ -1634,6 +1639,9 @@ def _render_iters_panel(_iters_seed):
                     _render_sig_results(_res, _el, partial=True)
         _pr.empty()
         _lv.empty()
+        _sig_nerr = sum(1 for _r in _res if _r.get("status") == "error")
+        _sig_log.info("SIGNALS end: %d ok · %d error · %.1fs (%d hilos)",
+                      len(_res) - _sig_nerr, _sig_nerr, time.perf_counter() - _t0, _wk)
         # Salidas A NIVEL CARTERA (ROI colectivo / Stop colectivo): post-procesan los resultados YA
         # completos en UNA pasada cronológica por día (gana el primer trigger). El STOP colectivo solo
         # dispara con >1 ticker abierto. NO se aplica en los renders parciales (timeline incompleto).
@@ -1677,10 +1685,6 @@ _LOGO_BT_SVG = (
     '<tspan fill="#1f2937">Signal</tspan><tspan fill="#16a34a">Forge</tspan>'
     '<tspan fill="#9ca3af" font-weight="600"> \\ Backtesting</tspan></text></svg>')
 st.logo(_LOGO_BT_SVG)
-# "Tendencia del mercado" va acá (arriba de «Parámetros de sesión»), en un contenedor con borde como
-# «CONDICIONES DE ENTRADA». El widget se RENDERIZA dentro de este placeholder más abajo (necesita
-# is_range / manual_prob / _predictor_cfg, que se definen recién en «Parámetros por iteración»).
-_trend_box = st.sidebar.container(border=True)
 
 replay_state = st.session_state.get("replay")
 has_session = replay_state is not None
@@ -1847,17 +1851,20 @@ _sesion_exp.markdown(
     "</p>",
     unsafe_allow_html=True,
 )
-# Default = tickers marcados como PREFERENCIALES en Configuración (tabla ticker_prefs);
-# si la base no está / vacía, cae a los 11 líquidos de siempre.
+# Default de "Ticker" según el día de la semana (config §4 «Tickers que vencen ese mismo día»,
+# centralizada en ticker_prefs): en modo «Fecha fija» se prepopula con los tickers que vencen 0DTE
+# el día de la Fecha elegida; si no (rango), la lista por defecto. Los widgets de fecha se renderizan
+# más abajo, así que la Fecha/modo se leen del session_state (del rerun previo).
+import ticker_prefs as _tp_pref
+_bt_fija = (st.session_state.get("sel_fecha_unica")
+            if st.session_state.get("date_mode_radio", "Fecha fija") == "Fecha fija" else None)
 try:
-    import ticker_prefs as _tp_pref
-    _PREF_DEF = _tp_pref.preferred_tickers()
+    _PREF_DEF = (_tp_pref.tickers_for_weekday(_bt_fija.weekday())
+                 if _bt_fija is not None else _tp_pref.default_tickers())
 except Exception:
-    _PREF_DEF = []
-_PREF_DEF = _PREF_DEF or ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META",
-                          "MSFT", "GOOG", "AAPL"]
-# Re-sincroniza EN VIVO: si cambiás los preferenciales (Configuración), el multiselect se
-# re-siembra solo. Solo cuando la LISTA de preferenciales cambia → no pisa tu selección manual.
+    _PREF_DEF = ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META", "MSFT", "GOOG", "AAPL"]
+# Re-siembra SOLO cuando la lista por defecto cambia (p.ej. moviste la Fecha a otro día de la
+# semana) → no pisa una selección manual entre cambios.
 _valid_pref = ([t for t in _PREF_DEF if t in TICKER_OPTIONS]
                or ([TICKER_OPTIONS[_default_idx]] if TICKER_OPTIONS else []))
 if st.session_state.get("_pref_sig_bt") != tuple(_valid_pref):
@@ -2103,36 +2110,6 @@ with _sesion_exp:
     nbbo_timeline = _f2
     search_window_min = 4.0
 
-# Cargar config del predictor — necesario en ambos modos.
-_predictor_cfg = load_predictor_config()
-
-# =====================================================================
-# Probabilidad (%) MANUAL — reemplaza la predicción k-NN. El usuario la
-# mueve en el slider (0–100, default 50) y de ahí se derivan los
-# "Parámetros por iteración". Visible en ambos modos.
-# =====================================================================
-def _classify_prob(prob, cfg):
-    """Devuelve (label, color, box_bg, box_border) según el rango."""
-    for r in cfg.get("classification_ranges", []):
-        if r["min"] <= prob <= r["max"]:
-            return (r["label"], r["color"],
-                    r.get("box_bg", r["color"]), r.get("box_border", r["color"]))
-    return "?", "#888888", "#eeeeee", "#888888"
-
-_mode_map = {"call_only": "Sólo CALL", "put_only": "Sólo PUT", "both": "CALL y PUT"}
-
-# "Tendencia del mercado": el WIDGET (slider) se renderiza MÁS ABAJO (después del Tipo
-# de operación, antes de Inversión). Acá solo LEEMOS su valor guardado (key 'manual_prob')
-# para derivar los parámetros del día y auto-aplicarlos antes de esos widgets. En
-# "Rango de fechas" no aplica → tendencia neutral (50%) y sin widget.
-if not is_range:
-    st.session_state.setdefault("manual_prob", 50)
-    manual_prob = int(st.session_state.get("manual_prob", 50))
-else:
-    manual_prob = 50
-_params = adjust_trading_parameters(manual_prob, _predictor_cfg)
-_mode_lbl = _mode_map[_params["mode"]]
-
 # El aviso de "Modo rango" se muestra como tooltip ⓘ en el header
 # "Parámetros por iteración" (más abajo), solo cuando is_range.
 
@@ -2141,23 +2118,6 @@ _mode_lbl = _mode_map[_params["mode"]]
 # para todos los días del batch. Antes esta sección se ocultaba en modo rango, lo
 # que daba la sensación de que "desaparecía todo el panel".
 with st.sidebar.container():
-    # AUTO-APPLY: la Probabilidad (%) → Parámetros por iteración. Se aplica
-    # cuando cambia el slider (o el config). Entre cambios, podés editar
-    # CALL%/PUT%/ROI a mano sin que se sobreescriban (key-tracking sobre los
-    # params derivados, no sobre los widgets).
-    _prob_key = (
-        manual_prob, _params["mode"], int(_params["call_allocation"]),
-        int(_params["put_allocation"]), int(_params["roi_threshold"]),
-    )
-    if st.session_state.get("_last_applied_prob_key") != _prob_key:
-        _tot = st.session_state.get("invest_total", 1000.0)
-        st.session_state["straddle_mode_radio"] = _mode_lbl
-        st.session_state["call_pct"] = float(_params["call_allocation"])
-        st.session_state["put_pct"] = float(_params["put_allocation"])
-        st.session_state["call_dollars"] = (_params["call_allocation"] / 100.0) * _tot
-        st.session_state["put_dollars"] = (_params["put_allocation"] / 100.0) * _tot
-        st.session_state["umbral_roi_pct"] = float(_params["roi_threshold"])
-        st.session_state["_last_applied_prob_key"] = _prob_key
     if is_range:
         st.caption("🤖 Modo rango — estos parámetros se aplican a todos "
                    "los días del rango (un solo set de parámetros para el batch).")
@@ -2186,7 +2146,7 @@ with st.sidebar.container():
         st.session_state["put_stop_pct"] = -100.0
 
     # La etiqueta MOSTRADA (sin "Sólo") se controla con format_func; el VALOR INTERNO se mantiene
-    # ("Sólo CALL", …) para NO tocar la detección de modo de abajo ni el auto-apply (_mode_map).
+    # ("Sólo CALL", …) para NO tocar la detección de modo de abajo.
     # Opciones ORDENADAS alfabéticamente por lo que se ve.
     _MODE_DISPLAY = {"Sólo CALL": "CALL", "Sólo PUT": "PUT",
                      "Sólo CALL (End of Day)": "CALL (End of Day)",
@@ -2201,7 +2161,7 @@ with st.sidebar.container():
             "Tipo de operación",
             options=_mode_opts,
             format_func=lambda o: _MODE_DISPLAY.get(o, o),
-            index=0,
+            index=_mode_opts.index("CALL y PUT"),   # default = straddle 50/50 (antes lo fijaba el auto-apply)
             key="straddle_mode_radio",
             on_change=_sync_straddle_mode_changed,
         )
@@ -2309,64 +2269,6 @@ with st.sidebar.container():
     refuerzo_loss_pct = 50.0
     refuerzo_max = 2
 
-    # "Tendencia del mercado" (widget) — solo single-day. Su valor (key 'manual_prob')
-    # alimenta los Parámetros por iteración, que ya se auto-aplicaron arriba. Va acá,
-    # entre la descripción del Tipo de operación y la Inversión, por pedido.
-    with _trend_box:
-        if not is_range:
-            st.markdown(
-                "<p style='font-weight:bold; text-align:center; margin: -0.5rem 0 0.4rem 0;'>Tendencia del mercado</p>",
-                unsafe_allow_html=True,
-            )
-            _prob_label, _prob_color, _box_bg, _box_border = _classify_prob(manual_prob, _predictor_cfg)
-            _c_slider, _c_box = st.columns([3, 2], vertical_alignment="center")
-            _c_slider.slider(
-                "Tendencia del mercado", min_value=0, max_value=100, step=5,
-                key="manual_prob", label_visibility="collapsed",
-                help=("Movés la tendencia alcista a mano (de 5 en 5). De este valor se derivan "
-                      "Modo, CALL%, PUT% y Umbral ROI de los Parámetros por iteración."),
-            )
-            _zones = [
-                (r["min"], r["max"], r["color"])
-                for r in _predictor_cfg.get("classification_ranges", [])
-            ]
-            _segs = "".join(
-                f"<div style='flex:1; background:{c}; height:7px;' title='{lo}–{hi}'></div>"
-                for lo, hi, c in _zones
-            )
-            _c_slider.markdown(
-                f"<div style='display:flex; gap:1px; border-radius:3px; overflow:hidden; margin-top:-6px;'>{_segs}</div>"
-                "<div style='display:flex; justify-content:space-between; font-size:0.6rem; color:#000; font-weight:normal; margin-top:1px;'>"
-                "<span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span></div>",
-                unsafe_allow_html=True,
-            )
-            _fill = (
-                f"linear-gradient(to right,{_prob_color} 0%,{_prob_color} {manual_prob}%,"
-                f"rgba(151,166,195,0.25) {manual_prob}%,rgba(151,166,195,0.25) 100%)"
-            )
-            st.markdown(
-                "<style>"
-                "section[data-testid='stSidebar'] [data-baseweb='slider'] "
-                "> div:nth-child(1) > div:nth-child(1) > div:nth-child(2)"
-                f"{{background-image:{_fill} !important;}}"
-                "section[data-testid='stSidebar'] [data-baseweb='slider'] [role='slider']"
-                "{background-color:#000 !important; border-color:#000 !important;}"
-                "section[data-testid='stSidebar'] [data-testid='stSliderThumbValue']"
-                "{color:#000 !important;}"
-                "</style>",
-                unsafe_allow_html=True,
-            )
-            _c_box.markdown(
-                f"<div style='text-align:center; padding:0.55rem 0.6rem; background:{_box_bg}; "
-                f"border:1px solid {_box_border}; border-radius:0.5rem;'>"
-                f"<div style='font-size:1.6rem; font-weight:700; color:{_box_border}; line-height:1;'>{manual_prob}%</div>"
-                f"<div style='font-size:0.7rem; font-weight:600; color:{_box_border}; margin-top:0.2rem;'>{_prob_label}</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.caption("📈 **Tendencia del mercado** — disponible solo en modo «fecha única».")
-
     # -------- Bloque Inversión: total + %-split + $-split (bidireccional) --------
     # Source of truth en session_state. Callbacks mantienen % y $ sincronizados
     # entre sí y con el monto total. Funciona porque estamos en un container
@@ -2461,14 +2363,11 @@ with st.sidebar.container():
         st.session_state["call_dollars"] = tot - put_d
 
     # Inversión: ya NO se ingresa en el manual (se configura en «Backtest de señales /
-    # iteraciones»). Se toma del estado: sembrado 1000 al 50/50 y ajustado por el modo
-    # (Estrategia) y la Tendencia del mercado.
+    # iteraciones»). Se toma del estado: sembrado 1000 al 50/50 y ajustado por el modo (Estrategia).
     invest_call = float(st.session_state.get("call_dollars", 500.0))
     invest_put = float(st.session_state.get("put_dollars", 500.0))
 
-    # Default del Umbral si nunca se sembró (caso primera carga).
-    # El auto-apply de la Predicción Apertura ya escribe a este key cuando
-    # cambia la predicción — no necesitamos el messenger _pending_roi_threshold.
+    # Default del Umbral de ROI si nunca se sembró (caso primera carga).
     if "umbral_roi_pct" not in st.session_state:
         st.session_state["umbral_roi_pct"] = 10.0
     # Defaults de params por pierna ("CALL o PUT") y del umbral de salida ("plus").

@@ -38,35 +38,73 @@ def main() -> None:
                                                "sus runs y matcheando por ID). Si se da, no genera un workbook nuevo.")
     a = ap.parse_args()
 
+    import logging
+    import os
+
     import config
+    from obs_log import (get_logger, log_exception, redact, resource_snapshot,
+                         set_correlation_id, timed)
     from ucbatch import reader, runner, report, scenario
     from ucbatch.progress import cli_progress, notify_done
 
-    seed, scens = reader.read_template(a.excel)
-    if a.limit and a.limit > 0:
-        scens = scens[:a.limit]
-    mapped = [scenario.map_scenario(seed, s) for s in scens]
-    days = runner.trading_days(seed.fecha_inicial, seed.fecha_final)
-    total = len(mapped) * len(days) * len(seed.tickers)
-    procs = a.processes or runner.auto_processes()
-    print(f"{len(mapped)} escenarios × {len(days)} días × {len(seed.tickers)} tickers "
-          f"({', '.join(seed.tickers)}) = {total:,} backtests · {procs} procesos\n", flush=True)
+    # Correlation ID: rastrea ESTA corrida por todo el log (persiste en options_replay/logs/batch.log,
+    # rotativo → sobrevive al crash para el post-mortem). Consola a WARNING para no ensuciar la barra de
+    # progreso \r; el archivo captura TODO (DEBUG+). NUNCA se loguea la API key (ver redact()).
+    corr = f"bt-{str(int(time.time()))[-6:]}-{os.getpid() % 1000:03d}"
+    set_correlation_id(corr)
+    log = get_logger("ucbatch", to_file="batch.log", level=logging.WARNING)
+    print(f"(log detallado → options_replay/logs/batch.log · corr={corr})", flush=True)
 
-    t0 = time.time()
-    rows, days = runner.run(seed, mapped, str(HERE / "data"), config.POLYGON_API_KEY,
-                            processes=procs, progress_cb=lambda d, t: cli_progress(d, t, t0))
-    print()
-    if a.fill:
-        out = report.fill_results(seed, rows, a.fill, Path(a.out) / report.output_filename(seed))
-        print(f"   (modo RELLENAR: 1 fila por escenario sobre {Path(a.fill).name})")
-    else:
-        out = report.write(seed, rows, a.out, listas_src=a.excel)
-    n_err = sum(1 for r in rows if r.get("n_err"))
-    el = time.time() - t0
-    print(f"\n✅ Listo en {el / 60:.1f} min → {out}")
-    print(f"   {len(rows):,} posiciones · {len(rows) - n_err:,} OK · {n_err:,} con error")
-    if a.notify:
-        notify_done(out, len(rows) - n_err, n_err, el)
+    try:
+        seed, scens = reader.read_template(a.excel)
+        if a.limit and a.limit > 0:
+            scens = scens[:a.limit]
+        mapped = [scenario.map_scenario(seed, s) for s in scens]
+        days = runner.trading_days(seed.fecha_inicial, seed.fecha_final)
+        total = len(mapped) * len(days) * len(seed.tickers)
+        procs = a.processes or runner.auto_processes()
+        # Config de la corrida SIN datos sensibles (api_key nunca entra al dict; redact() es doble-seguro).
+        log.info("BATCH cfg %s", redact({
+            "excel": Path(a.excel).name, "fill": Path(a.fill).name if a.fill else "",
+            "out": a.out, "processes": procs, "limit": a.limit or 0,
+            "tickers": ",".join(seed.tickers), "rango": f"{seed.fecha_inicial}..{seed.fecha_final}",
+            "escenarios": len(mapped), "dias": len(days), "backtests": total}))
+        print(f"{len(mapped)} escenarios × {len(days)} días × {len(seed.tickers)} tickers "
+              f"({', '.join(seed.tickers)}) = {total:,} backtests · {procs} procesos\n", flush=True)
+        resource_snapshot(log, "batch-start")
+
+        t0 = time.time()
+
+        def _cb(d: int, t: int) -> None:
+            cli_progress(d, t, t0)
+            if d == 1 or d % 20 == 0 or d == t:   # tendencia de RAM cada ~20 días → caza el OOM
+                resource_snapshot(log, f"dia {d}/{t}")
+
+        with timed(log, "batch-run", escenarios=len(mapped), dias=len(days), backtests=total):
+            rows, days = runner.run(seed, mapped, str(HERE / "data"), config.POLYGON_API_KEY,
+                                    processes=procs, progress_cb=_cb)
+        print()
+        if a.fill:
+            out = report.fill_results(seed, rows, a.fill, Path(a.out) / report.output_filename(seed))
+            print(f"   (modo RELLENAR: 1 fila por escenario sobre {Path(a.fill).name})")
+        else:
+            out = report.write(seed, rows, a.out, listas_src=a.excel)
+        n_err = sum(1 for r in rows if r.get("n_err"))
+        el = time.time() - t0
+        resource_snapshot(log, "batch-end")
+        log.info("BATCH OK: %d posiciones · %d con error · %.1f min -> %s",
+                 len(rows), n_err, el / 60, out)
+        print(f"\n✅ Listo en {el / 60:.1f} min → {out}")
+        print(f"   {len(rows):,} posiciones · {len(rows) - n_err:,} OK · {n_err:,} con error")
+        if a.notify:
+            notify_done(out, len(rows) - n_err, n_err, el)
+    except Exception:
+        # Captura del CRASH de tope: traza completa al log (lo que faltaba cuando el batch «moría solo»).
+        log_exception(log, f"BATCH CRASH (corr={corr})")
+        resource_snapshot(log, "batch-crash")
+        print(f"\n❌ El batch abortó — traza completa en options_replay/logs/batch.log (corr={corr})",
+              file=sys.stderr, flush=True)
+        raise
 
 
 if __name__ == "__main__":

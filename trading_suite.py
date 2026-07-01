@@ -59,6 +59,10 @@ st.markdown(
 
 sys.path.insert(0, str(Path(__file__).parent / "options_replay"))
 import auth  # noqa: E402
+import ui_theme  # noqa: E402
+
+# Escala tipográfica GLOBAL (títulos/subtítulos consistentes en todas las páginas). Solo CSS.
+ui_theme.apply_theme()
 
 # ── 1) Gate de autenticación ─────────────────────────────────────────────────
 user = auth.require_login()   # frena si no hay sesión / crea el primer admin
