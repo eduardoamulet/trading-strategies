@@ -222,6 +222,11 @@ def to_markdown(report: dict) -> str:
     L.append("\n## 9. Correlaciones (condición → outcome)\n")
     L.append("Pearson (lineal) · Spearman (monótona) · Kendall (concordancia).\n")
     L.append(_df_md(corr, 30) if corr is not None else "_(sin correlaciones)_\n")
+    cc = report.get("context_corr")
+    if cc is not None and not cc.empty:
+        L.append("\n**Contexto de mercado a la entrada → ROI de la posición** (del results ENRIQUECIDO — "
+                 "score/confianza del Market Direction Engine, spread, duración):\n")
+        L.append(_df_md(cc, 15))
 
     # 10 Clustering
     L.append("\n## 10. Clustering (familias de escenarios)\n")

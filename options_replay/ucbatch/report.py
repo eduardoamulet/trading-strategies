@@ -33,6 +33,22 @@ _HEADERS = ["ID", "Ticker", "Fecha", "Inversión total", "Ganancia",
             "Promedios de todos los ROI (%)", "Promedios de todos los ROI ($)",
             "Número ROI(%) > 0", "Número ROI(%) <= 0", "Número de errores"]
 
+# Columnas ENRIQUECIDAS (solo en el output DETALLADO `build`/`write`, 1 fila = 1 posición): la señal
+# del Market Direction Engine a la entrada + el snapshot del contrato. (etiqueta, clave-en-row).
+_ENRICH = [
+    ("Dir · Acción", "md_action"), ("Dir · Score", "md_score"),
+    ("Dir · Confianza", "md_confidence"), ("Dir · Trend", "md_trend"),
+    ("Modo", "mode"), ("Strike CALL", "call_strike"), ("Strike PUT", "put_strike"),
+    ("CALL bid", "call_bid"), ("CALL ask", "call_ask"), ("CALL spread", "call_spread"),
+    ("PUT bid", "put_bid"), ("PUT ask", "put_ask"), ("PUT spread", "put_spread"),
+    ("Prima CALL", "call_entry_prem"), ("Prima PUT", "put_entry_prem"),
+    ("Spot entrada", "spot_at_start"), ("Motivo salida", "exit_reason"),
+    ("Duración (min)", "duration_min"), ("OCC CALL", "call_occ"), ("OCC PUT", "put_occ"),
+    ("CALL Delta", "call_delta"), ("CALL Gamma", "call_gamma"), ("CALL Theta", "call_theta"),
+    ("CALL IV", "call_iv"), ("PUT Delta", "put_delta"), ("PUT Gamma", "put_gamma"),
+    ("PUT Theta", "put_theta"), ("PUT IV", "put_iv"),
+]
+
 
 def output_filename(seed) -> str:
     tipo = seed.tipo.replace(" ", "_")
@@ -42,9 +58,11 @@ def output_filename(seed) -> str:
     return f"Backtesting_Results_{tipo}_of_{tks}_from_{fi}_to_{ff}.xlsx"
 
 
-def _headers(ws) -> None:
-    """Escribe el header PLANO en la fila 1 → columnas ordenables (Excel Data→Sort/Filter)."""
-    for i, name in enumerate(_HEADERS, 1):
+def _headers(ws, enrich: bool = False) -> None:
+    """Escribe el header PLANO en la fila 1 → columnas ordenables (Excel Data→Sort/Filter). Con
+    `enrich=True` agrega las columnas enriquecidas (señal de dirección + snapshot del contrato)."""
+    names = list(_HEADERS) + ([lbl for lbl, _ in _ENRICH] if enrich else [])
+    for i, name in enumerate(names, 1):
         cell = ws.cell(1, i)
         cell.value = name
         cell.font = Font(bold=True, size=9)
@@ -72,7 +90,9 @@ def build(seed, rows: list, listas_src=None) -> Workbook:
     wb = Workbook()
     ws = wb.active
     ws.title = "Backtesting Results"
-    _headers(ws)                                       # header plano en la fila 1
+    # Enriquecido si las filas traen los campos extra (señal de dirección / snapshot del contrato).
+    _enr = any(k in r for r in rows[:1] for _, k in _ENRICH) if rows else False
+    _headers(ws, enrich=_enr)                           # header plano en la fila 1
     _tk = {t: i for i, t in enumerate(seed.tickers)}   # orden del seed (QQQ→SPY→IWM), no alfabético
     ordered = sorted(rows, key=lambda r: (_tk.get(str(r.get("Ticker")), 999), str(r.get("Fecha")), str(r.get("ID"))))
     for r in ordered:
@@ -80,9 +100,14 @@ def build(seed, rows: list, listas_src=None) -> Workbook:
         for key, dec in _DATA:
             v = r.get(key)
             vals.append(round(v, dec) if isinstance(v, (int, float)) else v)
+        if _enr:
+            for _, key in _ENRICH:
+                v = r.get(key)
+                vals.append(round(v, 4) if isinstance(v, float) else v)
         ws.append(vals)
     ws.freeze_panes = "A2"                              # fija el header (1 fila)
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(_HEADERS))}{max(1, ws.max_row)}"   # orden/filtro 1-clic
+    _ncols = len(_HEADERS) + (len(_ENRICH) if _enr else 0)
+    ws.auto_filter.ref = f"A1:{get_column_letter(_ncols)}{max(1, ws.max_row)}"   # orden/filtro 1-clic
     widths = [8, 8, 14, 13, 11, 17, 17, 17, 17, 20, 20, 15, 15, 12]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w

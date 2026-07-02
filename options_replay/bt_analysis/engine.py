@@ -99,6 +99,7 @@ def _analyze_detailed(results_df, scenarios_df, seed, report) -> dict:
     report["by_ticker"] = det.by_ticker(dd)
     report["dow"] = det.by_weekday(dd)
     report["oos"] = det.oos_split(dd)
+    report["context_corr"] = det.context_correlation(dd)   # contexto de mercado (md_*/spread) → ROI
     report["playbook"] = playbook.build_playbook(report)
     report["playbook_json"] = playbook.to_json(report["playbook"])
     report["notes"].append(

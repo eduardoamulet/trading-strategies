@@ -15,10 +15,50 @@ from __future__ import annotations
 COLS = ["inversion", "ganancia", "roi_min_pct", "roi_min_usd", "roi_max_pct", "roi_max_usd",
         "roi_avg_pct", "roi_avg_usd", "n_roi_pos", "n_roi_neg", "n_err"]
 
+# Columnas ENRIQUECIDAS (snapshot del contrato + salida) — SOLO en el output detallado (report.write).
+# Todo sale del IterationResult que YA lo captura; no agrega llamadas a Polygon.
+SNAPSHOT_COLS = ["mode", "call_strike", "put_strike", "call_bid", "call_ask", "call_spread",
+                 "put_bid", "put_ask", "put_spread", "call_entry_prem", "put_entry_prem",
+                 "spot_at_start", "exit_reason", "duration_min", "call_occ", "put_occ",
+                 "call_delta", "call_gamma", "call_theta", "call_iv",
+                 "put_delta", "put_gamma", "put_theta", "put_iv"]
+
 
 def error_row() -> dict:
     """Métricas para una posición que falló (sin contrato / sin datos)."""
     return {k: (1 if k == "n_err" else 0.0) for k in COLS}
+
+
+def position_snapshot(it) -> dict:
+    """Snapshot del contrato + salida (datos YA capturados en el IterationResult). Para el output
+    detallado, así el análisis puede cruzar strike/bid/ask/spread/motivo con el ROI de la posición."""
+    if it is None:
+        return {k: None for k in SNAPSHOT_COLS}
+    try:
+        dur = round((it.end_dt - it.start_dt).total_seconds() / 60.0, 1)
+    except Exception:
+        dur = None
+    g = lambda a: getattr(it, a, None)
+    out = {
+        "mode": g("mode"), "call_strike": g("call_strike"), "put_strike": g("put_strike"),
+        "call_bid": g("call_bid"), "call_ask": g("call_ask"), "call_spread": g("call_spread"),
+        "put_bid": g("put_bid"), "put_ask": g("put_ask"), "put_spread": g("put_spread"),
+        "call_entry_prem": g("call_entry_premium"), "put_entry_prem": g("put_entry_premium"),
+        "spot_at_start": g("spot_at_start"), "exit_reason": g("exit_reason"), "duration_min": dur,
+        "call_occ": g("call_occ"), "put_occ": g("put_occ"),
+    }
+    # Greeks (Black-Scholes) por pierna, desde spot/strike/prima + tiempo a las 16:00 (0DTE). Aprox,
+    # sin llamadas nuevas a Polygon. Nunca rompe la posición si falla.
+    try:
+        import bs
+        spot, entry = g("spot_at_start"), g("start_dt")
+        cd, cg, ct, civ = bs.leg_greeks(spot, g("call_strike"), g("call_entry_premium"), entry, True)
+        pd_, pg, pt, piv = bs.leg_greeks(spot, g("put_strike"), g("put_entry_premium"), entry, False)
+        out.update(call_delta=cd, call_gamma=cg, call_theta=ct, call_iv=civ,
+                   put_delta=pd_, put_gamma=pg, put_theta=pt, put_iv=piv)
+    except Exception:   # noqa: BLE001
+        out.update({k: None for k in SNAPSHOT_COLS[16:]})
+    return out
 
 
 def position_metrics(it) -> dict:

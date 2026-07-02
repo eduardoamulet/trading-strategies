@@ -112,6 +112,35 @@ def oos_split(d: pd.DataFrame, ratio: float = 0.7) -> dict:
             "ratio": ratio, "table": tbl, "counts": counts}
 
 
+_CONTEXT_COLS = ["md_score", "md_confidence", "call_spread", "put_spread", "duration_min",
+                 "spot_at_start", "call_delta", "call_gamma", "call_iv", "put_delta", "put_iv"]
+
+
+def context_correlation(d: pd.DataFrame) -> pd.DataFrame:
+    """Correlación del CONTEXTO de mercado a la entrada (md_score/confianza/spread/duración) con el
+    ROI de la posición. Responde «¿el contexto predice el resultado?» — el corazón del objetivo del
+    usuario. Requiere el results ENRIQUECIDO (columnas md_*/spread). Pearson + Spearman."""
+    cols = [c for c in _CONTEXT_COLS
+            if c in d.columns and pd.to_numeric(d[c], errors="coerce").notna().sum() >= 5]
+    if not cols or "position_roi" not in d.columns:
+        return pd.DataFrame()
+    y = pd.to_numeric(d["position_roi"], errors="coerce")
+    rows = []
+    for c in cols:
+        x = pd.to_numeric(d[c], errors="coerce")
+        dd = pd.DataFrame({"x": x, "y": y}).dropna()
+        if len(dd) < 5 or dd["x"].nunique() < 2:
+            continue
+        rows.append({"contexto": c, "pearson": round(float(dd["x"].corr(dd["y"])), 3),
+                     "spearman": round(float(dd["x"].corr(dd["y"], method="spearman")), 3),
+                     "n": int(len(dd))})
+    res = pd.DataFrame(rows)
+    if not res.empty:
+        res = (res.assign(_a=res["spearman"].abs()).sort_values("_a", ascending=False)
+               .drop(columns="_a").reset_index(drop=True))
+    return res
+
+
 def _classify(rtr: float, rte: float) -> str:
     """Robusto / Moderadamente Robusto / Poco Robusto / Sobreajustado (según consistencia train↔test)."""
     if rtr <= 0:

@@ -29,12 +29,39 @@ def _read_sheet(path, prefer: str) -> list:
     return rows
 
 
+# Columnas ENRIQUECIDAS (output detallado): etiqueta del header → clave canónica.
+_ENRICH_HEADER_MAP = {
+    "Dir · Acción": "md_action", "Dir · Score": "md_score", "Dir · Confianza": "md_confidence",
+    "Dir · Trend": "md_trend", "Modo": "mode", "Strike CALL": "call_strike", "Strike PUT": "put_strike",
+    "CALL bid": "call_bid", "CALL ask": "call_ask", "CALL spread": "call_spread",
+    "PUT bid": "put_bid", "PUT ask": "put_ask", "PUT spread": "put_spread",
+    "Prima CALL": "call_entry_prem", "Prima PUT": "put_entry_prem", "Spot entrada": "spot_at_start",
+    "Motivo salida": "exit_reason", "Duración (min)": "duration_min",
+    "OCC CALL": "call_occ", "OCC PUT": "put_occ",
+    "CALL Delta": "call_delta", "CALL Gamma": "call_gamma", "CALL Theta": "call_theta",
+    "CALL IV": "call_iv", "PUT Delta": "put_delta", "PUT Gamma": "put_gamma",
+    "PUT Theta": "put_theta", "PUT IV": "put_iv",
+}
+_ENRICH_NUM = {"md_score", "md_confidence", "call_strike", "put_strike", "call_bid", "call_ask",
+               "call_spread", "put_bid", "put_ask", "put_spread", "call_entry_prem", "put_entry_prem",
+               "spot_at_start", "duration_min", "call_delta", "call_gamma", "call_theta", "call_iv",
+               "put_delta", "put_gamma", "put_theta", "put_iv"}
+
+
 def load_results(path) -> tuple[pd.DataFrame, str]:
     """Lee el results file → (DataFrame canónico, granularidad ∈ {scenario, detailed, empty}).
-    Encuentra la fila header (col A == 'ID') y toma las filas cuyo col A sea un ID (C###)."""
+    Encuentra la fila header (col A == 'ID') y toma las filas cuyo col A sea un ID (C###). Lee también
+    las columnas ENRIQUECIDAS (más allá de la N) si el file detallado las trae."""
     rows = _read_sheet(path, "Backtesting Results")
     hdr_i = next((i for i, r in enumerate(rows)
                   if r and str(r[0]).strip().lower() == "id"), -1)
+    header = list(rows[hdr_i]) if 0 <= hdr_i < len(rows) else []
+    keymap = {i: _RESULT_COLS[i] for i in range(14)}          # A..N canónicas por posición
+    for i in range(14, len(header)):                          # O.. enriquecidas por etiqueta
+        lbl = str(header[i]).strip() if header[i] is not None else ""
+        if lbl in _ENRICH_HEADER_MAP:
+            keymap[i] = _ENRICH_HEADER_MAP[lbl]
+    extra = [keymap[i] for i in sorted(keymap) if i >= 14]
     data = []
     for r in rows[hdr_i + 1:]:
         if not r or r[0] is None:
@@ -42,10 +69,9 @@ def load_results(path) -> tuple[pd.DataFrame, str]:
         sid = str(r[0]).strip()
         if not (sid[:1].upper() == "C" and sid[1:].isdigit()):
             continue
-        vals = list(r[:14]) + [None] * (14 - len(r[:14]))
-        data.append(dict(zip(_RESULT_COLS, vals)))
-    df = pd.DataFrame(data, columns=_RESULT_COLS)
-    for c in _RESULT_COLS[3:]:
+        data.append({key: (r[i] if i < len(r) else None) for i, key in keymap.items()})
+    df = pd.DataFrame(data, columns=_RESULT_COLS + extra)
+    for c in list(_RESULT_COLS[3:]) + [c for c in _ENRICH_NUM if c in df.columns]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df, _detect_granularity(df)
 

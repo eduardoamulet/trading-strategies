@@ -16,7 +16,7 @@ import pandas as pd
 from portfolio_exit import apply_collective_exit
 from signals_backtest import run_one
 
-from .metrics import error_row, position_metrics
+from .metrics import error_row, position_metrics, position_snapshot
 from .scenario import resolution_from_seg
 
 _G: dict = {}   # estado por-proceso (Downloader + seed), seteado en _init
@@ -45,6 +45,14 @@ def _init(data_dir, api_key, seed, resolution, mapped, corr) -> None:
     dl = Downloader(PolygonAdapter(api_key, rate_limit_per_min=600), Path(data_dir))
     dl.resolution = resolution
     _G["dl"], _G["seed"], _G["mapped"] = dl, seed, mapped
+    # Provider del Market Direction Engine (para enriquecer cada posición con la señal a la entrada).
+    # Cacheado por worker; lee el MISMO cache de underlying → no agrega llamadas a Polygon.
+    try:
+        from market_direction.data import default_provider
+        from market_direction.data.caching_provider import CachingProvider
+        _G["dir_provider"] = CachingProvider(default_provider())
+    except Exception:
+        _G["dir_provider"] = None
 
 
 def _run_day(day) -> list:
@@ -56,6 +64,9 @@ def _run_day(day) -> list:
     from .memo_downloader import MemoDownloader
     seed, mapped_all = _G["seed"], _G["mapped"]
     memo = MemoDownloader(_G["dl"])           # cache de datos SCOPED a este día
+    # Señal del Market Direction Engine a la ENTRADA — 1× por ticker/día (la entrada es fija para los
+    # 480 escenarios), reusada en cada posición de ese ticker → cruza el «contexto de mercado» con el ROI.
+    dir_fields = {tk: _direction_fields(tk, day, seed.entrada) for tk in seed.tickers}
     rows = []
     for mapped in mapped_all:
         results = []
@@ -71,12 +82,27 @@ def _run_day(day) -> list:
             except Exception:                                    # noqa: BLE001
                 pass
         for ticker, r in zip(seed.tickers, results):
-            base = {"ID": mapped.id, "Ticker": ticker, "Fecha": day}
+            base = {"ID": mapped.id, "Ticker": ticker, "Fecha": day, **dir_fields.get(ticker, {})}
             if r.get("status") == "ok" and r.get("iteration") is not None:
-                rows.append({**base, **position_metrics(r["iteration"]), "error": ""})
+                rows.append({**base, **position_metrics(r["iteration"]),
+                             **position_snapshot(r["iteration"]), "error": ""})
             else:
-                rows.append({**base, **error_row(), "error": str(r.get("error") or "")})
+                rows.append({**base, **error_row(), **position_snapshot(None),
+                             "error": str(r.get("error") or "")})
     return rows
+
+
+def _direction_fields(ticker: str, day: str, hora: str) -> dict:
+    """Señal del Market Direction Engine a la entrada (score/confianza/tendencia/acción). Solo compute
+    (usa el cache de underlying); si falla, devuelve None. Enriquece el análisis: «con este contexto,
+    qué escenario funciona»."""
+    try:
+        from market_direction.engine import market_direction_engine
+        sig = market_direction_engine(ticker, day, str(hora), provider=_G.get("dir_provider"))
+        return {"md_action": sig.action.value, "md_score": round(float(sig.score), 1),
+                "md_confidence": round(float(sig.confidence), 3), "md_trend": sig.trend.value}
+    except Exception:   # noqa: BLE001 — el enriquecimiento nunca debe tumbar el backtest
+        return {"md_action": None, "md_score": None, "md_confidence": None, "md_trend": None}
 
 
 def run(seed, mapped_scenarios, data_dir, api_key, processes=None, progress_cb=None) -> tuple:

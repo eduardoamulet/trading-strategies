@@ -32,6 +32,7 @@ def render(report: dict) -> None:
     _export(report)
     _eda(report)
     _by_ticker(report)
+    _context(report)
     _rankings(report)
     _correlations(report)
     _clustering(report)
@@ -47,6 +48,18 @@ def _by_ticker(report: dict) -> None:
         return
     with st.expander("4 · Por ticker — rendimiento de cada activo", expanded=False):
         st.dataframe(bt, use_container_width=True, hide_index=True)
+
+
+def _context(report: dict) -> None:
+    cc = report.get("context_corr")
+    if cc is None or getattr(cc, "empty", True):
+        return
+    with st.expander("5 · Contexto de mercado → ROI — ¿la señal a la entrada predice el resultado?",
+                     expanded=True):
+        st.caption("Correlación (Pearson/Spearman) del **contexto a la entrada** (score/confianza del "
+                   "Market Direction Engine, spread del contrato, duración) con el **ROI de la posición**. "
+                   "Del results ENRIQUECIDO. |corr| alto = el contexto ayuda a predecir el ROI.")
+        st.dataframe(cc, use_container_width=True, hide_index=True)
 
 
 def _oos(report: dict) -> None:
