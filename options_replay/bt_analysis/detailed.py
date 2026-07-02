@@ -63,27 +63,31 @@ def by_ticker(d: pd.DataFrame) -> pd.DataFrame:
 def by_weekday(d: pd.DataFrame, min_n: int = 8) -> dict:
     """Mejor escenario por día de la semana + OPERAR/NO OPERAR (regla del PRD)."""
     per_day = {}
+    n_insuf = 0
     for wd in _WD_ORDER:
         sub = d[d["weekday"] == wd]
         if sub.empty:
             continue
-        cand = []
-        for sid, g in sub.groupby("id"):
-            m = series_metrics(g["position_roi"])
-            if m.get("n", 0) >= min_n:
-                cand.append({"scenario": sid, **m})
+        # Mejor escenario del día por Sharpe (mostramos SIEMPRE sus métricas; el veredicto gatea por n).
+        cand = [{"scenario": sid, **series_metrics(g["position_roi"])} for sid, g in sub.groupby("id")]
+        cand = [c for c in cand if c.get("n")]
         if not cand:
-            per_day[wd] = {"recommendation": "NO OPERAR", "reason": f"muestra insuficiente (n<{min_n})"}
+            per_day[wd] = {"recommendation": "NO OPERAR", "reason": "sin datos ese día"}
             continue
         best = max(cand, key=lambda x: (x.get("sharpe") if x.get("sharpe") == x.get("sharpe") else -9))
+        n = int(best.get("n") or 0)
         shp = best.get("sharpe")
-        operar = best["win_rate"] > 55 and best["avg_roi"] > 0 and (shp == shp and shp > 0)
-        per_day[wd] = {**best, "recommendation": "OPERAR" if operar else "NO OPERAR",
-                       "reason": ("ventaja: WR>55% · ROI>0 · Sharpe>0" if operar else
-                                  "sin ventaja (WR≤55% o ROI≤0 o Sharpe≤0)")}
+        enough = n >= min_n
+        edge = best["win_rate"] > 55 and best["avg_roi"] > 0 and (shp == shp and shp > 0)
+        if not enough:
+            n_insuf += 1
+        per_day[wd] = {**best, "recommendation": "OPERAR" if (enough and edge) else "NO OPERAR",
+                       "reason": ("ventaja: WR>55% · ROI>0 · Sharpe>0" if (enough and edge) else
+                                  (f"muestra insuficiente (n={n} < {min_n} por día)" if not enough else
+                                   "sin ventaja (WR≤55% o ROI≤0 o Sharpe≤0)"))}
     n_op = sum(1 for v in per_day.values() if v.get("recommendation") == "OPERAR")
     return {"available": True, "source": "results detallado (ticker×día)", "per_day": per_day,
-            "n_operar": n_op, "n_dias": len(per_day)}
+            "n_operar": n_op, "n_dias": len(per_day), "n_insuf": n_insuf, "min_n": min_n}
 
 
 def oos_split(d: pd.DataFrame, ratio: float = 0.7) -> dict:

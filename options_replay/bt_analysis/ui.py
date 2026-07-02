@@ -94,9 +94,16 @@ def _exec_summary(report: dict) -> None:
     if dow.get("available"):
         _n_op = dow.get("n_operar", 0)
         _n = dow.get("n_dias", 0)
+        _insuf = dow.get("n_insuf", 0)
         _no = [d for d, i in dow.get("per_day", {}).items() if i.get("recommendation") == "NO OPERAR"]
-        st.success(f"**Veredicto por día**: OPERAR **{_n_op}/{_n}** días"
-                   + (f" · **NO OPERAR**: {', '.join(_no)}" if _no else ""))
+        if _n_op == 0 and _n and _insuf >= _n:
+            st.info(f"**Por día de la semana:** sin datos suficientes (n < {dow.get('min_n', 8)} por día — "
+                    "ventana corta). ⚠️ Esto **no** dice que los escenarios sean malos: los números de "
+                    "arriba son a nivel ESCENARIO (usan TODAS las posiciones y sí son fiables). Para un "
+                    "veredicto POR DÍA hace falta un período más largo (varios meses).")
+        else:
+            st.success(f"**Veredicto por día**: OPERAR **{_n_op}/{_n}** días"
+                       + (f" · **NO OPERAR**: {', '.join(_no)}" if _no else ""))
 
 
 def _export(report: dict) -> None:
@@ -205,7 +212,8 @@ def _dow(report: dict) -> None:
         for dia, i in dow.get("per_day", {}).items():
             rows.append({"Día": dia, "Escenario": i.get("scenario"), "Win Rate %": i.get("win_rate"),
                          _mlabel: i.get("avg_roi", i.get("avg_usd")), "Sharpe": i.get("sharpe"),
-                         "n": i.get("n"), "Recomendación": i.get("recommendation")})
+                         "n": i.get("n"), "Recomendación": i.get("recommendation"),
+                         "Motivo": i.get("reason", "")})
         df = pd.DataFrame(rows)
         st.dataframe(df.style.map(
             lambda v: f"color:{_REC_COLOR.get(v, '')};font-weight:700" if v in _REC_COLOR else "",
