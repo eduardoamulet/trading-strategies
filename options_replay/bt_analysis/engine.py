@@ -97,7 +97,8 @@ def _analyze_detailed(results_df, scenarios_df, seed, report) -> dict:
     report["clusters"] = clustering.cluster_scenarios(joined)
     report["significance"] = significance.tests(scored)
     report["by_ticker"] = det.by_ticker(dd)
-    report["dow"] = det.by_weekday(dd)
+    report["dow"] = det.by_weekday_portfolio(dd)         # veredicto por día a nivel CARTERA (colectivo)
+    report["dow_ticker"] = det.by_ticker_weekday(dd)     # desglose por (día × ticker)
     report["oos"] = det.oos_split(dd)
     report["context_corr"] = det.context_correlation(dd)   # contexto de mercado (md_*/spread) → ROI
     report["playbook"] = playbook.build_playbook(report)

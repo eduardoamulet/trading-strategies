@@ -204,8 +204,10 @@ def _dow(report: dict) -> None:
         if not dow.get("available"):
             st.warning("No derivable de este file: " + dow.get("reason", ""))
             return
-        st.caption(f"Fuente: {dow.get('source')}. Regla: OPERAR solo con ventaja (WR>55% · $ prom>0 · "
-                   "Sharpe>0 · n≥10); si no, **NO OPERAR** (mejor perder oportunidades que operar sin ventaja).")
+        st.caption(f"Nivel **{dow.get('level', 'cartera')}** · fuente: {dow.get('source', '')}. El ROI "
+                   "por día es de **cartera** (Σganancia/Σinversión de los 3 tickers ese día → refleja el "
+                   f"colectivo). Regla: OPERAR solo con ventaja (WR>55% · ROI>0 · Sharpe>0 · "
+                   f"n≥{dow.get('min_n', 5)} días); si no, **NO OPERAR**.")
         _is_roi = any("avg_roi" in i for i in dow.get("per_day", {}).values())
         _mlabel = "ROI % prom" if _is_roi else "$ prom"
         rows = []
@@ -226,6 +228,27 @@ def _dow(report: dict) -> None:
             st.plotly_chart(fig, use_container_width=True)
         except Exception:
             pass
+
+        # Desglose por TICKER: ¿el patrón del día difiere entre QQQ / SPY / IWM?
+        dt = report.get("dow_ticker")
+        if dt is not None and not dt.empty:
+            st.markdown("**Por día × ticker** — ¿el patrón difiere entre activos?")
+            st.caption("Aquí el n es por ticker (≈ nº de semanas, ~⅓ del combinado), por eso su umbral "
+                       f"es más bajo (n≥{dow.get('min_n', 5)}). Si un día es OPERAR en cartera pero "
+                       "NO OPERAR en un ticker, esa ventaja no es uniforme entre activos.")
+            st.dataframe(dt.style.map(
+                lambda v: f"color:{_REC_COLOR.get(v, '')};font-weight:700" if v in _REC_COLOR else "",
+                subset=["Recomendación"]), use_container_width=True, hide_index=True)
+            try:
+                piv = dt.pivot(index="Ticker", columns="Día", values="Recomendación")
+                piv = piv.reindex(columns=[c for c in ["Lun", "Mar", "Mié", "Jue", "Vie"]
+                                           if c in piv.columns])
+                st.caption("Matriz Ticker × Día (verde = OPERAR):")
+                st.dataframe(piv.style.map(
+                    lambda v: f"background-color:{_REC_COLOR.get(v, '')}22;color:{_REC_COLOR.get(v, '')};"
+                              "font-weight:700" if v in _REC_COLOR else ""), use_container_width=True)
+            except Exception:
+                pass
 
 
 def _significance(report: dict) -> None:

@@ -90,6 +90,68 @@ def by_weekday(d: pd.DataFrame, min_n: int = 8) -> dict:
             "n_operar": n_op, "n_dias": len(per_day), "n_insuf": n_insuf, "min_n": min_n}
 
 
+def by_weekday_portfolio(d: pd.DataFrame, min_n: int = 5) -> dict:
+    """Día de la semana a nivel CARTERA: para cada (día, escenario) el ROI por FECHA es
+    Σganancia/Σinversión de los tickers ese día (refleja el colectivo de verdad); las métricas se
+    calculan sobre esos ROI de cartera por día. Elige el mejor escenario por día. n = nº de fechas."""
+    per_day = {}
+    n_insuf = 0
+    for wd in _WD_ORDER:
+        sub = d[d["weekday"] == wd]
+        if sub.empty:
+            continue
+        cand = []
+        for sid, g in sub.groupby("id"):
+            byd = g.groupby("date").agg(pnl=("pnl", "sum"), inv=("inv", "sum"))
+            roi = (byd["pnl"] / byd["inv"].replace(0, np.nan) * 100.0).dropna()
+            m = series_metrics(roi)
+            if m:
+                cand.append({"scenario": sid, **m})
+        if not cand:
+            per_day[wd] = {"recommendation": "NO OPERAR", "reason": "sin datos ese día"}
+            continue
+        best = max(cand, key=lambda x: (x.get("sharpe") if x.get("sharpe") == x.get("sharpe") else -9))
+        n = int(best.get("n") or 0)
+        shp = best.get("sharpe")
+        enough = n >= min_n
+        edge = best["win_rate"] > 55 and best["avg_roi"] > 0 and (shp == shp and shp > 0)
+        if not enough:
+            n_insuf += 1
+        per_day[wd] = {**best, "recommendation": "OPERAR" if (enough and edge) else "NO OPERAR",
+                       "reason": ("ventaja: WR>55% · ROI cartera>0 · Sharpe>0" if (enough and edge) else
+                                  (f"muestra insuficiente (n={n} < {min_n} días)" if not enough else
+                                   "sin ventaja (WR≤55% o ROI≤0 o Sharpe≤0)"))}
+    n_op = sum(1 for v in per_day.values() if v.get("recommendation") == "OPERAR")
+    return {"available": True, "source": "CARTERA (Σganancia/Σinversión por día, refleja el colectivo)",
+            "per_day": per_day, "n_operar": n_op, "n_dias": len(per_day), "n_insuf": n_insuf,
+            "min_n": min_n, "level": "cartera"}
+
+
+def by_ticker_weekday(d: pd.DataFrame, min_n: int = 5) -> pd.DataFrame:
+    """Mejor escenario por (TICKER × día de la semana) → ver si el patrón difiere entre activos.
+    n por celda ≈ nº de semanas (÷3 vs el combinado), por eso el mínimo es más bajo."""
+    rows = []
+    for tk in sorted(d["ticker"].dropna().unique()):
+        for wd in _WD_ORDER:
+            sub = d[(d["ticker"] == tk) & (d["weekday"] == wd)]
+            if sub.empty:
+                continue
+            cand = [{"scenario": sid, **series_metrics(g["position_roi"])} for sid, g in sub.groupby("id")]
+            cand = [c for c in cand if c.get("n")]
+            if not cand:
+                continue
+            best = max(cand, key=lambda x: (x.get("sharpe") if x.get("sharpe") == x.get("sharpe") else -9))
+            n = int(best.get("n") or 0)
+            shp = best.get("sharpe")
+            enough = n >= min_n
+            edge = best["win_rate"] > 55 and best["avg_roi"] > 0 and (shp == shp and shp > 0)
+            rows.append({"Ticker": tk, "Día": wd, "Escenario": best["scenario"],
+                         "Win Rate %": round(best["win_rate"], 1), "ROI %": round(best["avg_roi"], 2),
+                         "Sharpe": best.get("sharpe"), "n": n,
+                         "Recomendación": "OPERAR" if (enough and edge) else "NO OPERAR"})
+    return pd.DataFrame(rows)
+
+
 def oos_split(d: pd.DataFrame, ratio: float = 0.7) -> dict:
     """Split CRONOLÓGICO de días 70/30 → train vs test por escenario → clasificación de robustez."""
     days = sorted(pd.Series(d["date"].dropna().unique()))

@@ -205,11 +205,20 @@ def to_markdown(report: dict) -> str:
     # 7 Por día de la semana
     L.append("\n## 7. Resultados por Día de la Semana\n")
     if dow.get("available"):
+        if dow.get("level") == "cartera":
+            L.append(f"Nivel **cartera**: el ROI por día es Σganancia/Σinversión de los {report.get('n_tickers', 3)} "
+                     "tickers ese día (refleja el colectivo, no el promedio por-posición). "
+                     f"n = nº de fechas de ese día · umbral OPERAR n≥{dow.get('min_n', 5)}.\n")
         rows = [{"Día": d, **{k: v for k, v in i.items()
                               if k in ("scenario", "win_rate", "avg_roi", "avg_usd", "sharpe",
-                                       "recommendation")}}
+                                       "recommendation", "reason")}}
                 for d, i in dow.get("per_day", {}).items()]
         L.append(_df_md(pd.DataFrame(rows), 10))
+        dt = report.get("dow_ticker")
+        if dt is not None and not dt.empty:
+            L.append("\n**7.1 Por día × ticker** (¿el patrón difiere entre activos? n por celda ≈ nº de "
+                     "semanas, ~⅓ del combinado):\n")
+            L.append(_df_md(dt, 40))
     else:
         L.append("_No disponible: " + dow.get("reason", "sin datos por día") + "._\n")
 
@@ -347,6 +356,9 @@ def to_excel(report: dict) -> bytes:
             rows = [{"Día": d, **{k: v for k, v in i.items() if not isinstance(v, (list, dict))}}
                     for d, i in dow.get("per_day", {}).items()]
             pd.DataFrame(rows).to_excel(w, index=False, sheet_name="PorDia")
+        dt = report.get("dow_ticker")
+        if dt is not None and not dt.empty:
+            dt.to_excel(w, index=False, sheet_name="PorDiaTicker")
         corr = report.get("correlations")
         if corr is not None and not corr.empty:
             corr.to_excel(w, index=False, sheet_name="Correlaciones")

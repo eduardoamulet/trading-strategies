@@ -21,7 +21,8 @@ def build_playbook(report: dict) -> dict:
     if dow.get("available"):
         for dia, info in dow.get("per_day", {}).items():
             pb["dias"][dia] = {**info, "entry": entry, "exit": exit_, "operation": op}
-        pb["nivel"] = "día de la semana"
+        pb["nivel"] = ("día de la semana · CARTERA (ROI colectivo Σg/Σinv)"
+                       if dow.get("level") == "cartera" else "día de la semana")
     else:
         pb["nivel"] = "escenario (sin desglose por día)"
         pb["dow_reason"] = dow.get("reason", "")
