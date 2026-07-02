@@ -63,6 +63,17 @@ def simulate_session(tickers, date: str, start_hhmm: str = "09:30", end_hhmm: st
             "minutes": minutes, "tickers": tickers, "results": results}
 
 
+def matrix_grid(sim: dict, field: str = "action"):
+    """DataFrame ANCHO (index=ticker, columns=minuto) con `field` por celda — la MATRIZ tal cual se
+    ve, para descargar y buscar patrones. field ∈ {action, score, confidence, market_strength, trend}."""
+    import pandas as pd
+    minutes = sim.get("minutes", [])
+    tickers = sim.get("tickers", [])
+    results = sim.get("results", {})
+    data = {tk: {mn: results.get(tk, {}).get(mn, {}).get(field) for mn in minutes} for tk in tickers}
+    return pd.DataFrame.from_dict(data, orient="index", columns=minutes)
+
+
 def results_to_rows(sim: dict) -> list[dict]:
     """Aplana la simulación a filas (1 por ticker×minuto) para exportar a CSV/Excel."""
     rows = []

@@ -233,6 +233,28 @@ with st.expander("🎬 Simulación Intradía", expanded=bool(st.session_state.ge
         # Matriz en el DOM principal (no iframe) → celdas clicables + sin espacio en blanco.
         st.markdown(_msv.build_matrix_html(_sim, heatmap=_heat), unsafe_allow_html=True)
 
+        # ── Descargar los datos de la tabla (para analizar / buscar patrones) ──────────────────
+        import io as _io
+        _long = _pd.DataFrame(_msim.results_to_rows(_sim))    # 1 fila por ticker×minuto, todos los campos
+        _xbuf = _io.BytesIO()
+        with _pd.ExcelWriter(_xbuf, engine="openpyxl") as _xw:
+            _long.to_excel(_xw, index=False, sheet_name="Detalle")
+            for _fld, _sh in (("action", "Matriz_Acción"), ("score", "Matriz_Score"),
+                              ("confidence", "Matriz_Confianza")):
+                _msim.matrix_grid(_sim, _fld).to_excel(_xw, sheet_name=_sh)
+        _dfn = f"simulacion_{'-'.join(_sim['tickers'])}_{_sim['date']}"
+        _d1, _d2, _d3 = st.columns([1.3, 1.3, 3])
+        _d1.download_button("⬇ Descargar tabla (Excel)", _xbuf.getvalue(), file_name=_dfn + ".xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            help="Hoja «Detalle» (1 fila por ticker×minuto con acción/confianza/score/"
+                                 "trend/niveles/razones) + matrices de acción, score y confianza.")
+        _d2.download_button("⬇ Matriz de acción (CSV)",
+                            _msim.matrix_grid(_sim, "action").to_csv().encode("utf-8"),
+                            file_name=_dfn + "_matriz.csv", mime="text/csv", use_container_width=True)
+        _d3.caption(f"{len(_sim['tickers'])} activos × {len(_sim['minutes'])} minutos = "
+                    f"{len(_long)} señales · Excel con detalle + 3 matrices (acción/score/confianza).")
+
         # Inspección de una celda → el MISMO gráfico de Backtesting + panel lateral con el TradeSignal.
         st.markdown("**🔍 Inspeccionar** — **clic en una celda** (o elegí abajo); la matriz muestra el "
                     "detalle completo en **hover**:")
@@ -260,20 +282,3 @@ with st.expander("🎬 Simulación Intradía", expanded=bool(st.session_state.ge
                             unsafe_allow_html=True)
                 st.markdown("".join(f"<div style='font-size:0.82rem'>✓ {_r}</div>" for _r in _rz),
                             unsafe_allow_html=True)
-
-        # Exportación CSV / Excel (1 fila por ticker×minuto con todos los campos del TradeSignal).
-        _rows = _msim.results_to_rows(_sim)
-        _df = _pd.DataFrame(_rows)
-        _e1, _e2, _e3 = st.columns([1, 1, 3])
-        _fn = f"simulacion_{'-'.join(_sim['tickers'])}_{_sim['date']}"
-        _e1.download_button("⬇ CSV", _df.to_csv(index=False).encode("utf-8"),
-                            file_name=_fn + ".csv", mime="text/csv", use_container_width=True)
-        import io as _io
-        _xbuf = _io.BytesIO()
-        with _pd.ExcelWriter(_xbuf, engine="openpyxl") as _xw:
-            _df.to_excel(_xw, index=False, sheet_name="Simulacion")
-        _e2.download_button("⬇ Excel", _xbuf.getvalue(), file_name=_fn + ".xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True)
-        _e3.caption(f"{len(_rows)} filas · {len(_sim['tickers'])} activo(s) × "
-                    f"{len(_sim['minutes'])} minuto(s)")
