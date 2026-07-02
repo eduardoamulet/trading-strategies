@@ -211,6 +211,33 @@ def test_playbook_json_incluye_por_ticker_y_es_serializable():
     json.dumps(pj)                                                            # JSON válido
 
 
+def test_playbook_config_por_dia_y_rule_config():
+    # Con template (report["joined"]): el playbook embebe las CONDICIONES del escenario por día
+    # y por (día×ticker), y el plan las expone en Rule.config.
+    rep = _report_fixture()
+    rep["joined"] = pd.DataFrame([
+        {"id": "C061", "alcance": "Aplicar a tickers y colectivo", "ticker_roi": 15.0,
+         "ticker_stop": -80.0, "col_roi": 5.0, "col_stop": -80.0,
+         "filtro_confirmacion": "Dar vuelta (flip) si va en contra"},
+        {"id": "C003", "alcance": "Aplicar solo a tickers", "ticker_roi": 10.0},
+    ])
+    pj = pbk.to_json(pbk.build_playbook(rep))
+    assert pj["Monday"]["config"]["ticker_roi"] == 15.0
+    assert "config" not in pj["Tuesday"]                       # C063 no está en el template
+    assert pj["por_ticker"]["Tuesday"]["SPY"]["config"]["alcance"] == "Aplicar solo a tickers"
+    json.dumps(pj)                                             # sigue siendo JSON válido
+    plan = plan_from_playbook(pj)
+    assert plan.days["Lun"].config["col_roi"] == 5.0
+    assert plan.ticker_gate["Mar"]["SPY"].config["ticker_roi"] == 10.0
+    assert plan.days["Mar"].config is None
+
+
+def test_playbook_sin_template_no_trae_config():
+    pj = pbk.to_json(pbk.build_playbook(_report_fixture()))
+    assert "config" not in pj["Monday"]
+    assert plan_from_playbook(pj).days["Lun"].config is None
+
+
 def test_roundtrip_analisis_a_filas():
     pj = pbk.to_json(pbk.build_playbook(_report_fixture()))
     res = build_iterations(plan_from_playbook(pj), MAR, MAR, ["SPY", "QQQ"])

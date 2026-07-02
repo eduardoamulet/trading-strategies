@@ -1699,6 +1699,70 @@ def _render_iters_panel(_iters_seed):
         st.rerun()
 
 
+def _apply_scenario_config(cfg: dict, n_tickers: int) -> int:
+    """Aplica las condiciones de salida de un ESCENARIO del playbook a los widgets del panel
+    (vía session_state — seguro porque el generador corre ANTES de que el panel instancie sus
+    widgets en este mismo run). Devuelve cuántas condiciones seteó. Refuerzo y sin-lookahead NO
+    se aplican (son por-fila / dependen de la hora de la alerta): solo se muestran en la tabla."""
+    def _b(v):
+        if isinstance(v, bool):
+            return v
+        s = str(v).strip().lower()
+        if s in ("sí", "si", "true", "x", "✓", "yes", "on"):
+            return True
+        try:
+            return float(s) > 0
+        except ValueError:
+            return False
+
+    def _f(v):
+        try:
+            return float(str(v).replace("%", "").replace(",", "."))
+        except (TypeError, ValueError):
+            return None
+
+    n = 0
+    # El template guarda el alcance SIN el prefijo del panel («tickers y colectivo») → fuzzy.
+    _al = str(cfg.get("alcance") or "").strip().lower()
+    _al_opt = None
+    if "solo" in _al and "ticker" in _al:
+        _al_opt = "Aplicar solo a tickers"
+    elif "solo" in _al and "colectivo" in _al:
+        _al_opt = "Aplicar solo a colectivo"
+    elif "ticker" in _al and "colectivo" in _al:
+        _al_opt = "Aplicar a tickers y colectivo"
+    if _al_opt:
+        st.session_state["sig_alcance"] = _al_opt
+        st.session_state["_sig_alcance_ntk"] = n_tickers    # que el default dinámico no lo pise
+        n += 1
+    for _k, _key in (("ticker_roi_on", "sig_apply_umb"), ("ticker_stop_on", "sig_apply_stop"),
+                     ("col_roi_on", "sig_coll_exit"), ("col_stop_on", "sig_coll_stop"),
+                     ("cerrar_confirmacion_debil", "sig_cut_weak")):
+        if _k in cfg:
+            st.session_state[_key] = _b(cfg[_k])
+            n += 1
+    for _k, _key, _neg in (("ticker_roi", "sig_umb", False), ("ticker_stop", "sig_stop", True),
+                           ("col_roi", "sig_coll_thr", False), ("col_stop", "sig_coll_stop_thr", True)):
+        _v = _f(cfg.get(_k))
+        if _v is not None:
+            st.session_state[_key] = -abs(_v) if _neg else _v
+            n += 1
+    _v = _f(cfg.get("cuerpo_min"))
+    if _v is not None:
+        st.session_state["sig_min_body"] = min(max(_v, 0.0), 1.0)   # bounds del number_input
+        n += 1
+    _fc = str(cfg.get("filtro_confirmacion") or "").lower()
+    if _fc:
+        if "flip" in _fc or "vuelta" in _fc:
+            st.session_state["sig_conf_mode"] = "Dar vuelta (flip) si va en contra"
+        elif "cerrar" in _fc:
+            st.session_state["sig_conf_mode"] = "Cerrar si va en contra"
+        else:
+            st.session_state["sig_conf_mode"] = "No filtrar"
+        n += 1
+    return n
+
+
 def _render_range_plan_generator() -> None:
     """📅 Backtest por RANGO dirigido por criterios (Fase 2 — UI). Cuarto PRODUCTOR del contrato
     `bt_iters` (como los handoffs de Alertas/Trading view y el editor manual): arma un TradePlan
@@ -1739,6 +1803,7 @@ def _render_range_plan_generator() -> None:
                               "dentro del rango y deja solo las que el criterio habilita — cada "
                               "señal conserva su hora, tipo y estrategia.")
         _use_sigs = _what.startswith("🔔")
+        _pj = None                     # JSON del playbook (None en modo manual)
         _src = st.radio("Fuente del criterio",
                         ["📁 Playbook del análisis (JSON)",
                          "🧠 Última interpretación (de esta sesión)", "✍️ Matriz manual"],
@@ -1813,6 +1878,77 @@ def _render_range_plan_generator() -> None:
                     + (f" ({', '.join(_dif)})" if _dif else ""))
         st.markdown("🗓️ " + " · ".join(_chip(_d) for _d in ("Lun", "Mar", "Mié", "Jue", "Vie")))
 
+        # ⚙️ Config por día: QUÉ escenario le toca a cada día (el rentable/robusto del análisis),
+        # POR QUÉ (métricas) y sus CONDICIONES de salida (si el análisis corrió con template).
+        _EN_BY_ES = {"Lun": "Monday", "Mar": "Tuesday", "Mié": "Wednesday",
+                     "Jue": "Thursday", "Vie": "Friday"}
+        _apply_cfg = None
+        if _pj:
+            _cfg_rows, _has_cfg = [], False
+            for _d, _en in _EN_BY_ES.items():
+                _i = _pj.get(_en) or {}
+                if not _i:
+                    continue
+                _cfg = _i.get("config") or {}
+                _has_cfg = _has_cfg or bool(_cfg)
+                _cfg_rows.append({
+                    "Día": _d, "Escenario": _i.get("scenario"),
+                    "Veredicto": _i.get("recommendation"),
+                    "WR %": _i.get("win_rate"), "ROI %": _i.get("expected_roi"),
+                    "Sharpe": _i.get("sharpe"), "n": _i.get("n"),
+                    "Alcance": _cfg.get("alcance", "—"),
+                    "Umbral ticker %": _cfg.get("ticker_roi", "—"),
+                    "Stop ticker %": _cfg.get("ticker_stop", "—"),
+                    "ROI colect. %": _cfg.get("col_roi", "—"),
+                    "Stop colect. %": _cfg.get("col_stop", "—"),
+                    "Confirmación": _cfg.get("filtro_confirmacion", "—"),
+                    "Refuerzo": _cfg.get("refuerzo", "—"),
+                })
+            if _cfg_rows:
+                st.markdown("**⚙️ Config por día** — el escenario que le toca a cada día y sus "
+                            "condiciones de salida:")
+                st.dataframe(pd.DataFrame(_cfg_rows), use_container_width=True, hide_index=True)
+                if not _has_cfg:
+                    st.caption("ℹ️ Solo se ve el **ID**: el análisis corrió **sin el template**. "
+                               "En «Interpretar resultados» subí también el template y bajá de "
+                               "nuevo el Playbook JSON para ver acá las condiciones de cada "
+                               "escenario.")
+            # 🎛 Una config por corrida: elegí QUÉ escenario aplicar a «CONDICIONES DE SALIDA».
+            _scen_cfgs: dict = {}
+            for _d, _en in _EN_BY_ES.items():
+                _i = _pj.get(_en) or {}
+                if (str(_i.get("recommendation") or "").upper() == "OPERAR"
+                        and _i.get("config") and _i.get("scenario")):
+                    _e = _scen_cfgs.setdefault(str(_i["scenario"]), {"cfg": _i["config"], "dias": []})
+                    _e["dias"].append(_d)
+            if _scen_cfgs:
+                # Escenarios con la MISMA config → una sola opción (sus IDs difieren en columnas
+                # que el panel no re-aplica). Con una única config, el checkbox arranca activado.
+                _by_cfg: dict = {}
+                for _sc, _v in _scen_cfgs.items():
+                    _kk = tuple(sorted((_ck, str(_cv)) for _ck, _cv in _v["cfg"].items()))
+                    _m = _by_cfg.setdefault(_kk, {"ids": [], "cfg": _v["cfg"], "dias": []})
+                    _m["ids"].append(_sc)
+                    _m["dias"].extend(_v["dias"])
+                _opt_map = {f"{'+'.join(_m['ids'])} ({', '.join(_m['dias'])})": _m["cfg"]
+                            for _m in _by_cfg.values()}
+                _ap1, _ap2 = st.columns(2)
+                _apply_on = _ap1.checkbox(
+                    "🎛 Al cargar, aplicar al panel las condiciones del escenario:",
+                    value=(len(_opt_map) == 1), key="plan_apply_cfg",
+                    help="Setea Alcance, Umbral/Stop del ticker, ROI/Stop colectivo y el filtro de "
+                         "confirmación en «CONDICIONES DE SALIDA» con los valores del escenario "
+                         "elegido. Las condiciones aplican a TODA la corrida (una config por "
+                         "corrida); para validar otro escenario, cargá de nuevo con ese elegido.")
+                _sel = _ap2.selectbox("Escenario a aplicar", list(_opt_map), key="plan_cfg_scen",
+                                      disabled=not _apply_on, label_visibility="collapsed")
+                if _apply_on and _sel:
+                    _apply_cfg = _opt_map[_sel]
+
+        if pd.Timestamp(_d1) > pd.Timestamp(_hoy):
+            st.warning("El rango incluye **fechas futuras** — todavía no hay datos de mercado; "
+                       "esos días saldrán como error/salteados al correr.")
+
         for _w in _res.warnings:
             st.warning(_w)
         _s = _res.summary
@@ -1848,6 +1984,10 @@ def _render_range_plan_generator() -> None:
                      disabled=not _res.rows, key="plan_load"):
             # Mismo patrón que el handoff de Alertas: sembrar + re-seed del editor + abrir panel.
             st.session_state.pop("replay", None)
+            if _apply_cfg:
+                _n_ap = _apply_scenario_config(_apply_cfg, len({r["Ticker"] for r in _res.rows}))
+                st.toast(f"🎛 {_n_ap} condición(es) del escenario aplicadas a "
+                         "«CONDICIONES DE SALIDA»")
             st.session_state["bt_iters"] = _res.rows
             st.session_state.pop("bt_iters_editor", None)
             st.session_state["_iters_sel_seed"] = True

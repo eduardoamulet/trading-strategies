@@ -43,12 +43,15 @@ def _canon_day(d) -> Optional[str]:
 @dataclass(frozen=True)
 class Rule:
     """Veredicto normalizado. En reglas de DÍA, tipo/hora vienen del playbook (o defaults); en el
-    gate por ticker quedan en None (el gate solo decide `operar`; tipo/hora los pone el día)."""
+    gate por ticker quedan en None (el gate solo decide `operar`; tipo/hora los pone el día).
+    `config` = condiciones del ESCENARIO (dict canónico del playbook, presente solo si el análisis
+    corrió con template) — la UI las muestra y puede re-aplicarlas al panel."""
     operar: bool
     scenario: str = ""
     motivo: str = ""
     tipo: Optional[str] = None
     hora: Optional[str] = None
+    config: Optional[dict] = None
 
 
 @dataclass
@@ -89,6 +92,7 @@ def plan_from_playbook(pj: dict, *, use_ticker_gate: bool = True) -> TradePlan:
             motivo=str(v.get("reason") or ""),
             tipo=str(v.get("operation") or DEFAULT_TIPO),
             hora=str(v.get("entry") or DEFAULT_HORA),
+            config=v.get("config") if isinstance(v.get("config"), dict) else None,
         )
     if not days:
         raise ValueError(
@@ -110,7 +114,8 @@ def plan_from_playbook(pj: dict, *, use_ticker_gate: bool = True) -> TradePlan:
                 gate.setdefault(es, {})[str(tk).upper().strip()] = Rule(
                     operar=str(v.get("recommendation") or "").strip().upper() == "OPERAR",
                     scenario=str(v.get("scenario") or ""),
-                    motivo="veredicto día×ticker")
+                    motivo="veredicto día×ticker",
+                    config=v.get("config") if isinstance(v.get("config"), dict) else None)
         gate = gate or None
 
     plan = TradePlan(days=days, ticker_gate=gate, source="playbook")

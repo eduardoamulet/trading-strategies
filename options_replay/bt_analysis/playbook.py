@@ -26,6 +26,41 @@ def _int(v):
         return None
 
 
+# Condiciones de un escenario (nombres CANÓNICOS de loader._SCENARIO_RENAME) que van al playbook:
+# son las que explican POR QUÉ esa config es la del día y las que el panel puede re-aplicar.
+_COND_COLS = ["alcance", "ticker_roi_on", "ticker_roi", "ticker_stop_on", "ticker_stop",
+              "filtro_confirmacion", "cerrar_confirmacion_debil", "cuerpo_min",
+              "col_roi_on", "col_roi", "col_stop_on", "col_stop",
+              "refuerzo", "refuerzo_umbral", "refuerzo_n", "sin_lookahead"]
+
+
+def _scenario_configs(report: dict) -> dict:
+    """{id: {condición: valor}} desde report['joined'] (results ⋈ template). Vacío si el análisis
+    corrió SIN template: las condiciones viven en la hoja «Backtesting scenarios», sin ella el
+    playbook solo puede nombrar el ID del escenario."""
+    j = report.get("joined")
+    if j is None or getattr(j, "empty", True) or "id" not in getattr(j, "columns", []):
+        return {}
+    cols = [c for c in _COND_COLS if c in j.columns]
+    if not cols:
+        return {}
+    out: dict = {}
+    for _, r in j.drop_duplicates(subset="id").iterrows():
+        cfg = {}
+        for c in cols:
+            v = r[c]
+            if v is None or v != v:
+                continue
+            if isinstance(v, str):
+                cfg[c] = v.strip()
+            else:
+                f = _num(v)
+                cfg[c] = f if f is not None else str(v).strip()
+        if cfg:
+            out[str(r["id"]).strip()] = cfg
+    return out
+
+
 def build_playbook(report: dict) -> dict:
     seed = report.get("seed", {})
     entry = seed.get("Horario de entrada", "09:30")
@@ -35,8 +70,11 @@ def build_playbook(report: dict) -> dict:
     dow = report.get("dow", {})
     pb = {"entrada_fija": entry, "salida_fija": exit_, "operacion": op, "tickers": tickers, "dias": {}}
     if dow.get("available"):
+        cfgs = _scenario_configs(report)       # {} si el análisis corrió sin template
         for dia, info in dow.get("per_day", {}).items():
-            pb["dias"][dia] = {**info, "entry": entry, "exit": exit_, "operation": op}
+            cfg = cfgs.get(str(info.get("scenario") or "").strip())
+            pb["dias"][dia] = {**info, "entry": entry, "exit": exit_, "operation": op,
+                               **({"config": cfg} if cfg else {})}
         pb["nivel"] = ("día de la semana · CARTERA (ROI colectivo Σg/Σinv)"
                        if dow.get("level") == "cartera" else "día de la semana")
         # Desglose día×ticker (si el análisis lo trae): va al JSON para que el backtest por rango
@@ -45,7 +83,7 @@ def build_playbook(report: dict) -> dict:
         if dt is not None and getattr(dt, "empty", True) is False:
             pt: dict = {}
             for _, r in dt.iterrows():
-                pt.setdefault(str(r.get("Día")), {})[str(r.get("Ticker"))] = {
+                e = {
                     "scenario": str(r.get("Escenario") or ""),
                     "win_rate": _num(r.get("Win Rate %")),
                     "expected_roi": _num(r.get("ROI %")),
@@ -53,6 +91,10 @@ def build_playbook(report: dict) -> dict:
                     "n": _int(r.get("n")),
                     "recommendation": str(r.get("Recomendación") or ""),
                 }
+                cfg = cfgs.get(e["scenario"])
+                if cfg:
+                    e["config"] = cfg
+                pt.setdefault(str(r.get("Día")), {})[str(r.get("Ticker"))] = e
             pb["por_ticker"] = pt
     else:
         pb["nivel"] = "escenario (sin desglose por día)"
@@ -88,6 +130,8 @@ def to_json(pb: dict) -> dict:
             "n": info.get("n"),
             "recommendation": info.get("recommendation"),
         }
+        if info.get("config"):
+            out[_EN_DAY.get(dia, dia)]["config"] = info["config"]
     if pb.get("por_ticker"):
         out["por_ticker"] = {_EN_DAY.get(d, d): tks for d, tks in pb["por_ticker"].items()}
     if not out and pb.get("mejor_escenario"):
