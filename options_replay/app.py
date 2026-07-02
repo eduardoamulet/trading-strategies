@@ -969,7 +969,8 @@ _iters_seed = st.session_state.get("bt_iters")   # None / [] si no hay iteracion
 # El expander se QUEDA ABIERTO mientras haya iteraciones cargadas. Antes "bt_iters_open" era un
 # flag de un solo uso (se .pop()-eaba) → en cada rerun (p.ej. al tocar un dropdown) se cerraba solo.
 _one_shot = bool(st.session_state.pop("bt_iters_open", False))
-_iters_open = bool(_iters_seed) or _one_shot or bool(st.session_state.get("sig_bt"))
+_iters_open = (bool(_iters_seed) or _one_shot or bool(st.session_state.get("sig_bt"))
+               or bool(st.session_state.get("plan_rango_on")))   # generador rango+criterios abierto
 
 
 def _has_0dte_on(dl, ticker: str, date: str) -> bool:
@@ -1033,6 +1034,13 @@ def _shift_hhmm(hhmm: str, mins: int) -> str:
         return hhmm
 
 
+# Tipos de operación válidos POR FILA en el panel de señales (editor + generador por rango).
+_TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (Refuerzo)",
+              "CALL y PUT (Refuerzo) (End of Day)", "CALL y PUT (plus)",
+              "CALL o PUT", "CALL o PUT (plus)", "CALL o PUT (End of Day)",
+              "Sólo CALL (End of Day)", "Sólo PUT (End of Day)"]
+
+
 def _render_iters_panel(_iters_seed):
     # ════════════ 🔁 DATOS DE ITERACIÓN (señales · filtros · tabla editable) ════════════
     with st.container(border=True):
@@ -1054,10 +1062,6 @@ def _render_iters_panel(_iters_seed):
         _seed_df["% Cumpl."] = pd.to_numeric(_seed_df["% Cumpl."], errors="coerce")
         # Tipo = modo del motor. Una pierna = "CALL"/"PUT" (= lo que viene en la alerta, así
         # ese es el DEFAULT). Compat: si quedó "Sólo CALL/PUT" de antes, se mapea a CALL/PUT.
-        _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (Refuerzo)",
-                      "CALL y PUT (Refuerzo) (End of Day)", "CALL y PUT (plus)",
-                      "CALL o PUT", "CALL o PUT (plus)", "CALL o PUT (End of Day)",
-                      "Sólo CALL (End of Day)", "Sólo PUT (End of Day)"]
         _TIPO_CI = {t.upper(): t for t in _TIPO_OPTS}   # match case-insensible (el handoff manda en MAYÚS)
         _seed_df["Tipo"] = _seed_df["Tipo"].apply(
             lambda v: _TIPO_CI.get(str(v).strip().upper())
@@ -1664,7 +1668,130 @@ def _render_iters_panel(_iters_seed):
         st.rerun()
 
 
+def _render_range_plan_generator() -> None:
+    """📅 Backtest por RANGO dirigido por criterios (Fase 2 — UI). Cuarto PRODUCTOR del contrato
+    `bt_iters` (como los handoffs de Alertas/Trading view y el editor manual): arma un TradePlan
+    (playbook JSON del análisis / última interpretación de la sesión / matriz manual), lo expande
+    con trade_plan.build_iterations sobre el rango elegido y SIEMBRA el panel con el patrón del
+    handoff. El runner/render/exports NO cambian: las filas se corren con el MISMO botón."""
+    if not st.toggle("📅 Generar iteraciones desde rango + criterios", key="plan_rango_on",
+                     help="Arma las filas automáticamente: rango de fechas × veredictos OPERAR/"
+                          "NO OPERAR del análisis («Interpretar resultados» → Playbook JSON) o una "
+                          "matriz manual por día. Después las corrés con el botón de siempre."):
+        return
+    import trade_plan as _tpl
+
+    with st.container(border=True):
+        _c0, _c1, _c2 = st.columns([1, 1, 2])
+        _hoy = date_cls.today()
+        _d0 = _c0.date_input("Desde", value=_hoy - timedelta(days=14), key="plan_d0")
+        _d1 = _c1.date_input("Hasta", value=_hoy - timedelta(days=1), key="plan_d1")
+        _tk_opts = sorted(load_ticker_info().keys()) or ["IWM", "QQQ", "SPY"]
+        _tk_def = [t for t in ("QQQ", "SPY", "IWM") if t in _tk_opts] or _tk_opts[:1]
+        _tks = _c2.multiselect("Tickers", options=_tk_opts, default=_tk_def, key="plan_tks",
+                               help="El plan se evalúa por (día, ticker). QQQ/SPY/IWM tienen 0DTE "
+                                    "todos los días y data local completa.")
+
+        _src = st.radio("Fuente del criterio",
+                        ["📁 Playbook del análisis (JSON)",
+                         "🧠 Última interpretación (de esta sesión)", "✍️ Matriz manual"],
+                        horizontal=True, key="plan_src",
+                        help="El playbook sale de **«Interpretar resultados»** (botón «⬇ Playbook "
+                             "JSON»). La matriz manual no requiere análisis previo.")
+        if _src.startswith("✍️"):
+            _wd_cols = st.columns(5)
+            _dias_sel = [_d for _i, _d in enumerate(("Lun", "Mar", "Mié", "Jue", "Vie"))
+                         if _wd_cols[_i].checkbox(_d, value=True, key=f"plan_wd_{_i}")]
+            _mt1, _mt2 = st.columns(2)
+            _tipo = _mt1.selectbox("Tipo de operación", _TIPO_OPTS,
+                                   index=_TIPO_OPTS.index("CALL y PUT"), key="plan_tipo")
+            _hora = _mt2.text_input("Hora de entrada (HH:MM)", value="09:30", key="plan_hora")
+            _plan = _tpl.plan_from_manual(_dias_sel, tipo=_tipo, hora=_hora)
+        else:
+            _gate = st.checkbox(
+                "Usar veredicto día×ticker (gate fino)", value=True, key="plan_gate",
+                help="Si el playbook trae `por_ticker`, ese veredicto MANDA sobre el de cartera "
+                     "(p. ej. SPY opera el Martes aunque la cartera diga NO OPERAR).")
+            if _src.startswith("📁"):
+                _up = st.file_uploader("Playbook JSON del análisis", type=["json"], key="plan_pj_up")
+                if _up is None:
+                    st.info("Subí el **playbook.json** (o usá la fuente «Última interpretación»).")
+                    return
+                try:
+                    import json as _json
+                    _pj = _json.load(_up)
+                except Exception as _pe:  # noqa: BLE001
+                    st.error(f"El archivo no es un JSON válido: {_pe}")
+                    return
+            else:
+                _pj = st.session_state.get("bta_playbook_json")
+                if not _pj:
+                    st.info("Todavía no corriste **«Interpretar resultados»** en esta sesión. "
+                            "Corré el análisis (arriba, en el modo de la barra lateral) o subí el "
+                            "playbook JSON con la otra fuente.")
+                    return
+            try:
+                _plan = _tpl.plan_from_playbook(_pj, use_ticker_gate=_gate)
+            except ValueError as _pe:
+                st.error(str(_pe))
+                return
+
+        try:
+            _res = _tpl.build_iterations(_plan, _d0, _d1, _tks,
+                                         non_trading_reason=_non_trading_reason)
+        except ValueError as _ve:
+            st.error(str(_ve))
+            return
+
+        def _chip(_d):
+            _r = _plan.days[_d]
+            _g = (_plan.ticker_gate or {}).get(_d) or {}
+            _dif = [f"{_t} {'✅' if _rr.operar else '❌'}" for _t, _rr in sorted(_g.items())
+                    if _rr.operar != _r.operar]
+            return (f"**{_d}** {'✅' if _r.operar else '❌'}"
+                    + (f" _{_r.scenario}_" if _r.scenario else "")
+                    + (f" ({', '.join(_dif)})" if _dif else ""))
+        st.markdown("🗓️ " + " · ".join(_chip(_d) for _d in ("Lun", "Mar", "Mié", "Jue", "Vie")))
+
+        for _w in _res.warnings:
+            st.warning(_w)
+        _s = _res.summary
+        _m0, _m1, _m2, _m3 = st.columns(4)
+        _m0.metric("Iteraciones", _s["generadas"])
+        _m1.metric("Descartes por criterio", _s["criterio"])
+        _m2.metric("Sin sesión", _s["sin_sesion"])
+        _m3.metric("Días hábiles", _s["dias_habiles"])
+        _t_ok, _t_no = st.tabs([f"✅ Iteraciones ({len(_res.rows)})",
+                                f"🗑️ Descartes ({len(_res.discarded)})"])
+        with _t_ok:
+            if _res.rows:
+                st.dataframe(pd.DataFrame(_res.rows), use_container_width=True, hide_index=True,
+                             height=min(320, 38 + 35 * len(_res.rows)))
+            else:
+                st.caption("El criterio no habilita ninguna iteración en ese rango.")
+        with _t_no:
+            if _res.discarded:
+                st.dataframe(pd.DataFrame(_res.discarded), use_container_width=True,
+                             hide_index=True, height=min(320, 38 + 35 * len(_res.discarded)))
+            else:
+                st.caption("Sin descartes.")
+        st.caption("El chequeo de **0DTE** lo hace el runner al correr (columna «Vencimiento» del "
+                   "panel). **Cargar reemplaza** las filas actuales del panel.")
+        if st.button(f"📥 Cargar {len(_res.rows)} iteración(es) al panel", type="primary",
+                     disabled=not _res.rows, key="plan_load"):
+            # Mismo patrón que el handoff de Alertas: sembrar + re-seed del editor + abrir panel.
+            st.session_state.pop("replay", None)
+            st.session_state["bt_iters"] = _res.rows
+            st.session_state.pop("bt_iters_editor", None)
+            st.session_state["_iters_sel_seed"] = True
+            st.session_state["bt_iters_open"] = True
+            st.toast(f"📥 {len(_res.rows)} iteración(es) del plan cargadas — corré con "
+                     "«▶ Correr backtest».")
+            st.rerun()
+
+
 with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open):
+    _render_range_plan_generator()
     if not _iters_seed:
         st.info("No hay iteraciones cargadas. Seleccioná señales en **Alertas** y tocá "
                 "**Backtestear** para traerlas acá, o empezá una manualmente abajo.")
@@ -2642,6 +2769,8 @@ if st.session_state.get("bt_mode_radio") == "Interpretar resultados":
         _bdow = _btl.load_dow(_dow_up) if _dow_up is not None else None
         with st.spinner("Analizando…"):
             _rep = _bte.analyze(_rdf, _gran, scenarios_df=_bsc, dow_df=_bdow, seed=_bseed)
+        # Playbook a sesión → fuente «🧠 Última interpretación» del generador rango+criterios.
+        st.session_state["bta_playbook_json"] = _rep.get("playbook_json") or {}
         _btu.render(_rep)
     except Exception as _ie:   # noqa: BLE001
         st.error(f"No pude interpretar el file: {_ie}")
