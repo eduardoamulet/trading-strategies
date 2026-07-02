@@ -12,7 +12,8 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # options_replay/ en el path
-from trade_plan import (build_iterations, plan_from_manual, plan_from_playbook)  # noqa: E402
+from trade_plan import (build_iterations, filter_signals, plan_from_manual,  # noqa: E402
+                        plan_from_playbook)
 from bt_analysis import playbook as pbk  # noqa: E402
 
 # Playbook JSON como lo produce bt_analysis (claves EN) — refleja el resultado real de 6 semanas:
@@ -143,6 +144,42 @@ def test_plan_manual_por_ticker():
     p = plan_from_manual(["Lun"], por_ticker={"Lun": {"IWM": False}})
     res = build_iterations(p, LUN, LUN, TKS)
     assert sorted(r["Ticker"] for r in res.rows) == ["QQQ", "SPY"]
+
+
+# ── Fase 3: señales históricas filtradas por el criterio ─────────────────────
+def _sigs_fixture():
+    """Señales estilo signals_db (symbol/fecha/hora/tipo/probabilidad/estrategia)."""
+    return [
+        {"symbol": "SPY", "fecha": MAR, "hora": "10:15", "tipo": "CALL",
+         "probabilidad": 82, "estrategia": "IA"},                       # Mar: gate SPY ✅
+        {"symbol": "QQQ", "fecha": MAR, "hora": "11:00", "tipo": "PUT"},   # Mar: gate QQQ ❌
+        {"symbol": "IWM", "fecha": MAR, "hora": "11:05", "tipo": "CALL"},  # Mar: cartera ❌ (sin gate)
+        {"symbol": "qqq", "fecha": LUN, "hora": "08:45", "tipo": "call"},  # Lun ✅ · pre-market → 09:30
+        {"symbol": "SPY", "fecha": "2026-02-20", "hora": "10:00", "tipo": "CALL"},   # fuera de rango
+        {"symbol": "SPY", "fecha": "2026-03-07", "hora": "10:00", "tipo": "CALL"},   # sábado
+        {"symbol": "", "fecha": MAR, "hora": "10:00", "tipo": "CALL"},               # inválida
+    ]
+
+
+def test_filter_signals_gate_conserva_hora_tipo_y_metadata():
+    res = filter_signals(plan_from_playbook(PJ), _sigs_fixture(), LUN, "2026-03-08")
+    assert [(r["Ticker"], r["Fecha"]) for r in res.rows] == [("QQQ", LUN), ("SPY", MAR)]
+    assert res.rows[0]["Hora"] == "09:30" and res.rows[0]["Tipo"] == "CALL"   # normalizadas
+    spy = res.rows[1]
+    assert spy["Hora"] == "10:15" and spy["% Cumpl."] == 82 and spy["Estrategia"] == "IA"
+    # en_rango = 5: la inválida se detecta ANTES del chequeo de rango y la de 02-20 queda fuera.
+    assert res.summary == {"generadas": 2, "criterio": 2, "sin_0dte": 0, "sin_sesion": 1,
+                           "señales_total": 7, "en_rango": 5, "otros_tickers": 0, "invalidas": 1}
+    assert any("QQQ" in d["Motivo"] for d in res.discarded if d["Ticker"] == "QQQ")
+
+
+def test_filter_signals_tickers_vacio_es_todos_y_filtro():
+    p = plan_from_playbook(PJ)
+    solo_spy = filter_signals(p, _sigs_fixture(), LUN, "2026-03-08", tickers=["SPY"])
+    assert [r["Ticker"] for r in solo_spy.rows] == ["SPY"]
+    assert solo_spy.summary["otros_tickers"] == 3          # QQQ×2 + IWM×1 en rango
+    inv = filter_signals(p, _sigs_fixture(), "2026-03-08", LUN)
+    assert inv.rows == [] and any("invertido" in w.lower() for w in inv.warnings)
 
 
 # ── Roundtrip: análisis → playbook JSON → plan → filas ────────────────────────

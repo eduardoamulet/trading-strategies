@@ -235,3 +235,91 @@ def _resolve(plan: TradePlan, dia: str, ticker: str, day_rule: Rule) -> tuple[Ru
         if r is not None:
             return r, "ticker"
     return day_rule, "dia"
+
+
+# ── Fase 3: señales históricas REALES filtradas por el criterio del plan ─────────────────────────
+def _norm_premarket_hora(hhmm) -> str:
+    """Señales de antes de las 09:00 (pre-market) → entrada 09:30 (apertura), así el backtest 0DTE
+    tiene datos. Misma regla que el handoff de Alertas en app.py (_norm_hora). Lo demás, igual."""
+    s = str(hhmm or "").strip()
+    try:
+        h, m = s.split(":")[:2]
+        if (int(h), int(m)) < (9, 0):
+            return "09:30"
+    except Exception:  # noqa: BLE001
+        pass
+    return s
+
+
+def filter_signals(plan: TradePlan, signals, date_start, date_end, *,
+                   tickers: Optional[Iterable[str]] = None,
+                   non_trading_reason: Optional[Callable[[str], Optional[str]]] = None) -> BuildResult:
+    """Filtra SEÑALES HISTÓRICAS reales (p. ej. la base de Alertas) por el criterio del plan dentro
+    de [date_start, date_end] → filas del contrato `bt_iters`.
+
+    A diferencia de `build_iterations` (plan sintético), acá cada señal CONSERVA su hora (con la
+    normalización pre-market → 09:30), su tipo (CALL/PUT) y su metadata («% Cumpl.», Estrategia);
+    el plan solo decide OPERAR sí/no por (día, ticker) — mismo gate duro.
+
+    `signals`: iterable de dicts con symbol|ticker, fecha (YYYY-MM-DD), hora, tipo y opcionales
+    probabilidad|prob, estrategia (el esquema de signals_db). `tickers` vacío/None = todos.
+    Las señales FUERA del rango no son candidatas (no cuentan como descarte); el resumen trae
+    señales_total / en_rango / otros_tickers / invalidas para no perder nada en silencio."""
+    tks = {str(t).upper().strip() for t in (tickers or []) if str(t).strip()}
+    warnings = list(plan.warnings)
+    rows: list[dict] = []
+    disc: list[dict] = []
+    counts = {"generadas": 0, "criterio": 0, "sin_0dte": 0, "sin_sesion": 0,
+              "señales_total": 0, "en_rango": 0, "otros_tickers": 0, "invalidas": 0}
+    try:
+        d0, d1 = pd.Timestamp(date_start).normalize(), pd.Timestamp(date_end).normalize()
+    except Exception as e:
+        raise ValueError(f"Rango de fechas inválido: {date_start!r} → {date_end!r}") from e
+    if pd.isna(d0) or pd.isna(d1):
+        raise ValueError(f"Rango de fechas inválido: {date_start!r} → {date_end!r}")
+    if d1 < d0:
+        warnings.append(f"Rango invertido ({d0.date()} → {d1.date()}): no se generaron iteraciones.")
+        return BuildResult(rows, disc, counts, warnings)
+
+    for s in signals or []:
+        counts["señales_total"] += 1
+        tk = str(s.get("symbol") or s.get("ticker") or "").upper().strip()
+        fecha = str(s.get("fecha") or "").strip()[:10]
+        try:
+            f = pd.Timestamp(fecha).normalize()
+        except Exception:  # noqa: BLE001
+            f = pd.NaT
+        if not tk or pd.isna(f):
+            counts["invalidas"] += 1
+            continue
+        if not (d0 <= f <= d1):
+            continue                                    # fuera del rango: no es candidata
+        counts["en_rango"] += 1
+        if tks and tk not in tks:
+            counts["otros_tickers"] += 1
+            continue
+        dia = _WD_ES[f.weekday()]
+        ntr = (non_trading_reason(fecha) if non_trading_reason
+               else ("fin de semana" if f.weekday() >= 5 else None))
+        if ntr:
+            counts["sin_sesion"] += 1
+            disc.append({"Ticker": tk, "Fecha": fecha, "Día": dia, "Motivo": f"sin sesión: {ntr}"})
+            continue
+        day_rule = plan.days.get(dia) or Rule(False, motivo="sin regla para el día")
+        rule, origen = _resolve(plan, dia, tk, day_rule)
+        if not rule.operar:
+            counts["criterio"] += 1
+            quien = "cartera" if origen == "dia" else tk
+            disc.append({"Ticker": tk, "Fecha": fecha, "Día": dia,
+                         "Motivo": f"criterio {dia} ({quien}): NO OPERAR"
+                                   + (f" — {rule.motivo}" if rule.motivo else "")})
+            continue
+        rows.append({"Ticker": tk, "Fecha": fecha, "Hora": _norm_premarket_hora(s.get("hora")),
+                     "Tipo": str(s.get("tipo") or "").upper().strip(),
+                     "% Cumpl.": s.get("probabilidad", s.get("prob")),
+                     "Estrategia": str(s.get("estrategia") or "")})
+        counts["generadas"] += 1
+
+    rows.sort(key=lambda r: (r["Fecha"], r["Hora"], r["Ticker"]))
+    disc.sort(key=lambda r: (r["Fecha"], r["Ticker"]))
+    return BuildResult(rows, disc, counts, warnings)

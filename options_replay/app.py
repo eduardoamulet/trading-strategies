@@ -1007,6 +1007,22 @@ def _venc_label(dl, ticker: str, fecha: str) -> str:
     return "mismo día" if _n <= 0 else f"{_WD_ES[_d1.weekday()]} (+{_n})"
 
 
+def _venc_label_cached(dl, ticker: str, fecha: str) -> str:
+    """Como `_venc_label` pero SIN RED: solo mira la cache local (chain 0DTE en disco → «mismo
+    día»; sin dato → «?»). Para seeds GRANDES (p. ej. el puente con un rango largo): nearest_expiry
+    por fila = 1 llamada a Polygon por (ticker, fecha) sin cache → la página quedaba «Running…»
+    eternamente. El runner resuelve el vencimiento real al correr."""
+    _tk, _fc = str(ticker or "").strip().upper(), str(fecha or "").strip()
+    if not _tk or not _fc:
+        return ""
+    try:
+        if (dl.data_dir / "chain" / f"{_tk}_{_fc}.parquet").exists():
+            return "mismo día"
+    except Exception:  # noqa: BLE001
+        pass
+    return "?"
+
+
 def _section_rule(text: str) -> None:
     """Encabezado de sección: texto a la izquierda + línea divisoria a la derecha (regla inline).
 
@@ -1165,8 +1181,19 @@ def _render_iters_panel(_iters_seed):
         # Columna "Vencimiento" (informativa, no editable): cuándo vence el 0DTE/contrato más cercano de
         # cada fila. Refleja el ticker/fecha del SEED (la alerta), no las ediciones en vivo del editor.
         _dl_venc = get_downloader(api_key)
-        _seed_df["Vencimiento"] = [_venc_label(_dl_venc, _t, _f)
-                                   for _t, _f in zip(_seed_df["Ticker"], _seed_df["Fecha"])]
+        # Tope de red: hasta 30 filas se consulta el vencimiento real (memoizado); con más filas
+        # (p. ej. puente con rango largo → cientos), SOLO cache local — si no, la página queda
+        # «Running…» para siempre resolviendo Polygon fila por fila.
+        _VENC_NET_MAX = 30
+        if len(_seed_df) <= _VENC_NET_MAX:
+            _seed_df["Vencimiento"] = [_venc_label(_dl_venc, _t, _f)
+                                       for _t, _f in zip(_seed_df["Ticker"], _seed_df["Fecha"])]
+        else:
+            _seed_df["Vencimiento"] = [_venc_label_cached(_dl_venc, _t, _f)
+                                       for _t, _f in zip(_seed_df["Ticker"], _seed_df["Fecha"])]
+            st.caption(f"⚡ **{len(_seed_df)} filas**: el Vencimiento se resolvió solo con la "
+                       "cache local (**«?»** = sin dato local, se resuelve al correr) para que el "
+                       "panel cargue al instante.")
         # "0 DTE": ✅ si el ticker tenía opción que vence ESE mismo día (derivado del Vencimiento, sin
         # llamada extra). True = «mismo día».
         _seed_df["0 DTE"] = ["✅" if str(_v) == "mismo día" else "" for _v in _seed_df["Vencimiento"]]
@@ -1592,11 +1619,15 @@ def _render_iters_panel(_iters_seed):
         # los resultados con avisos "No 0 DTE option").
         _skipped = []
         _keep = []
-        for _s in _specs:
-            # Con DTE=0 salteamos las señales SIN 0DTE ese día; con DTE=1 o Auto-DTE NO (se opera
-            # al vencimiento más cercano, no hace falta 0DTE en la fecha de la señal).
-            (_keep if (_sig_dte == 1 or _auto_dte_on or _has_0dte_on(_dl, _s["ticker"], _s["fecha"]))
-             else _skipped).append(_s)
+        # Spinner visible: con MUCHAS filas esta pre-pasada consulta chains no cacheadas y sin
+        # aviso parecía que la app estaba colgada antes de la barra de progreso.
+        with st.spinner(f"Chequeando 0DTE de {len(_specs)} iteración(es)…"):
+            for _s in _specs:
+                # Con DTE=0 salteamos las señales SIN 0DTE ese día; con DTE=1 o Auto-DTE NO (se
+                # opera al vencimiento más cercano, no hace falta 0DTE en la fecha de la señal).
+                (_keep if (_sig_dte == 1 or _auto_dte_on
+                           or _has_0dte_on(_dl, _s["ticker"], _s["fecha"]))
+                 else _skipped).append(_s)
         _specs = _keep
         _n = len(_specs)
         _wk = max(1, min(8, _n)) if _n else 1
@@ -1684,14 +1715,30 @@ def _render_range_plan_generator() -> None:
     with st.container(border=True):
         _c0, _c1, _c2 = st.columns([1, 1, 2])
         _hoy = date_cls.today()
-        _d0 = _c0.date_input("Desde", value=_hoy - timedelta(days=14), key="plan_d0")
-        _d1 = _c1.date_input("Hasta", value=_hoy - timedelta(days=1), key="plan_d1")
+        # Prefill desde la barra lateral: si ya elegiste rango/tickers en «Parámetros de sesión»,
+        # el generador arranca con esos valores (solo el default inicial; después manda el widget).
+        _sb_d0 = st.session_state.get("sel_fecha_inicial") or st.session_state.get("sel_fecha_unica")
+        _sb_d1 = st.session_state.get("sel_fecha_final") or st.session_state.get("sel_fecha_unica")
+        _d0 = _c0.date_input("Desde", value=_sb_d0 or (_hoy - timedelta(days=14)), key="plan_d0")
+        _d1 = _c1.date_input("Hasta", value=_sb_d1 or (_hoy - timedelta(days=1)), key="plan_d1")
         _tk_opts = sorted(load_ticker_info().keys()) or ["IWM", "QQQ", "SPY"]
-        _tk_def = [t for t in ("QQQ", "SPY", "IWM") if t in _tk_opts] or _tk_opts[:1]
+        _sb_tks = [t for t in (st.session_state.get("tickers_select") or []) if t in _tk_opts]
+        _tk_def = (_sb_tks or [t for t in ("QQQ", "SPY", "IWM") if t in _tk_opts]
+                   or _tk_opts[:1])
         _tks = _c2.multiselect("Tickers", options=_tk_opts, default=_tk_def, key="plan_tks",
                                help="El plan se evalúa por (día, ticker). QQQ/SPY/IWM tienen 0DTE "
                                     "todos los días y data local completa.")
 
+        _what = st.radio("Qué backtestear",
+                         ["📅 Plan sintético (1 iteración por día×ticker)",
+                          "🔔 Señales históricas de Alertas (filtradas por el criterio)"],
+                         horizontal=True, key="plan_what",
+                         help="**Plan sintético**: genera una iteración por cada (día hábil × "
+                              "ticker) que el criterio habilita, a la hora del plan. **Señales "
+                              "históricas**: toma las alertas REALES de la base (página Alertas) "
+                              "dentro del rango y deja solo las que el criterio habilita — cada "
+                              "señal conserva su hora, tipo y estrategia.")
+        _use_sigs = _what.startswith("🔔")
         _src = st.radio("Fuente del criterio",
                         ["📁 Playbook del análisis (JSON)",
                          "🧠 Última interpretación (de esta sesión)", "✍️ Matriz manual"],
@@ -1737,8 +1784,21 @@ def _render_range_plan_generator() -> None:
                 return
 
         try:
-            _res = _tpl.build_iterations(_plan, _d0, _d1, _tks,
-                                         non_trading_reason=_non_trading_reason)
+            if _use_sigs:
+                import signals_db as _sdb
+                _sdf = _sdb.load_signals()
+                if _sdf is None or _sdf.empty:
+                    st.info("La base de señales está vacía — bajalas en **Alertas** («🔄 Bajar "
+                            "API») y volvé.")
+                    return
+                st.caption("Del plan se usa **solo el veredicto** por día(/ticker): cada señal "
+                           "conserva su hora (pre-market → 09:30), tipo y estrategia. "
+                           "**Tickers vacío = todos.**")
+                _res = _tpl.filter_signals(_plan, _sdf.to_dict("records"), _d0, _d1,
+                                           tickers=_tks, non_trading_reason=_non_trading_reason)
+            else:
+                _res = _tpl.build_iterations(_plan, _d0, _d1, _tks,
+                                             non_trading_reason=_non_trading_reason)
         except ValueError as _ve:
             st.error(str(_ve))
             return
@@ -1760,7 +1820,14 @@ def _render_range_plan_generator() -> None:
         _m0.metric("Iteraciones", _s["generadas"])
         _m1.metric("Descartes por criterio", _s["criterio"])
         _m2.metric("Sin sesión", _s["sin_sesion"])
-        _m3.metric("Días hábiles", _s["dias_habiles"])
+        if _use_sigs:
+            _m3.metric("Señales en rango", _s.get("en_rango", 0),
+                       help=f"De {_s.get('señales_total', 0)} señal(es) en la base.")
+            if _s.get("otros_tickers") or _s.get("invalidas"):
+                st.caption(f"ℹ️ No candidatas: **{_s.get('otros_tickers', 0)}** de otros tickers · "
+                           f"**{_s.get('invalidas', 0)}** inválida(s) (sin ticker/fecha).")
+        else:
+            _m3.metric("Días hábiles", _s.get("dias_habiles", 0))
         _t_ok, _t_no = st.tabs([f"✅ Iteraciones ({len(_res.rows)})",
                                 f"🗑️ Descartes ({len(_res.discarded)})"])
         with _t_ok:
