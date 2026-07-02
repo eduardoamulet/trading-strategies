@@ -10,6 +10,22 @@ import json
 _EN_DAY = {"Lun": "Monday", "Mar": "Tuesday", "Mié": "Wednesday", "Jue": "Thursday", "Vie": "Friday"}
 
 
+def _num(v):
+    """Escalar numpy/NaN → float nativo o None (JSON limpio, sin `NaN` inválido)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None
+
+
+def _int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_playbook(report: dict) -> dict:
     seed = report.get("seed", {})
     entry = seed.get("Horario de entrada", "09:30")
@@ -23,6 +39,21 @@ def build_playbook(report: dict) -> dict:
             pb["dias"][dia] = {**info, "entry": entry, "exit": exit_, "operation": op}
         pb["nivel"] = ("día de la semana · CARTERA (ROI colectivo Σg/Σinv)"
                        if dow.get("level") == "cartera" else "día de la semana")
+        # Desglose día×ticker (si el análisis lo trae): va al JSON para que el backtest por rango
+        # pueda usar el veredicto FINO como gate (p. ej. SPY opera el Martes aunque la cartera no).
+        dt = report.get("dow_ticker")
+        if dt is not None and getattr(dt, "empty", True) is False:
+            pt: dict = {}
+            for _, r in dt.iterrows():
+                pt.setdefault(str(r.get("Día")), {})[str(r.get("Ticker"))] = {
+                    "scenario": str(r.get("Escenario") or ""),
+                    "win_rate": _num(r.get("Win Rate %")),
+                    "expected_roi": _num(r.get("ROI %")),
+                    "sharpe": _num(r.get("Sharpe")),
+                    "n": _int(r.get("n")),
+                    "recommendation": str(r.get("Recomendación") or ""),
+                }
+            pb["por_ticker"] = pt
     else:
         pb["nivel"] = "escenario (sin desglose por día)"
         pb["dow_reason"] = dow.get("reason", "")
@@ -57,6 +88,8 @@ def to_json(pb: dict) -> dict:
             "n": info.get("n"),
             "recommendation": info.get("recommendation"),
         }
+    if pb.get("por_ticker"):
+        out["por_ticker"] = {_EN_DAY.get(d, d): tks for d, tks in pb["por_ticker"].items()}
     if not out and pb.get("mejor_escenario"):
         out["_scenario_level"] = pb["mejor_escenario"]
     return out
