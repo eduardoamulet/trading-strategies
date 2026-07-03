@@ -1057,6 +1057,22 @@ _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (Refuerzo)",
               "Sólo CALL (End of Day)", "Sólo PUT (End of Day)"]
 
 
+@st.cache_data(ttl=600)
+def _plan_scenario_configs() -> dict:
+    """Condiciones por ID de escenario leídas del TEMPLATE del batch (hoja «Backtesting scenarios»)
+    — la MISMA fuente que usa el análisis, sin copias hardcodeadas. {} si el template no está."""
+    try:
+        from bt_analysis import loader as _btl, playbook as _pbk
+        _tpl = (Path(__file__).resolve().parent.parent / "excels for backtesting"
+                / "Backtesting_use_cases_template.xlsx")
+        if not _tpl.exists():
+            return {}
+        _sc = _btl.load_template(str(_tpl))[1]
+        return _pbk._scenario_configs({"joined": _sc})
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _render_iters_panel(_iters_seed):
     # ════════════ 🔁 DATOS DE ITERACIÓN (señales · filtros · tabla editable) ════════════
     with st.container(border=True):
@@ -1320,6 +1336,44 @@ def _render_iters_panel(_iters_seed):
     # ════════════ 📥 DATOS DE ENTRADA (inversión · horario · contrato · fills) ════════════
     with st.container(border=True):
         st.markdown("<h5 style='text-align:center;'>📥 DATOS DE ENTRADA</h5>", unsafe_allow_html=True)
+        # ⚙️ Config del análisis: elegir un escenario GANADOR POR DÍA aplica sus CONDICIONES DE
+        # SALIDA (leídas del template) a los widgets de abajo — seguro porque esta sección renderiza
+        # ANTES que «CONDICIONES DE SALIDA». Solo se aplica al CAMBIAR la selección (después podés
+        # retocar a mano sin que se pise).
+        _section_rule("Configuración del análisis")
+        _cfgs_plan = _plan_scenario_configs()
+        _CFG_IDS = ["C061", "C063", "C041", "C001", "C123"]   # Lun·Mar·Mié·Jue·Vie del playbook
+        _cfg_c1, _cfg_c2 = st.columns([1.2, 2.8])
+        _sel_cfg = _cfg_c1.selectbox(
+            "Seleccionar configuración", ["(manual)"] + _CFG_IDS, key="iters_cfg_sel",
+            help="Aplica las CONDICIONES DE SALIDA del escenario del análisis (leídas del template): "
+                 "los ganadores por día — **Lun C061 · Mar C063 · Mié C041 · Jue C001 · Vie C123**. "
+                 "«(manual)» no toca nada. Ojo: el **Refuerzo** del escenario es POR FILA — si "
+                 "corresponde, cambiá el «Tipo» en la tabla de iteraciones.")
+        _n_tk_seed = len({str(_r.get("Ticker") or "").strip().upper()
+                          for _r in _iters_seed if str(_r.get("Ticker") or "").strip()})
+        if _sel_cfg != st.session_state.get("_iters_cfg_applied"):
+            st.session_state["_iters_cfg_applied"] = _sel_cfg
+            if _sel_cfg != "(manual)":
+                _cfg_ap = _cfgs_plan.get(_sel_cfg)
+                if not _cfg_ap:
+                    _cfg_c2.warning(f"No encontré las condiciones de **{_sel_cfg}**: falta el "
+                                    "template en «excels for backtesting».")
+                else:
+                    _n_ap = _apply_scenario_config(_cfg_ap, _n_tk_seed)
+                    st.toast(f"🎛 {_sel_cfg}: {_n_ap} condición(es) aplicadas a "
+                             "«CONDICIONES DE SALIDA»")
+        _cfg_show = _cfgs_plan.get(_sel_cfg) if _sel_cfg != "(manual)" else None
+        if _cfg_show:
+            _ref = _cfg_show.get("refuerzo")
+            _bits = [str(_cfg_show.get("alcance") or ""),
+                     f"ROI tk {_cfg_show.get('ticker_roi', '—')}%",
+                     f"Stop tk {_cfg_show.get('ticker_stop', '—')}%",
+                     f"ROI col {_cfg_show.get('col_roi', '—')}%",
+                     f"Stop col {_cfg_show.get('col_stop', '—')}%",
+                     str(_cfg_show.get("filtro_confirmacion") or ""),
+                     (f"Refuerzo {_ref}" if _ref not in (None, "", "No", "no") else "sin refuerzo")]
+            _cfg_c2.caption(f"**{_sel_cfg}** → " + " · ".join(b for b in _bits if b))
         _section_rule("Inversión y horario de operación")
         _si1, _si2, _si3, _si4, _si5 = st.columns(5)
         _sig_inv = float(_si1.number_input("Inversión ($)", min_value=1.0, step=100.0,
@@ -1983,21 +2037,29 @@ def _render_range_plan_generator() -> None:
         if st.button(f"📥 Cargar {len(_res.rows)} iteración(es) al panel", type="primary",
                      disabled=not _res.rows, key="plan_load"):
             # Mismo patrón que el handoff de Alertas: sembrar + re-seed del editor + abrir panel.
+            # El aviso va en un flag de sesión (banner tras el rerun): un st.toast acá se PIERDE
+            # con el st.rerun() inmediato — por eso parecía que el botón «no hacía nada».
             st.session_state.pop("replay", None)
+            _msg = (f"✅ **{len(_res.rows)} iteración(es) del plan cargadas** abajo en "
+                    "«🔁 DATOS DE ITERACIÓN» (reemplazaron las filas anteriores).")
             if _apply_cfg:
                 _n_ap = _apply_scenario_config(_apply_cfg, len({r["Ticker"] for r in _res.rows}))
-                st.toast(f"🎛 {_n_ap} condición(es) del escenario aplicadas a "
-                         "«CONDICIONES DE SALIDA»")
+                _msg += (f" 🎛 {_n_ap} condición(es) del escenario aplicadas a "
+                         "«🚪 CONDICIONES DE SALIDA».")
+            st.session_state["_plan_loaded_msg"] = _msg
             st.session_state["bt_iters"] = _res.rows
             st.session_state.pop("bt_iters_editor", None)
             st.session_state["_iters_sel_seed"] = True
             st.session_state["bt_iters_open"] = True
-            st.toast(f"📥 {len(_res.rows)} iteración(es) del plan cargadas — corré con "
-                     "«▶ Correr backtest».")
             st.rerun()
 
 
 with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open):
+    # Banner one-shot tras «📥 Cargar…» del generador (el toast no sobrevive al rerun).
+    _plan_msg = st.session_state.pop("_plan_loaded_msg", None)
+    if _plan_msg:
+        st.success(_plan_msg + " Revisá/ajustá las filas y las condiciones, y tocá "
+                   "**▶ Correr backtest** (al final del panel).")
     _render_range_plan_generator()
     if not _iters_seed:
         st.info("No hay iteraciones cargadas. Seleccioná señales en **Alertas** y tocá "
