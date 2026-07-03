@@ -198,6 +198,29 @@ def _clustering(report: dict) -> None:
             pass
 
 
+def _cfg_str(c: dict | None) -> str:
+    """Condiciones de salida de un escenario → string compacto para la tabla.
+    Ej: «tickers y colectivo · ROI tk 10% · Stop tk −80% · ROI col 5% · Stop col −80% · No filtrar»."""
+    if not c:
+        return "—"
+    parts = []
+    if c.get("alcance"):
+        parts.append(str(c["alcance"]))
+    for k, lbl in (("ticker_roi", "ROI tk"), ("ticker_stop", "Stop tk"),
+                   ("col_roi", "ROI col"), ("col_stop", "Stop col")):
+        if c.get(k) is not None:
+            parts.append(f"{lbl} {c[k]}%")
+    if c.get("filtro_confirmacion"):
+        parts.append(str(c["filtro_confirmacion"]))
+    if c.get("refuerzo") not in (None, "", "No", "no"):
+        _r = f"Refuerzo {c['refuerzo']}"
+        if c.get("refuerzo_umbral") is not None:
+            _r += f" ({c['refuerzo_umbral']}%"
+            _r += f" ×{c['refuerzo_n']})" if c.get("refuerzo_n") is not None else ")"
+        parts.append(_r)
+    return " · ".join(parts) or "—"
+
+
 def _dow(report: dict) -> None:
     dow = report.get("dow", {})
     with st.expander("3+8 · Día de la semana — mejor config + OPERAR / NO OPERAR", expanded=True):
@@ -208,6 +231,12 @@ def _dow(report: dict) -> None:
                    "por día es de **cartera** (Σganancia/Σinversión de los 3 tickers ese día → refleja el "
                    f"colectivo). Regla: OPERAR solo con ventaja (WR>55% · ROI>0 · Sharpe>0 · "
                    f"n≥{dow.get('min_n', 5)} días); si no, **NO OPERAR**.")
+        # Condiciones de salida POR ESCENARIO (results ⋈ template). Sin template → {} (solo IDs).
+        try:
+            from . import playbook as _pbk
+            _cfgs = _pbk._scenario_configs(report)
+        except Exception:
+            _cfgs = {}
         _is_roi = any("avg_roi" in i for i in dow.get("per_day", {}).values())
         _mlabel = "ROI % prom" if _is_roi else "$ prom"
         rows = []
@@ -215,11 +244,17 @@ def _dow(report: dict) -> None:
             rows.append({"Día": dia, "Escenario": i.get("scenario"), "Win Rate %": i.get("win_rate"),
                          _mlabel: i.get("avg_roi", i.get("avg_usd")), "Sharpe": i.get("sharpe"),
                          "n": i.get("n"), "Recomendación": i.get("recommendation"),
+                         **({"Condiciones de salida": _cfg_str(_cfgs.get(str(i.get("scenario"))))}
+                            if _cfgs else {}),
                          "Motivo": i.get("reason", "")})
         df = pd.DataFrame(rows)
         st.dataframe(df.style.map(
             lambda v: f"color:{_REC_COLOR.get(v, '')};font-weight:700" if v in _REC_COLOR else "",
             subset=["Recomendación"]), use_container_width=True, hide_index=True)
+        if not _cfgs:
+            st.caption("💡 Para ver **qué condición de salida aplica cada escenario** (umbral, stop, "
+                       "colectivo…), subí también el **template** al interpretar — las condiciones "
+                       "viven en la hoja «Backtesting scenarios».")
         try:
             import plotly.express as px
             fig = px.bar(df, x="Día", y=_mlabel, color="Recomendación",
@@ -236,7 +271,13 @@ def _dow(report: dict) -> None:
             st.caption("Aquí el n es por ticker (≈ nº de semanas, ~⅓ del combinado), por eso su umbral "
                        f"es más bajo (n≥{dow.get('min_n', 5)}). Si un día es OPERAR en cartera pero "
                        "NO OPERAR en un ticker, esa ventaja no es uniforme entre activos.")
-            st.dataframe(dt.style.map(
+            _dt = dt.copy()
+            if _cfgs and "Escenario" in _dt.columns:
+                # La condición de salida QUE SE LE APLICÓ a ese (día, ticker) = la del escenario
+                # ganador de esa celda (todas las filas de un escenario corren con SU config).
+                _dt["Condiciones de salida"] = _dt["Escenario"].map(
+                    lambda s: _cfg_str(_cfgs.get(str(s).strip())))
+            st.dataframe(_dt.style.map(
                 lambda v: f"color:{_REC_COLOR.get(v, '')};font-weight:700" if v in _REC_COLOR else "",
                 subset=["Recomendación"]), use_container_width=True, hide_index=True)
             try:
