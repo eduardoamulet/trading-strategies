@@ -187,28 +187,60 @@ with st.expander("🎬 Simulación Intradía", expanded=bool(st.session_state.ge
                "histórica. Cada celda guarda el **TradeSignal completo** (pasá el cursor para verlo) "
                "y el motor no se modifica: solo se lo llama por minuto con los datos cacheados.")
 
-    _s1, _s2, _s3, _s4 = st.columns([2.8, 1.5, 1.2, 1.2])
+    _es_rango = st.radio("Modo de fecha", ["Fecha única", "Rango de fechas"], horizontal=True,
+                         key="sim_date_mode",
+                         help="**Rango de fechas**: cada FILA de la matriz es una fecha (con "
+                              "varios activos, una fila por activo × fecha). Ideal para comparar "
+                              "el comportamiento del motor entre sesiones.") == "Rango de fechas"
+    if _es_rango:
+        _s1, _s2, _s2b, _s3, _s4 = st.columns([2.4, 1.2, 1.2, 1.0, 1.0])
+    else:
+        _s1, _s2, _s3, _s4 = st.columns([2.8, 1.5, 1.2, 1.2])
     _sim_tks = _s1.multiselect("Activos", _tks,
                                default=[t for t in ("SPY", "QQQ", "IWM") if t in _tks],
                                key="sim_tks")
-    _sim_date = _s2.date_input("Fecha", value=_now_et.date(), key="sim_date")
+    _sim_date = _s2.date_input("Desde" if _es_rango else "Fecha", value=_now_et.date(),
+                               key="sim_date")
+    _sim_date_fin = (_s2b.date_input("Hasta", value=_now_et.date(), key="sim_date_fin")
+                     if _es_rango else _sim_date)
     _sim_ini = _s3.time_input("Hora inicio", value=_dt.time(9, 30), key="sim_ini")
     _sim_fin = _s4.time_input("Hora final", value=_dt.time(16, 0), key="sim_fin")
 
     if st.button("▶ Simular", type="primary", key="sim_run", disabled=not _sim_tks):
-        _pbar = st.progress(0.0, text="Iniciando simulación…")
+        _ok = True
+        _fechas = [_sim_date.isoformat()]
+        if _es_rango:
+            if _sim_date_fin < _sim_date:
+                st.error("Rango invertido: «Hasta» es anterior a «Desde».")
+                _ok = False
+            else:
+                _fechas = [d.date().isoformat()
+                           for d in _pd.date_range(_sim_date, _sim_date_fin, freq="B")]
+                if not _fechas:
+                    st.warning("El rango no contiene días hábiles.")
+                    _ok = False
+                elif len(_fechas) * len(_sim_tks) > 20:
+                    st.info(f"⏳ {len(_fechas) * len(_sim_tks)} filas × ~390 minutos — puede "
+                            "tardar varios minutos (los feriados salen como fila gris).")
+        if _ok:
+            _pbar = st.progress(0.0, text="Iniciando simulación…")
 
-        def _sim_cb(done, total, tk, mn):
-            _pbar.progress(done / total, text=f"Procesando {tk}… minuto {mn} · {done}/{total}")
+            def _sim_cb(done, total, tk, mn):
+                _pbar.progress(done / total, text=f"Procesando {tk}… minuto {mn} · {done}/{total}")
 
-        _sim_out = _msim.simulate_session(
-            _sim_tks, _sim_date.isoformat(), _sim_ini.strftime("%H:%M"),
-            _sim_fin.strftime("%H:%M"), progress_cb=_sim_cb)
-        _pbar.empty()
-        st.session_state["sim_results"] = _sim_out
-        for _k in ("sim_pick_tk", "sim_pick_mn"):   # reset de la selección para el nuevo rango
-            st.session_state.pop(_k, None)
-        st.rerun()
+            if _es_rango:
+                _sim_out = _msim.simulate_range(
+                    _sim_tks, _fechas, _sim_ini.strftime("%H:%M"),
+                    _sim_fin.strftime("%H:%M"), progress_cb=_sim_cb)
+            else:
+                _sim_out = _msim.simulate_session(
+                    _sim_tks, _sim_date.isoformat(), _sim_ini.strftime("%H:%M"),
+                    _sim_fin.strftime("%H:%M"), progress_cb=_sim_cb)
+            _pbar.empty()
+            st.session_state["sim_results"] = _sim_out
+            for _k in ("sim_pick_tk", "sim_pick_mn"):   # reset de la selección para el nuevo rango
+                st.session_state.pop(_k, None)
+            st.rerun()
 
     _sim = st.session_state.get("sim_results")
     if _sim and _sim.get("tickers") and _sim.get("minutes"):
@@ -242,7 +274,10 @@ with st.expander("🎬 Simulación Intradía", expanded=bool(st.session_state.ge
             for _fld, _sh in (("action", "Matriz_Acción"), ("score", "Matriz_Score"),
                               ("confidence", "Matriz_Confianza")):
                 _msim.matrix_grid(_sim, _fld).to_excel(_xw, sheet_name=_sh)
-        _dfn = f"simulacion_{'-'.join(_sim['tickers'])}_{_sim['date']}"
+        _rmeta = _sim.get("row_meta") or {}
+        _real_tks = (sorted({str(_m.get("ticker")) for _m in _rmeta.values()})
+                     if _rmeta else _sim["tickers"])
+        _dfn = f"simulacion_{'-'.join(_real_tks)}_{str(_sim['date']).replace(' → ', '_a_')}"
         _d1, _d2, _d3 = st.columns([1.3, 1.3, 3])
         _d1.download_button("⬇ Descargar tabla (Excel)", _xbuf.getvalue(), file_name=_dfn + ".xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -252,19 +287,24 @@ with st.expander("🎬 Simulación Intradía", expanded=bool(st.session_state.ge
         _d2.download_button("⬇ Matriz de acción (CSV)",
                             _msim.matrix_grid(_sim, "action").to_csv().encode("utf-8"),
                             file_name=_dfn + "_matriz.csv", mime="text/csv", use_container_width=True)
-        _d3.caption(f"{len(_sim['tickers'])} activos × {len(_sim['minutes'])} minutos = "
+        _d3.caption(f"{len(_sim['tickers'])} fila(s) × {len(_sim['minutes'])} minutos = "
                     f"{len(_long)} señales · Excel con detalle + 3 matrices (acción/score/confianza).")
 
         # Inspección de una celda → el MISMO gráfico de Backtesting + panel lateral con el TradeSignal.
         st.markdown("**🔍 Inspeccionar** — **clic en una celda** (o elegí abajo); la matriz muestra el "
                     "detalle completo en **hover**:")
         _pk1, _pk2 = st.columns([1, 3])
-        _psel_tk = _pk1.selectbox("Activo", _sim["tickers"], key="sim_pick_tk")
+        _psel_tk = _pk1.selectbox("Fila" if _sim.get("mode") == "range" else "Activo",
+                                  _sim["tickers"], key="sim_pick_tk")
         _psel_mn = _pk2.select_slider("Minuto", _sim["minutes"], key="sim_pick_mn")
         _sig = _sim["results"].get(_psel_tk, {}).get(_psel_mn, {})
+        # En modo rango la fila es una FECHA (o «TK · fecha»): el gráfico usa el ticker/fecha reales.
+        _meta_row = (_sim.get("row_meta") or {}).get(_psel_tk) or {}
+        _chart_tk = _meta_row.get("ticker", _psel_tk)
+        _chart_date = _meta_row.get("date", _sim["date"])
         _cg, _cs = st.columns([3, 1])
         with _cg:
-            _render_lwc_chart(_sim_downloader(), _psel_tk, _sim["date"], _psel_mn, "1m", key="simintra")
+            _render_lwc_chart(_sim_downloader(), _chart_tk, _chart_date, _psel_mn, "1m", key="simintra")
         with _cs:
             _act = _sig.get("action", "—")
             _acol = _msv.ACTION_COLOR.get(_act, "#9ca3af")

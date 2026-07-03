@@ -63,6 +63,50 @@ def simulate_session(tickers, date: str, start_hhmm: str = "09:30", end_hhmm: st
             "minutes": minutes, "tickers": tickers, "results": results}
 
 
+def simulate_range(tickers, dates, start_hhmm: str = "09:30", end_hhmm: str = "16:00", *,
+                   provider=None, progress_cb: Optional[Callable] = None) -> dict:
+    """RANGO de fechas: corre el motor por (fecha × ticker × minuto) compartiendo el MISMO provider
+    cacheado + model/generator. Devuelve un dict COMPATIBLE con `simulate_session` para reusar la
+    matriz y los exports: cada FILA es una fecha (label = la fecha con 1 activo; «TK · fecha» con
+    varios) y `row_meta` mapea label → {ticker, date}. Un día sin datos (feriado / cache incompleto)
+    NO aborta la corrida: sus celdas quedan NO TRADE con el motivo en `reasons` (fila gris)."""
+    minutes = minute_range(start_hhmm, end_hhmm)
+    tickers = [str(t).upper().strip() for t in tickers if str(t).strip()]
+    dates = [str(d) for d in dates]
+    provider = provider or CachingProvider(default_provider())   # 1 lectura por (ticker, fecha)
+    model = RuleBasedModel()
+    generator = SignalGenerator()
+    results: dict = {}
+    row_meta: dict = {}
+    total = max(1, len(dates) * len(tickers) * len(minutes))
+    done = 0
+    for date in dates:
+        for tk in tickers:
+            label = date if len(tickers) == 1 else f"{tk} · {date}"
+            col: dict = {}
+            err = None
+            for mn in minutes:
+                if err is None:
+                    try:
+                        sig = market_direction_engine(tk, date, mn, provider=provider,
+                                                      model=model, generator=generator)
+                        col[mn] = sig.to_dict()
+                    except Exception as e:  # noqa: BLE001 — día sin datos → resto de la fila gris
+                        err = f"sin datos: {str(e)[:70]}"
+                if err is not None:
+                    col[mn] = {"action": "NO TRADE", "score": None, "confidence": None,
+                               "trend": None, "reasons": [err]}
+                done += 1
+                if progress_cb and (done % 15 == 0 or done == total):
+                    progress_cb(done, total, label, mn)
+            results[label] = col
+            row_meta[label] = {"ticker": tk, "date": date}
+    return {"date": (f"{dates[0]} → {dates[-1]}" if dates else ""), "start": start_hhmm,
+            "end": end_hhmm, "minutes": minutes, "tickers": list(results.keys()),
+            "results": results, "row_meta": row_meta, "mode": "range",
+            "row_label": "Fecha" if len(tickers) == 1 else "Activo · Fecha"}
+
+
 def matrix_grid(sim: dict, field: str = "action"):
     """DataFrame ANCHO (index=ticker, columns=minuto) con `field` por celda — la MATRIZ tal cual se
     ve, para descargar y buscar patrones. field ∈ {action, score, confidence, market_strength, trend}."""
@@ -75,12 +119,15 @@ def matrix_grid(sim: dict, field: str = "action"):
 
 
 def results_to_rows(sim: dict) -> list[dict]:
-    """Aplana la simulación a filas (1 por ticker×minuto) para exportar a CSV/Excel."""
+    """Aplana la simulación a filas (1 por fila×minuto) para exportar a CSV/Excel. En modo RANGO,
+    `row_meta` aporta el ticker real y la fecha de cada fila (el label es solo presentación)."""
+    meta = sim.get("row_meta") or {}
     rows = []
     for tk in sim.get("tickers", []):
+        m = meta.get(tk) or {}
         for mn, sig in sim.get("results", {}).get(tk, {}).items():
             rows.append({
-                "Activo": tk, "Fecha": sim.get("date"), "Hora": mn,
+                "Activo": m.get("ticker", tk), "Fecha": m.get("date", sim.get("date")), "Hora": mn,
                 "Acción": sig.get("action"), "Confianza": sig.get("confidence"),
                 "Score": sig.get("score"), "Market Strength": sig.get("market_strength"),
                 "Trend": sig.get("trend"), "Entry Price": sig.get("entry_price"),

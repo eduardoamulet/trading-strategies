@@ -27,7 +27,7 @@ def _heat_color(action: str, confidence) -> str:
 # hay iframe que recorte ni deje espacio en blanco. Tooltip = atributo `title` nativo (no se recorta).
 _MATRIX_CSS = """
 <style>
-.simx-wrap{overflow:auto;max-height:230px;border:1px solid #2a2e39;border-radius:8px;background:#0e1117;
+.simx-wrap{overflow:auto;max-height:690px;border:1px solid #2a2e39;border-radius:8px;background:#0e1117;
   margin:2px 0 6px 0;}
 .simx-wrap table{border-collapse:separate;border-spacing:0;font-family:ui-sans-serif,system-ui;}
 .simx-wrap th.simx-corner,.simx-wrap th.simx-tk{position:sticky;left:0;z-index:3;background:#161a23;
@@ -70,7 +70,8 @@ def build_matrix_html(sim: dict, *, heatmap: bool = False) -> str:
     results = sim.get("results", {})
     head_cells = "".join(
         f'<th>{mn if mn.endswith((":00", ":15", ":30", ":45")) else ""}</th>' for mn in minutes)
-    head = f'<thead><tr><th class="simx-corner">Activo \\ Hora</th>{head_cells}</tr></thead>'
+    _rl = sim.get("row_label", "Activo")            # «Fecha» en modo rango con 1 activo
+    head = f'<thead><tr><th class="simx-corner">{_rl} \\ Hora</th>{head_cells}</tr></thead>'
     body_rows = ""
     for tk in tickers:
         cells = ""
