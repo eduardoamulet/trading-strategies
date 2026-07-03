@@ -49,6 +49,26 @@ def build_tradier_ports() -> Tuple[MarketData, Broker]:
     return TradierMarketData(adapter), TradierBroker(adapter)
 
 
+def build_alpaca_ports() -> Tuple[MarketData, Broker]:
+    """Construye (MarketData, Broker) de Alpaca PAPER con alpaca-py. ⚠ `paper=True` va
+    FIJO (hardcodeado): desde este builder es IMPOSIBLE operar la cuenta real de Alpaca —
+    para real habría que escribir otro builder a propósito. Credenciales: ALPACA_API_KEY/
+    SECRET del config.py raíz (acá no se hardcodea nada)."""
+    import config
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.historical.option import OptionHistoricalDataClient
+    from alpaca.trading.client import TradingClient
+
+    from .adapters.alpaca_live import AlpacaBroker, AlpacaMarketData
+
+    key, secret = config.ALPACA_API_KEY, config.ALPACA_API_SECRET
+    trading = TradingClient(key, secret, paper=True)          # paper SIEMPRE (no negociable)
+    opt_data = OptionHistoricalDataClient(key, secret)
+    stk_data = StockHistoricalDataClient(key, secret)
+    return (AlpacaMarketData(trading, opt_data, stk_data),
+            AlpacaBroker(trading, option_data=opt_data))
+
+
 def run_paper_refuerzo(*, ticker: str, invest_call: float, invest_put: float,
                        umbral_pct: float, stop_pct: float,
                        params: Optional[SelectionParams] = None,

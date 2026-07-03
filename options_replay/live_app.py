@@ -41,7 +41,7 @@ def _downloader() -> Downloader:
 
 
 def _build_source():
-    """(market, broker, now, expiry, label) según la fuente; None si falta config (Tradier)."""
+    """(market, broker, now, expiry, label) según la fuente; None si falta config."""
     src = st.session_state.get("live_src", "Replay / demo")
     if src == "Tradier sandbox":
         try:
@@ -57,6 +57,19 @@ def _build_source():
         ticker = st.session_state.get("live_ticker", "QQQ")
         expiry = market.nearest_expiry(ticker, now.strftime("%Y-%m-%d")) or now.strftime("%Y-%m-%d")
         return market, broker, now, expiry, "🟢 Tradier sandbox (paper)"
+    if src == "Alpaca paper":
+        try:
+            from trading_core.live_runner import build_alpaca_ports
+            market, broker = build_alpaca_ports()               # paper=True FIJO adentro
+        except Exception as e:  # noqa: BLE001
+            st.error(f"No se pudo conectar a Alpaca paper: {e}")
+            st.info("Revisá `ALPACA_API_KEY` + `ALPACA_API_SECRET` en el `config.py` raíz. "
+                    "El builder usa SIEMPRE el entorno **paper** (no puede tocar la cuenta real).")
+            return None
+        now = pd.Timestamp.now(tz=ET)
+        ticker = st.session_state.get("live_ticker", "QQQ")
+        expiry = market.nearest_expiry(ticker, now.strftime("%Y-%m-%d")) or now.strftime("%Y-%m-%d")
+        return market, broker, now, expiry, "🦙 Alpaca paper (opciones)"
     dl = _downloader()
     dl.resolution = "1min"
     market = PolygonBacktestData(dl)
@@ -90,7 +103,8 @@ st.markdown("<style>[data-stale='true']{opacity:1 !important;transition:none !im
             unsafe_allow_html=True)
 
 c1, c2, c3 = st.columns([2, 2, 2])
-c1.radio("Fuente", ["Replay / demo", "Tradier sandbox"], key="live_src", horizontal=True)
+c1.radio("Fuente", ["Replay / demo", "Tradier sandbox", "Alpaca paper"], key="live_src",
+         horizontal=True)
 c2.text_input("Ticker", value="QQQ", key="live_ticker")
 c3.selectbox("Tipo de operación", list(lc.RIGHTS.keys()), key="live_tipo")
 if st.session_state.get("live_src") == "Replay / demo":
