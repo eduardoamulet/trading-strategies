@@ -1345,17 +1345,67 @@ def _render_iters_panel(_iters_seed):
         _CFG_IDS = ["C061", "C063", "C041", "C001", "C123"]   # Lun·Mar·Mié·Jue·Vie del playbook
         _cfg_c1, _cfg_c2 = st.columns([1.2, 2.8])
         _sel_cfg = _cfg_c1.selectbox(
-            "Seleccionar configuración", ["(manual)"] + _CFG_IDS, key="iters_cfg_sel",
-            help="Aplica el escenario COMPLETO del análisis (leído del template): condiciones de "
-                 "salida (con sus flags Sí/No), **refuerzo** (checkbox de martingala + umbral + "
-                 "veces) y sin-lookahead. Ganadores por día: **Lun C061 · Mar C063 · Mié C041 · "
-                 "Jue C001 · Vie C123**. «(manual)» no toca nada; después de aplicar podés "
+            "Seleccionar configuración",
+            ["(manual)", "(playbook automático)"] + _CFG_IDS, key="iters_cfg_sel",
+            help="**(playbook automático)**: aplica la config que el PLAYBOOK guardado "
+                 "(Configuración → §6) asigna al DÍA DE LA SEMANA de las fechas cargadas — sin "
+                 "intervención manual; si el playbook dice NO OPERAR ese día, avisa y no aplica. "
+                 "**C0xx**: aplica ese escenario COMPLETO del template (salidas con flags Sí/No + "
+                 "refuerzo + sin-lookahead). **«(manual)»** no toca nada. Después de aplicar podés "
                  "retocar cualquier valor a mano.")
         _n_tk_seed = len({str(_r.get("Ticker") or "").strip().upper()
                           for _r in _iters_seed if str(_r.get("Ticker") or "").strip()})
-        if _sel_cfg != st.session_state.get("_iters_cfg_applied"):
-            st.session_state["_iters_cfg_applied"] = _sel_cfg
-            if _sel_cfg != "(manual)":
+        # Modo AUTOMÁTICO: resolver el escenario por el día de la semana de las filas cargadas.
+        # El estado se muestra en CADA rerun (caption/warning persistente); la APLICACIÓN a los
+        # widgets solo ocurre al cambiar la firma (selección + fechas del seed).
+        _seed_dates = sorted({str(_r.get("Fecha") or "").strip()[:10]
+                              for _r in _iters_seed if str(_r.get("Fecha") or "").strip()})
+        _auto_entry = None
+        if _sel_cfg == "(playbook automático)":
+            import playbook_store as _pbs
+            _pb_auto = _pbs.load_playbook()
+            _wds = set()
+            for _f in _seed_dates:
+                try:
+                    _wds.add(_pbs._WD_ES.get(pd.Timestamp(_f).weekday()))
+                except Exception:  # noqa: BLE001
+                    pass
+            _wds.discard(None)
+            if not _pb_auto:
+                _cfg_c2.warning("No hay **playbook guardado** — generá uno en **Configuración → "
+                                "§6 Playbook** (botón «Reevaluar Playbook»).")
+            elif not _seed_dates:
+                _cfg_c2.caption("Cargá iteraciones con fecha para que el playbook resuelva el día.")
+            elif len(_wds) > 1:
+                _cfg_c2.warning(f"Las filas mezclan **{len(_wds)} días de semana** "
+                                f"({', '.join(sorted(_wds))}) y el panel aplica UNA config por "
+                                "corrida — cargá fechas de un mismo día de la semana (o usá el "
+                                "generador por rango con gate por día).")
+            else:
+                _auto_entry = _pbs.scenario_for_date(_pb_auto, _seed_dates[0])
+                _dia_auto = next(iter(_wds), "?")
+                if not _auto_entry:
+                    _cfg_c2.caption(f"El playbook no cubre el día **{_dia_auto}**.")
+                elif str(_auto_entry.get("recommendation", "")).upper() != "OPERAR":
+                    _cfg_c2.warning(f"📕 Playbook ({_pb_auto.get('evaluado_desde')} → "
+                                    f"{_pb_auto.get('evaluado_hasta')}): los **{_dia_auto}** son "
+                                    f"**NO OPERAR** — no se aplicó ninguna config. "
+                                    f"{_auto_entry.get('reason', '')}")
+                    _auto_entry = None
+                else:
+                    _cfg_c2.caption(f"📗 **{_dia_auto} → {_auto_entry.get('scenario')}** (evaluado "
+                                    f"{_pb_auto.get('evaluado_desde')} → "
+                                    f"{_pb_auto.get('evaluado_hasta')}) · "
+                                    f"{_auto_entry.get('config_txt', '')}")
+        _cfg_sig = f"{_sel_cfg}|{','.join(_seed_dates)}"
+        if _cfg_sig != st.session_state.get("_iters_cfg_applied"):
+            st.session_state["_iters_cfg_applied"] = _cfg_sig
+            if _sel_cfg == "(playbook automático)":
+                if _auto_entry and _auto_entry.get("config"):
+                    _n_ap = _apply_scenario_config(_auto_entry["config"], _n_tk_seed)
+                    st.toast(f"📗 Playbook: {_auto_entry.get('scenario')} aplicado "
+                             f"({_n_ap} condición(es))")
+            elif _sel_cfg != "(manual)":
                 _cfg_ap = _cfgs_plan.get(_sel_cfg)
                 if not _cfg_ap:
                     _cfg_c2.warning(f"No encontré las condiciones de **{_sel_cfg}**: falta el "
@@ -1364,7 +1414,8 @@ def _render_iters_panel(_iters_seed):
                     _n_ap = _apply_scenario_config(_cfg_ap, _n_tk_seed)
                     st.toast(f"🎛 {_sel_cfg}: {_n_ap} condición(es) aplicadas a "
                              "«CONDICIONES DE SALIDA»")
-        _cfg_show = _cfgs_plan.get(_sel_cfg) if _sel_cfg != "(manual)" else None
+        _cfg_show = (_cfgs_plan.get(_sel_cfg)
+                     if _sel_cfg not in ("(manual)", "(playbook automático)") else None)
         if _cfg_show:
             # Resumen RESPETANDO los flags Sí/No (una condición apagada se ve como «off»).
             import trade_plan as _tplc

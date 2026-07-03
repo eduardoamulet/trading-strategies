@@ -85,6 +85,8 @@ perfil = st.Page("options_replay/perfil_app.py", title="Perfil", icon="👤", ur
 ayuda = st.Page("options_replay/ayuda_app.py", title="Ayuda", icon="❓", url_path="ayuda")
 backtesting = st.Page("options_replay/app.py", title="Backtesting", icon="🔬",
                       url_path="simulation")
+playbook = st.Page("options_replay/playbook_app.py", title="Playbook", icon="📘",
+                   url_path="playbook")
 live = st.Page("options_replay/live_app.py", title="Operar", icon="🟢", url_path="live")
 registro = st.Page("options_replay/registro_app.py", title="Registro", icon="📓",
                    url_path="registro")
@@ -101,7 +103,7 @@ usuarios = st.Page("options_replay/usuarios_app.py", title="Usuarios", icon="�
 nav = {
     "Menú": [dashboard, estrategias, activos, evaluar_direccion, perfil, ayuda],
     "Alertas": [alertas, trading_view],
-    "Herramientas": [backtesting, live, registro, datos, tareas, configuracion],
+    "Herramientas": [backtesting, playbook, live, registro, datos, tareas, configuracion],
 }
 if user.get("rol") == "admin":
     nav["Administración"] = [usuarios]
