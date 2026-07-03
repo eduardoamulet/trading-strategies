@@ -1346,10 +1346,11 @@ def _render_iters_panel(_iters_seed):
         _cfg_c1, _cfg_c2 = st.columns([1.2, 2.8])
         _sel_cfg = _cfg_c1.selectbox(
             "Seleccionar configuración", ["(manual)"] + _CFG_IDS, key="iters_cfg_sel",
-            help="Aplica las CONDICIONES DE SALIDA del escenario del análisis (leídas del template): "
-                 "los ganadores por día — **Lun C061 · Mar C063 · Mié C041 · Jue C001 · Vie C123**. "
-                 "«(manual)» no toca nada. Ojo: el **Refuerzo** del escenario es POR FILA — si "
-                 "corresponde, cambiá el «Tipo» en la tabla de iteraciones.")
+            help="Aplica el escenario COMPLETO del análisis (leído del template): condiciones de "
+                 "salida (con sus flags Sí/No), **refuerzo** (checkbox de martingala + umbral + "
+                 "veces) y sin-lookahead. Ganadores por día: **Lun C061 · Mar C063 · Mié C041 · "
+                 "Jue C001 · Vie C123**. «(manual)» no toca nada; después de aplicar podés "
+                 "retocar cualquier valor a mano.")
         _n_tk_seed = len({str(_r.get("Ticker") or "").strip().upper()
                           for _r in _iters_seed if str(_r.get("Ticker") or "").strip()})
         if _sel_cfg != st.session_state.get("_iters_cfg_applied"):
@@ -1365,15 +1366,9 @@ def _render_iters_panel(_iters_seed):
                              "«CONDICIONES DE SALIDA»")
         _cfg_show = _cfgs_plan.get(_sel_cfg) if _sel_cfg != "(manual)" else None
         if _cfg_show:
-            _ref = _cfg_show.get("refuerzo")
-            _bits = [str(_cfg_show.get("alcance") or ""),
-                     f"ROI tk {_cfg_show.get('ticker_roi', '—')}%",
-                     f"Stop tk {_cfg_show.get('ticker_stop', '—')}%",
-                     f"ROI col {_cfg_show.get('col_roi', '—')}%",
-                     f"Stop col {_cfg_show.get('col_stop', '—')}%",
-                     str(_cfg_show.get("filtro_confirmacion") or ""),
-                     (f"Refuerzo {_ref}" if _ref not in (None, "", "No", "no") else "sin refuerzo")]
-            _cfg_c2.caption(f"**{_sel_cfg}** → " + " · ".join(b for b in _bits if b))
+            # Resumen RESPETANDO los flags Sí/No (una condición apagada se ve como «off»).
+            import trade_plan as _tplc
+            _cfg_c2.caption(f"**{_sel_cfg}** → " + _tplc.scenario_config_summary(_cfg_show))
         _section_rule("Inversión y horario de operación")
         _si1, _si2, _si3, _si4, _si5 = st.columns(5)
         _sig_inv = float(_si1.number_input("Inversión ($)", min_value=1.0, step=100.0,
@@ -1396,13 +1391,15 @@ def _render_iters_panel(_iters_seed):
                           help="Monto $ a la pierna PUT (autocalculado = Inversión × PUT%).")
         # Horario de operación (entrada / salida).
         _TIMES_SIG = ["09:30", "09:31", "09:32", "09:35", "09:45", "10:00", "10:30", "11:00",
-                      "12:00", "13:00", "14:00", "15:00", "15:30", "15:45", "16:00"]
+                      "12:00", "13:00", "13:55", "14:00", "15:00", "15:30", "15:45", "16:00"]
+        _ENTRY_OPTS = ["(hora de la alerta)"] + _TIMES_SIG
         _se2, _se3 = st.columns(2)
+        # Defaults del Data seed del template: entrada 09:30 · salida 13:55.
         _sig_entry_lbl = _se2.selectbox(
-            "Horario de entrada", ["(hora de la alerta)"] + _TIMES_SIG, index=0, key="sig_entry_lbl",
+            "Horario de entrada", _ENTRY_OPTS, index=_ENTRY_OPTS.index("09:30"), key="sig_entry_lbl",
             help="«(hora de la alerta)» usa la Hora de cada fila. Un horario fijo se aplica a TODAS las señales.")
         _sig_exit_lbl = _se3.selectbox(
-            "Horario de salida", _TIMES_SIG, index=len(_TIMES_SIG) - 1, key="sig_exit_lbl",
+            "Horario de salida", _TIMES_SIG, index=_TIMES_SIG.index("13:55"), key="sig_exit_lbl",
             help="Hora de venta (mismo día con DTE=0; día hábil siguiente con DTE=1).")
         _section_rule("Criterio de selección de contratos de opciones")
         # Ventana · Criterio · Modelo de fills — EN UNA SOLA FILA (3 columnas, como Inversión).
@@ -1754,67 +1751,17 @@ def _render_iters_panel(_iters_seed):
 
 
 def _apply_scenario_config(cfg: dict, n_tickers: int) -> int:
-    """Aplica las condiciones de salida de un ESCENARIO del playbook a los widgets del panel
-    (vía session_state — seguro porque el generador corre ANTES de que el panel instancie sus
-    widgets en este mismo run). Devuelve cuántas condiciones seteó. Refuerzo y sin-lookahead NO
-    se aplican (son por-fila / dependen de la hora de la alerta): solo se muestran en la tabla."""
-    def _b(v):
-        if isinstance(v, bool):
-            return v
-        s = str(v).strip().lower()
-        if s in ("sí", "si", "true", "x", "✓", "yes", "on"):
-            return True
-        try:
-            return float(s) > 0
-        except ValueError:
-            return False
-
-    def _f(v):
-        try:
-            return float(str(v).replace("%", "").replace(",", "."))
-        except (TypeError, ValueError):
-            return None
-
-    n = 0
-    # El template guarda el alcance SIN el prefijo del panel («tickers y colectivo») → fuzzy.
-    _al = str(cfg.get("alcance") or "").strip().lower()
-    _al_opt = None
-    if "solo" in _al and "ticker" in _al:
-        _al_opt = "Aplicar solo a tickers"
-    elif "solo" in _al and "colectivo" in _al:
-        _al_opt = "Aplicar solo a colectivo"
-    elif "ticker" in _al and "colectivo" in _al:
-        _al_opt = "Aplicar a tickers y colectivo"
-    if _al_opt:
-        st.session_state["sig_alcance"] = _al_opt
-        st.session_state["_sig_alcance_ntk"] = n_tickers    # que el default dinámico no lo pise
-        n += 1
-    for _k, _key in (("ticker_roi_on", "sig_apply_umb"), ("ticker_stop_on", "sig_apply_stop"),
-                     ("col_roi_on", "sig_coll_exit"), ("col_stop_on", "sig_coll_stop"),
-                     ("cerrar_confirmacion_debil", "sig_cut_weak")):
-        if _k in cfg:
-            st.session_state[_key] = _b(cfg[_k])
-            n += 1
-    for _k, _key, _neg in (("ticker_roi", "sig_umb", False), ("ticker_stop", "sig_stop", True),
-                           ("col_roi", "sig_coll_thr", False), ("col_stop", "sig_coll_stop_thr", True)):
-        _v = _f(cfg.get(_k))
-        if _v is not None:
-            st.session_state[_key] = -abs(_v) if _neg else _v
-            n += 1
-    _v = _f(cfg.get("cuerpo_min"))
-    if _v is not None:
-        st.session_state["sig_min_body"] = min(max(_v, 0.0), 1.0)   # bounds del number_input
-        n += 1
-    _fc = str(cfg.get("filtro_confirmacion") or "").lower()
-    if _fc:
-        if "flip" in _fc or "vuelta" in _fc:
-            st.session_state["sig_conf_mode"] = "Dar vuelta (flip) si va en contra"
-        elif "cerrar" in _fc:
-            st.session_state["sig_conf_mode"] = "Cerrar si va en contra"
-        else:
-            st.session_state["sig_conf_mode"] = "No filtrar"
-        n += 1
-    return n
+    """Aplica un ESCENARIO COMPLETO a los widgets del panel vía session_state (seguro: corre
+    ANTES de que las secciones instancien sus widgets en este run). El MAPEO es puro y testeado
+    en trade_plan.scenario_widget_values — salidas + refuerzo (martingala global: sig_apply_ref/
+    sig_refuerzo/sig_refuerzo_max) + sin-lookahead, respetando los flags Sí/No: apagar una
+    condición también es aplicar el escenario (C061 apaga umbral y stop del ticker; C063 apaga
+    además el ROI colectivo; C123 apaga el refuerzo). Devuelve cuántas claves seteó."""
+    import trade_plan as _tplc
+    vals = _tplc.scenario_widget_values(cfg, n_tickers)
+    for _k, _v in vals.items():
+        st.session_state[_k] = _v
+    return sum(1 for _k in vals if not _k.startswith("_"))
 
 
 def _render_range_plan_generator() -> None:
@@ -1939,6 +1886,14 @@ def _render_range_plan_generator() -> None:
         _apply_cfg = None
         if _pj:
             _cfg_rows, _has_cfg = [], False
+            def _cond_cell(_cfg, _fk, _vk):
+                """Valor si la condición está ON; «off» si el flag Sí/No la apaga; «—» sin config."""
+                if not _cfg:
+                    return "—"
+                _on = _tpl.flag_on(_cfg.get(_fk), default=True)
+                _v = _cfg.get(_vk)
+                return _v if (_on and _v is not None) else "off"
+
             for _d, _en in _EN_BY_ES.items():
                 _i = _pj.get(_en) or {}
                 if not _i:
@@ -1951,10 +1906,10 @@ def _render_range_plan_generator() -> None:
                     "WR %": _i.get("win_rate"), "ROI %": _i.get("expected_roi"),
                     "Sharpe": _i.get("sharpe"), "n": _i.get("n"),
                     "Alcance": _cfg.get("alcance", "—"),
-                    "Umbral ticker %": _cfg.get("ticker_roi", "—"),
-                    "Stop ticker %": _cfg.get("ticker_stop", "—"),
-                    "ROI colect. %": _cfg.get("col_roi", "—"),
-                    "Stop colect. %": _cfg.get("col_stop", "—"),
+                    "Umbral ticker %": _cond_cell(_cfg, "ticker_roi_on", "ticker_roi"),
+                    "Stop ticker %": _cond_cell(_cfg, "ticker_stop_on", "ticker_stop"),
+                    "ROI colect. %": _cond_cell(_cfg, "col_roi_on", "col_roi"),
+                    "Stop colect. %": _cond_cell(_cfg, "col_stop_on", "col_stop"),
                     "Confirmación": _cfg.get("filtro_confirmacion", "—"),
                     "Refuerzo": _cfg.get("refuerzo", "—"),
                 })
@@ -1990,10 +1945,11 @@ def _render_range_plan_generator() -> None:
                 _apply_on = _ap1.checkbox(
                     "🎛 Al cargar, aplicar al panel las condiciones del escenario:",
                     value=(len(_opt_map) == 1), key="plan_apply_cfg",
-                    help="Setea Alcance, Umbral/Stop del ticker, ROI/Stop colectivo y el filtro de "
-                         "confirmación en «CONDICIONES DE SALIDA» con los valores del escenario "
-                         "elegido. Las condiciones aplican a TODA la corrida (una config por "
-                         "corrida); para validar otro escenario, cargá de nuevo con ese elegido.")
+                    help="Aplica el escenario COMPLETO al panel: salidas con sus flags Sí/No "
+                         "(Alcance, Umbral/Stop del ticker, ROI/Stop colectivo, confirmación) + "
+                         "**refuerzo** (martingala: checkbox/umbral/veces) + sin-lookahead. Las "
+                         "condiciones aplican a TODA la corrida (una config por corrida); para "
+                         "validar otro escenario, cargá de nuevo con ese elegido.")
                 _sel = _ap2.selectbox("Escenario a aplicar", list(_opt_map), key="plan_cfg_scen",
                                       disabled=not _apply_on, label_visibility="collapsed")
                 if _apply_on and _sel:
@@ -2248,20 +2204,11 @@ _sesion_exp.markdown(
     "</p>",
     unsafe_allow_html=True,
 )
-# Default de "Ticker" según el día de la semana (config §4 «Tickers que vencen ese mismo día»,
-# centralizada en ticker_prefs): en modo «Fecha fija» se prepopula con los tickers que vencen 0DTE
-# el día de la Fecha elegida; si no (rango), la lista por defecto. Los widgets de fecha se renderizan
-# más abajo, así que la Fecha/modo se leen del session_state (del rerun previo).
-import ticker_prefs as _tp_pref
-_bt_fija = (st.session_state.get("sel_fecha_unica")
-            if st.session_state.get("date_mode_radio", "Fecha fija") == "Fecha fija" else None)
-try:
-    _PREF_DEF = (_tp_pref.tickers_for_weekday(_bt_fija.weekday())
-                 if _bt_fija is not None else _tp_pref.default_tickers())
-except Exception:
-    _PREF_DEF = ["QQQ", "SPY", "IWM", "NVDA", "TSLA", "PLTR", "AMZN", "META", "MSFT", "GOOG", "AAPL"]
-# Re-siembra SOLO cuando la lista por defecto cambia (p.ej. moviste la Fecha a otro día de la
-# semana) → no pisa una selección manual entre cambios.
+# Default de "Ticker": QQQ, SPY, IWM — el Data seed del template (núcleo 0DTE diario con data
+# local completa). Antes se autocompletaba por día de la semana (ticker_prefs); se fijó al trío
+# a pedido del usuario (2026-07-03) para calzar con la config global del batch.
+_PREF_DEF = ["QQQ", "SPY", "IWM"]
+# Re-siembra SOLO cuando la lista por defecto cambia → no pisa una selección manual.
 _valid_pref = ([t for t in _PREF_DEF if t in TICKER_OPTIONS]
                or ([TICKER_OPTIONS[_default_idx]] if TICKER_OPTIONS else []))
 if st.session_state.get("_pref_sig_bt") != tuple(_valid_pref):
@@ -2361,14 +2308,9 @@ def _ranges_for(_tk):
 
 
 # Default = ayer, ajustado al último día hábil de mercado (si ayer fue sábado,
-# domingo o feriado US, retrocede al viernes hábil anterior).
+# domingo o feriado US, retrocede al viernes hábil anterior). Solo para «Fecha fija»;
+# el RANGO usa los defaults fijos del Data seed del template (2026-01-01 → 2026-06-24).
 default_date = _last_open_market_day(date_cls.today() - timedelta(days=1))
-# Default para "Fecha inicial" en modo rango: 6 meses ANTES de la última fecha de
-# mercado abierto (`default_date`), vía pd.DateOffset (respeta longitudes de mes, no
-# aproxima a 180 días) y snap al último día hábil si cae en feriado/weekend.
-default_start_date = _last_open_market_day(
-    (pd.Timestamp(default_date) - pd.DateOffset(months=6)).date()
-)
 
 # El header "Parámetros de sesión", los time_input "Inicio/Fin" y el radio
 # "Modo de fecha" viven FUERA del form pero visualmente forman parte del mismo
@@ -2422,11 +2364,11 @@ with _sesion_exp:
         c_fecha_ini, c_fecha_fin = st.columns(2)
         sel_start = c_fecha_ini.date_input(
             "Fecha inicial",
-            value=default_start_date,
+            value=date_cls(2026, 1, 1),         # default del Data seed del template
             format="YYYY-MM-DD",
             key="sel_fecha_inicial",
             on_change=_reset_hora_on_date_change,
-            help=f"Fecha de inicio del rango (inclusiva). Default: 6 meses antes de la última fecha de mercado ({default_start_date}).",
+            help="Fecha de inicio del rango (inclusiva). Default: 2026-01-01 (el Data seed del template).",
         )
         # Robustez: la final NO puede ser < inicial. Si la guardada quedó anterior a
         # la inicial (porque el usuario movió la inicial más adelante), la subimos a
@@ -2437,7 +2379,7 @@ with _sesion_exp:
             st.session_state["sel_fecha_final"] = sel_start
         sel_end = c_fecha_fin.date_input(
             "Fecha final",
-            value=max(default_date, sel_start),
+            value=max(date_cls(2026, 6, 24), sel_start),   # default del Data seed del template
             format="YYYY-MM-DD",
             min_value=sel_start,
             key="sel_fecha_final",
