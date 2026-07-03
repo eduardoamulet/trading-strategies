@@ -1,7 +1,8 @@
 """Página 'Alertas' — Historial de Señales con filas EXPANDIBLES.
 
 Cada fila se expande para mostrar los Criterios de la estrategia (✓/✗) + la Gráfica
-de la señal, y permite editar Estado / Ganancia. Importación: subir .eml · poller IMAP.
+de la señal, y permite editar Estado / Ganancia. Importación: SOLO por la API de
+Investep (el canal email/IMAP se eliminó el 2026-07-03).
 Selección MULTI-fila → "Backtestear señales" redirige a la página
 Backtesting con esas señales cargadas como iteraciones.
 """
@@ -82,38 +83,21 @@ def _opt_icon(v) -> str:
     return "✅" if v is True else ("❌" if v is False else "—")
 
 
-# ── Importar ─────────────────────────────────────────────────────────────────
+# ── Importar (SOLO API — el canal por email/IMAP se eliminó el 2026-07-03) ───
 with st.expander("📥 Importar señales", expanded=False):
-    t_eml, t_mail, t_api = st.tabs(["Subir email (.eml)", "Revisar correo (auto)", "📡 API directa"])
-    with t_eml:
-        _files = st.file_uploader("Emails (.eml)", type=["eml"], accept_multiple_files=True,
-                                  label_visibility="collapsed")
-        if _files and st.button("Importar email(s)"):
-            tot = sum(xs.import_email(f.read(), now_iso=_now()) for f in _files)
-            st.success(f"Importadas {tot} señales nuevas de {len(_files)} archivo(s).")
-    with t_mail:
-        st.caption("Lee tu Gmail por IMAP (requiere signals_secrets.py con un App Password).")
-        if st.button("📧 Revisar correo ahora"):
-            try:
-                st.success(f"Importadas {xs.fetch_from_email(now_iso=_now())} señales nuevas.")
-            except xs.ScraperNotConfigured as e:
-                st.warning(str(e))
-            except Exception as e:
-                st.error(f"Error IMAP: {e}")
-    with t_api:
-        st.caption("Baja directo de la API de Investep (signals/history). En `signals_secrets.py` poné "
-                   "`INVESTEP_USER` + `INVESTEP_PASSWORD` (recomendado: se loguea solo y refresca el "
-                   "token), o un `INVESTEP_TOKEN` temporal (Bearer, vence ~1h).")
-        _api_days = st.number_input("Días hacia atrás", min_value=1, max_value=90, value=7,
-                                    step=1, key="api_days_back")
-        if st.button("📡 Bajar de la API ahora"):
-            try:
-                _n = xs.fetch_from_api(days_back=int(_api_days), now_iso=_now())
-                st.success(f"Importadas {_n} señales nuevas de la API.")
-            except xs.ScraperNotConfigured as e:
-                st.warning(str(e))
-            except Exception as e:
-                st.error(f"Error API: {e}")
+    st.caption("Baja directo de la API de Investep (signals/history). En `signals_secrets.py` poné "
+               "`INVESTEP_USER` + `INVESTEP_PASSWORD` (recomendado: se loguea solo y refresca el "
+               "token), o un `INVESTEP_TOKEN` temporal (Bearer, vence ~1h).")
+    _api_days = st.number_input("Días hacia atrás", min_value=1, max_value=90, value=7,
+                                step=1, key="api_days_back")
+    if st.button("📡 Bajar de la API ahora"):
+        try:
+            _n = xs.fetch_from_api(days_back=int(_api_days), now_iso=_now())
+            st.success(f"Importadas {_n} señales nuevas de la API.")
+        except xs.ScraperNotConfigured as e:
+            st.warning(str(e))
+        except Exception as e:
+            st.error(f"Error API: {e}")
 
     st.divider()
     if st.button(f"🧹 Limpiar duplicados existentes ({db.count()} señales)",
@@ -130,7 +114,7 @@ with st.expander("📥 Importar señales", expanded=False):
 
 df = xs.load_signals()
 if df.empty:
-    st.info("Todavía no hay señales. Importá subiendo un .eml, o por correo (IMAP).")
+    st.info("Todavía no hay señales. Bajalas de la API con «📡 Bajar de la API ahora» (arriba).")
     st.stop()
 
 # ── Filtros ──────────────────────────────────────────────────────────────────

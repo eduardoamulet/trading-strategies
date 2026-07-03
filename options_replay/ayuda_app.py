@@ -15,14 +15,14 @@ st.markdown(
 ### Secciones
 
 - **🏠 Dashboard** — resumen: cantidad de señales, activas, aprovechadas y ganancia.
-- **🔔 Alertas** — Historial de Señales (importadas de investepacademyia). Importás
-  *subiendo el email .eml* o *por correo automático* (IMAP). Filtrás por
+- **🔔 Alertas** — Historial de Señales (importadas de investepacademyia). Se bajan
+  *directo de la API* («📡 Bajar de la API ahora»). Filtrás por
   estrategia/acción/estado/tipo/fechas y editás **Estado** y **Ganancia**.
 - **🎯 Estrategias** — definición de las estrategias (Trend Reversal, etc.).
 - **📈 Activos** — universo de símbolos y su rango óptimo.
 - **🔬 Backtesting** — simulación histórica de opciones 0DTE/1DTE con datos de Polygon.
 - **🟢 Live** — control del trading en vivo (Tradier sandbox).
-- **👤 Perfil** — estado de las integraciones (Polygon / Gmail / Tradier).
+- **👤 Perfil** — estado de las integraciones (Polygon / Investep / Tradier).
 
 ### Importar alertas por email (automático)
 1. Copiá `signals_secrets.example.py` → `signals_secrets.py`.

@@ -57,16 +57,16 @@ try:
     _polygon = bool(getattr(config, "POLYGON_API_KEY", ""))
 except Exception:
     pass
-_gmail = (HERE / "signals_secrets.py").exists()
+_investep = (HERE / "signals_secrets.py").exists()
 _tradier = (HERE.parent / "live_trader" / "secrets.py").exists()
 
 for label, status in [("📈 Polygon (datos de mercado)", _ok(_polygon)),
-                      ("📧 Gmail / Alertas por email", _ok(_gmail)),
+                      ("📡 Investep (alertas por API)", _ok(_investep)),
                       ("🟢 Tradier (live, sandbox)", _ok(_tradier))]:
     c1, c2 = st.columns([3, 1])
     c1.write(label)
     c2.write(status)
 
-if not _gmail:
-    st.info("Para automatizar las alertas por email: copiá `signals_secrets.example.py` → "
-            "`signals_secrets.py` y completá tu Gmail App Password.")
+if not _investep:
+    st.info("Para las alertas de Investep: copiá `signals_secrets.example.py` → "
+            "`signals_secrets.py` y completá `INVESTEP_USER` + `INVESTEP_PASSWORD`.")
