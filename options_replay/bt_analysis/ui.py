@@ -199,26 +199,11 @@ def _clustering(report: dict) -> None:
 
 
 def _cfg_str(c: dict | None) -> str:
-    """Condiciones de salida de un escenario → string compacto para la tabla.
-    Ej: «tickers y colectivo · ROI tk 10% · Stop tk −80% · ROI col 5% · Stop col −80% · No filtrar»."""
-    if not c:
-        return "—"
-    parts = []
-    if c.get("alcance"):
-        parts.append(str(c["alcance"]))
-    for k, lbl in (("ticker_roi", "ROI tk"), ("ticker_stop", "Stop tk"),
-                   ("col_roi", "ROI col"), ("col_stop", "Stop col")):
-        if c.get(k) is not None:
-            parts.append(f"{lbl} {c[k]}%")
-    if c.get("filtro_confirmacion"):
-        parts.append(str(c["filtro_confirmacion"]))
-    if c.get("refuerzo") not in (None, "", "No", "no"):
-        _r = f"Refuerzo {c['refuerzo']}"
-        if c.get("refuerzo_umbral") is not None:
-            _r += f" ({c['refuerzo_umbral']}%"
-            _r += f" ×{c['refuerzo_n']})" if c.get("refuerzo_n") is not None else ")"
-        parts.append(_r)
-    return " · ".join(parts) or "—"
+    """Condiciones de salida de un escenario → string compacto RESPETANDO los flags Sí/No
+    (una condición apagada se ve «off» — es lo que diferencia C001/C041/C061/C063/C123, no los
+    números). Fuente única del formato: trade_plan.scenario_config_summary."""
+    from trade_plan import scenario_config_summary
+    return scenario_config_summary(c)
 
 
 def _dow(report: dict) -> None:

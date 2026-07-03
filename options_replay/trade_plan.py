@@ -232,6 +232,119 @@ def build_iterations(plan: TradePlan, date_start, date_end, tickers: Iterable[st
     return BuildResult(rows, disc, counts, warnings)
 
 
+def flag_on(v, default=None):
+    """«Sí»/«No»/bool/número → bool. `default` si v es None o no interpretable."""
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ("sí", "si", "true", "x", "✓", "yes", "on"):
+        return True
+    if s in ("no", "false", "", "—", "off"):
+        return False
+    try:
+        return float(s) > 0
+    except ValueError:
+        return default
+
+
+def _fnum(v):
+    try:
+        return float(str(v).replace("%", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def scenario_widget_values(cfg: dict, n_tickers: int) -> dict:
+    """PURO: condiciones canónicas de un escenario → {clave de widget: valor} del panel — TODAS:
+    salidas, refuerzo (martingala global: checkbox + umbral + veces) y sin-lookahead. RESPETA los
+    flags Sí/No («Cerrar si …» / «Aplicar refuerzo»): el checkbox se setea también cuando el flag
+    es No — APAGAR una condición es parte de aplicar el escenario (C061 apaga umbral y stop del
+    ticker; C063 apaga además el ROI colectivo; C123 apaga el refuerzo). Los valores numéricos se
+    setean siempre (quedan visibles aunque el checkbox esté off, como en el template). La UI
+    vuelca este dict a session_state ANTES de instanciar los widgets."""
+    out: dict = {}
+    al = str(cfg.get("alcance") or "").strip().lower()
+    if "solo" in al and "ticker" in al:
+        out["sig_alcance"] = "Aplicar solo a tickers"
+    elif "solo" in al and "colectivo" in al:
+        out["sig_alcance"] = "Aplicar solo a colectivo"
+    elif "ticker" in al and "colectivo" in al:
+        out["sig_alcance"] = "Aplicar a tickers y colectivo"
+    if "sig_alcance" in out:
+        out["_sig_alcance_ntk"] = n_tickers        # que el default dinámico del panel no lo pise
+    for fk, wk in (("ticker_roi_on", "sig_apply_umb"), ("ticker_stop_on", "sig_apply_stop"),
+                   ("col_roi_on", "sig_coll_exit"), ("col_stop_on", "sig_coll_stop"),
+                   ("cerrar_confirmacion_debil", "sig_cut_weak")):
+        b = flag_on(cfg.get(fk))
+        if b is not None:
+            out[wk] = b
+    for vk, wk, neg in (("ticker_roi", "sig_umb", False), ("ticker_stop", "sig_stop", True),
+                        ("col_roi", "sig_coll_thr", False), ("col_stop", "sig_coll_stop_thr", True)):
+        v = _fnum(cfg.get(vk))
+        if v is not None:
+            out[wk] = -abs(v) if neg else v
+    v = _fnum(cfg.get("cuerpo_min"))
+    if v is not None:
+        out["sig_min_body"] = min(max(v, 0.0), 1.0)   # bounds del number_input del panel
+    fc = str(cfg.get("filtro_confirmacion") or "").lower()
+    if fc:
+        out["sig_conf_mode"] = ("Dar vuelta (flip) si va en contra" if ("flip" in fc or "vuelta" in fc)
+                                else "Cerrar si va en contra" if "cerrar" in fc else "No filtrar")
+    # Refuerzo (martingala GLOBAL del panel: aplica al Tipo de cada fila) + sin-lookahead.
+    b = flag_on(cfg.get("refuerzo"))
+    if b is not None:
+        out["sig_apply_ref"] = b
+    v = _fnum(cfg.get("refuerzo_umbral"))
+    if v is not None:
+        out["sig_refuerzo"] = min(max(v, 1.0), 99.0)          # bounds del number_input
+    v = _fnum(cfg.get("refuerzo_n"))
+    if v is not None:
+        out["sig_refuerzo_max"] = int(min(max(v, 1), 20))     # el widget es INT (float rompería)
+    b = flag_on(cfg.get("sin_lookahead"))
+    if b is not None:
+        out["sig_no_lookahead"] = b
+    return out
+
+
+def scenario_config_summary(cfg: Optional[dict]) -> str:
+    """String compacto de las condiciones RESPETANDO los flags: el valor si la condición está ON,
+    «off» si está apagada (sin flag en la config → se muestra el valor, compat con playbooks
+    viejos). Fuente ÚNICA de este formato: la usan el dropdown del panel y las tablas del análisis.
+    Ej C061: «tickers y colectivo · ROI tk off · Stop tk off · ROI col 5% · Stop col −80% ·
+    No filtrar · Refuerzo Sí (50% ×3)»."""
+    if not cfg:
+        return "—"
+    def _g(v):
+        f = _fnum(v)
+        return f"{f:g}" if f is not None else str(v)
+    parts = []
+    if cfg.get("alcance"):
+        parts.append(str(cfg["alcance"]))
+    for fk, vk, lbl in (("ticker_roi_on", "ticker_roi", "ROI tk"),
+                        ("ticker_stop_on", "ticker_stop", "Stop tk"),
+                        ("col_roi_on", "col_roi", "ROI col"),
+                        ("col_stop_on", "col_stop", "Stop col")):
+        if cfg.get(vk) is None and cfg.get(fk) is None:
+            continue
+        on = flag_on(cfg.get(fk), default=True)
+        parts.append(f"{lbl} {_g(cfg[vk])}%" if (on and cfg.get(vk) is not None) else f"{lbl} off")
+    if cfg.get("filtro_confirmacion"):
+        parts.append(str(cfg["filtro_confirmacion"]))
+    ref = cfg.get("refuerzo")
+    if ref is not None:
+        if flag_on(ref, default=False):
+            s = "Refuerzo Sí"
+            if cfg.get("refuerzo_umbral") is not None:
+                s += f" ({_g(cfg['refuerzo_umbral'])}%"
+                s += f" ×{_g(cfg['refuerzo_n'])})" if cfg.get("refuerzo_n") is not None else ")"
+            parts.append(s)
+        else:
+            parts.append("sin refuerzo")
+    return " · ".join(parts) or "—"
+
+
 def _resolve(plan: TradePlan, dia: str, ticker: str, day_rule: Rule) -> tuple[Rule, str]:
     """Regla efectiva para (día, ticker): el gate día×ticker MANDA si tiene entrada; si no, la del
     día. Devuelve (regla, origen) con origen ∈ {"ticker", "dia"} para el motivo del descarte."""

@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # options_replay/ en el path
 from trade_plan import (build_iterations, filter_signals, plan_from_manual,  # noqa: E402
-                        plan_from_playbook)
+                        plan_from_playbook, scenario_config_summary, scenario_widget_values)
 from bt_analysis import playbook as pbk  # noqa: E402
 
 # Playbook JSON como lo produce bt_analysis (claves EN) — refleja el resultado real de 6 semanas:
@@ -180,6 +180,62 @@ def test_filter_signals_tickers_vacio_es_todos_y_filtro():
     assert solo_spy.summary["otros_tickers"] == 3          # QQQ×2 + IWM×1 en rango
     inv = filter_signals(p, _sigs_fixture(), "2026-03-08", LUN)
     assert inv.rows == [] and any("invertido" in w.lower() for w in inv.warnings)
+
+
+# ── Configs de escenario → widgets del panel (flags Sí/No del template) ───────
+def _c5(**over):
+    """Config base de los 5 ganadores (template real 2026): solo cambian los FLAGS."""
+    base = {"refuerzo": "Sí", "refuerzo_umbral": 50.0, "refuerzo_n": 3.0, "sin_lookahead": "No",
+            "alcance": "tickers y colectivo", "ticker_roi_on": "Sí", "ticker_roi": 10.0,
+            "ticker_stop_on": "Sí", "ticker_stop": -80.0, "filtro_confirmacion": "No filtrar",
+            "cerrar_confirmacion_debil": "No", "cuerpo_min": 0.05,
+            "col_roi_on": "Sí", "col_roi": 5.0, "col_stop_on": "Sí", "col_stop": -80.0}
+    return {**base, **over}
+
+
+# La tabla del template: C001 todo ON · C041 sin umbral tk · C061 sin umbral/stop tk ·
+# C063 solo stop colectivo · C123 sin refuerzo (umbral tk off, ROI col off).
+C5 = {
+    "C001": _c5(),
+    "C041": _c5(ticker_roi_on="No"),
+    "C061": _c5(ticker_roi_on="No", ticker_stop_on="No"),
+    "C063": _c5(ticker_roi_on="No", ticker_stop_on="No", col_roi_on="No"),
+    "C123": _c5(ticker_roi_on="No", col_roi_on="No", refuerzo="No"),
+}
+
+
+@pytest.mark.parametrize("cid,umb,stop,col_roi,col_stop,ref", [
+    ("C001", True, True, True, True, True),
+    ("C041", False, True, True, True, True),
+    ("C061", False, False, True, True, True),
+    ("C063", False, False, False, True, True),
+    ("C123", False, True, False, True, False),
+])
+def test_scenario_widget_values_flags(cid, umb, stop, col_roi, col_stop, ref):
+    v = scenario_widget_values(C5[cid], n_tickers=3)
+    assert v["sig_apply_umb"] is umb and v["sig_apply_stop"] is stop
+    assert v["sig_coll_exit"] is col_roi and v["sig_coll_stop"] is col_stop
+    # Refuerzo (martingala global) + sin-lookahead también son parte del escenario.
+    assert v["sig_apply_ref"] is ref
+    assert v["sig_refuerzo"] == 50.0
+    assert v["sig_refuerzo_max"] == 3 and isinstance(v["sig_refuerzo_max"], int)  # widget INT
+    assert v["sig_no_lookahead"] is False
+    # Los VALORES se setean siempre (visibles aunque el checkbox quede off, como en el template).
+    assert v["sig_umb"] == 10.0 and v["sig_stop"] == -80.0
+    assert v["sig_coll_thr"] == 5.0 and v["sig_coll_stop_thr"] == -80.0
+    assert v["sig_alcance"] == "Aplicar a tickers y colectivo" and v["_sig_alcance_ntk"] == 3
+    assert v["sig_conf_mode"] == "No filtrar" and v["sig_cut_weak"] is False
+    assert v["sig_min_body"] == 0.05
+
+
+def test_scenario_config_summary_respeta_flags():
+    s61 = scenario_config_summary(C5["C061"])
+    assert "ROI tk off" in s61 and "Stop tk off" in s61 and "ROI col 5%" in s61
+    assert "Refuerzo Sí (50% ×3)" in s61
+    s123 = scenario_config_summary(C5["C123"])
+    assert "Stop tk -80%" in s123 and "ROI col off" in s123 and "sin refuerzo" in s123
+    # compat: config vieja SIN flags → muestra los valores (no inventa «off»)
+    assert "ROI tk 10%" in scenario_config_summary({"ticker_roi": 10.0})
 
 
 # ── Roundtrip: análisis → playbook JSON → plan → filas ────────────────────────
