@@ -12,8 +12,9 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # options_replay/ en el path
-from trade_plan import (build_iterations, filter_signals, plan_from_manual,  # noqa: E402
-                        plan_from_playbook, scenario_config_summary, scenario_widget_values)
+from trade_plan import (build_iterations, filter_signals, pj_from_saved_playbook,  # noqa: E402
+                        plan_from_manual, plan_from_playbook, scenario_config_summary,
+                        scenario_run_overrides, scenario_widget_values)
 from bt_analysis import playbook as pbk  # noqa: E402
 
 # Playbook JSON como lo produce bt_analysis (claves EN) — refleja el resultado real de 6 semanas:
@@ -299,3 +300,86 @@ def test_roundtrip_analisis_a_filas():
     res = build_iterations(plan_from_playbook(pj), MAR, MAR, ["SPY", "QQQ"])
     assert [r["Ticker"] for r in res.rows] == ["SPY"]        # el gate habilita SOLO SPY el martes
     assert res.rows[0]["Estrategia"] == "Plan C003"
+
+
+# ── Fase 4: playbook GUARDADO (estados) + overrides del runner por escenario ──
+def test_pj_from_saved_playbook_gate_estado():
+    pb = {"per_day": {
+        "Mié": {"recommendation": "OPERAR", "estado": "operable", "scenario": "C041",
+                "config": {"alcance": "tickers y colectivo"}, "win_rate": 91.7,
+                "avg_roi": 11.7, "sharpe": 0.53, "n": 25, "reason": "ok"},
+        "Mar": {"recommendation": "OPERAR", "estado": "suspendido", "scenario": "C121",
+                "estado_motivo": "kill-switch: ROI acumulado -92.0% ≤ −15%",
+                "config": {"alcance": "tickers y colectivo"}},
+        "Lun": {"recommendation": "NO OPERAR", "estado": "suspendido", "scenario": "C081"},
+    }, "por_ticker": [
+        {"Ticker": "QQQ", "Día": "Mar", "Recomendación": "OPERAR", "Escenario": "C121"},
+        {"Ticker": "QQQ", "Día": "Lun", "Recomendación": "OPERAR", "Escenario": "C081"},
+        {"Ticker": "QQQ", "Día": "Mié", "Recomendación": "OPERAR", "Escenario": "C041"},
+    ]}
+    pj = pj_from_saved_playbook(pb)
+    assert pj["Wednesday"]["recommendation"] == "OPERAR"
+    # OPERAR por gate pero SUSPENDIDO por estado → NO OPERAR, con el motivo del estado.
+    assert pj["Tuesday"]["recommendation"] == "NO OPERAR"
+    assert "kill-switch" in pj["Tuesday"]["reason"]
+    assert pj["Monday"]["recommendation"] == "NO OPERAR"
+    # El gate día×ticker de TODO día suspendido se DESCARTA (la protección de cartera no se
+    # puentea por el gate fino) — tanto el Mar (OPERAR+suspendido) como el Lun (NO OPERAR+
+    # suspendido). El del día operable queda.
+    assert "Mar" not in pj["por_ticker"] and "Lun" not in pj["por_ticker"]
+    assert pj["por_ticker"]["Mié"]["QQQ"]["recommendation"] == "OPERAR"
+    plan = plan_from_playbook(pj, use_ticker_gate=True)
+    assert plan.days["Mié"].operar and not plan.days["Mar"].operar
+    assert (plan.ticker_gate or {}).get("Mar") is None
+
+
+def test_pj_from_saved_playbook_legacy_y_vacio():
+    # Playbook viejo SIN estado → manda recommendation (compat).
+    pj = pj_from_saved_playbook({"per_day": {"Jue": {"recommendation": "OPERAR",
+                                                     "scenario": "C001"}}})
+    assert pj["Thursday"]["recommendation"] == "OPERAR"
+    with pytest.raises(ValueError):
+        pj_from_saved_playbook(None)
+    with pytest.raises(ValueError):
+        pj_from_saved_playbook({"per_day": {}})
+
+
+def test_scenario_run_overrides_espeja_al_batch():
+    # C001-style: todo ON → mismos parámetros que map_scenario del batch.
+    ov = scenario_run_overrides({
+        "alcance": "tickers y colectivo", "ticker_roi_on": "Sí", "ticker_roi": 10,
+        "ticker_stop_on": "Sí", "ticker_stop": 80, "col_roi_on": "Sí", "col_roi": 5,
+        "col_stop_on": "Sí", "col_stop": 80, "filtro_confirmacion": "No filtrar",
+        "refuerzo": "Sí", "refuerzo_umbral": 50, "refuerzo_n": 3})
+    assert ov["umbral_pct"] == 10.0 and ov["stop_pct"] == -80.0
+    assert ov["collective"] == {"profit_frac": 0.05, "stop_frac": -0.8}
+    assert ov["apply_refuerzo"] and ov["refuerzo_loss_pct"] == 0.5 and ov["refuerzo_max"] == 3
+    assert not ov["confirm_candle"] and not ov["flip_on_wrong_direction"]
+
+
+def test_scenario_run_overrides_flags_off_y_alcance():
+    # C061-style: umbral/stop del ticker APAGADOS por flag Sí/No → sentinels «no aplica».
+    ov = scenario_run_overrides({
+        "alcance": "tickers y colectivo", "ticker_roi_on": "No", "ticker_roi": 10,
+        "ticker_stop_on": "No", "ticker_stop": 80, "col_roi_on": "Sí", "col_roi": 5,
+        "col_stop_on": "No", "refuerzo": "No"})
+    assert ov["umbral_pct"] == 100000.0 and ov["stop_pct"] == -100000.0
+    assert ov["collective"] == {"profit_frac": 0.05, "stop_frac": None}
+    assert not ov["apply_refuerzo"]
+    # «solo tickers» → sin colectivo aunque la config lo traiga.
+    ov2 = scenario_run_overrides({"alcance": "Aplicar solo a tickers", "ticker_roi_on": "Sí",
+                                  "ticker_roi": 15, "col_roi_on": "Sí", "col_roi": 5})
+    assert ov2["umbral_pct"] == 15.0 and ov2["collective"] is None
+    # «solo colectivo» → ticker neutralizado y SIN filtro de confirmación (gestión por ticker).
+    ov3 = scenario_run_overrides({"alcance": "solo colectivo", "ticker_roi_on": "Sí",
+                                  "ticker_roi": 15, "col_roi_on": "Sí", "col_roi": 5,
+                                  "filtro_confirmacion": "Cerrar si va en contra"})
+    assert ov3["umbral_pct"] == 100000.0 and ov3["stop_pct"] == -100000.0
+    assert ov3["collective"] == {"profit_frac": 0.05, "stop_frac": None}
+    assert not ov3["confirm_candle"]
+    # Filtro con flip + cuerpo mínimo (config del día que SÍ filtra).
+    ov4 = scenario_run_overrides({"alcance": "tickers y colectivo",
+                                  "filtro_confirmacion": "Dar vuelta (flip) si va en contra",
+                                  "cuerpo_min": 0.05, "cerrar_confirmacion_debil": "No"})
+    assert ov4["confirm_candle"] and ov4["flip_on_wrong_direction"]
+    assert ov4["confirm_min_body_pct"] == 0.05 and ov4["cut_weak_confirmation"] is False

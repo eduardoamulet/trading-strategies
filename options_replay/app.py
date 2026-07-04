@@ -962,6 +962,7 @@ if _handoff:
          **({"Criterio": s["criterio"]} if s.get("criterio") else {}),
          **({"Fills": s["fills"]} if s.get("fills") else {})} for s in _handoff]
     st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del data_editor
+    st.session_state.pop("_iters_cfg_por_dia", None)  # handoff nuevo → config por día afuera
     st.session_state["_iters_sel_seed"] = True       # nuevo handoff → todas seleccionadas
     st.session_state["bt_iters_open"] = True
 
@@ -1377,10 +1378,32 @@ def _render_iters_panel(_iters_seed):
             elif not _seed_dates:
                 _cfg_c2.caption("Cargá iteraciones con fecha para que el playbook resuelva el día.")
             elif len(_wds) > 1:
-                _cfg_c2.warning(f"Las filas mezclan **{len(_wds)} días de semana** "
-                                f"({', '.join(sorted(_wds))}) y el panel aplica UNA config por "
-                                "corrida — cargá fechas de un mismo día de la semana (o usá el "
-                                "generador por rango con gate por día).")
+                # Días MEZCLADOS → modo CONFIG POR DÍA: cada fila correrá con las condiciones del
+                # escenario de SU día (solo días OPERAR + estado operable; el resto se saltea).
+                _auto_map = {}
+                for _wd_a in sorted(_wds):
+                    _e_a = (_pb_auto.get("per_day") or {}).get(_wd_a) or {}
+                    if (str(_e_a.get("recommendation") or "").upper() == "OPERAR"
+                            and _e_a.get("estado") in (None, "operable") and _e_a.get("config")):
+                        _auto_map[_wd_a] = {"scenario": str(_e_a.get("scenario") or ""),
+                                            "cfg": _e_a["config"]}
+                if _auto_map:
+                    st.session_state["_iters_cfg_por_dia"] = _auto_map
+                    _no_op_a = sorted(_wds - set(_auto_map))
+                    _cfg_c2.caption("🗓 **Config por día activa** (filas con varios días): "
+                                    + " · ".join(f"**{_d}→{_auto_map[_d]['scenario']}**"
+                                                 for _d in ("Lun", "Mar", "Mié", "Jue", "Vie")
+                                                 if _d in _auto_map)
+                                    + (f" — los **{', '.join(_no_op_a)}** son NO OPERAR/no "
+                                       "operables: sus filas se SALTEAN al correr." if _no_op_a
+                                       else "")
+                                    + " Las CONDICIONES DE SALIDA del panel no se usan.")
+                else:
+                    st.session_state.pop("_iters_cfg_por_dia", None)
+                    _cfg_c2.warning(f"Las filas mezclan **{len(_wds)} días de semana** "
+                                    f"({', '.join(sorted(_wds))}) y NINGUNO está operable en el "
+                                    "playbook (o no tiene condiciones) — no se aplicó ninguna "
+                                    "config y la corrida usaría las condiciones del panel.")
             else:
                 _auto_entry = _pbs.scenario_for_date(_pb_auto, _seed_dates[0])
                 _dia_auto = next(iter(_wds), "?")
@@ -1419,10 +1442,13 @@ def _render_iters_panel(_iters_seed):
             st.session_state["_iters_cfg_applied"] = _cfg_sig
             if _sel_cfg == "(playbook automático)":
                 if _auto_entry and _auto_entry.get("config"):
+                    # Un solo día de semana → aplicación clásica a los widgets (config única).
+                    st.session_state.pop("_iters_cfg_por_dia", None)
                     _n_ap = _apply_scenario_config(_auto_entry["config"], _n_tk_seed)
                     st.toast(f"📗 Playbook: {_auto_entry.get('scenario')} aplicado "
                              f"({_n_ap} condición(es))")
             elif _sel_cfg != "(manual)":
+                st.session_state.pop("_iters_cfg_por_dia", None)   # C0xx = UNA config por corrida
                 _cfg_ap = _cfgs_plan.get(_sel_cfg)
                 if not _cfg_ap:
                     _cfg_c2.warning(f"No encontré las condiciones de **{_sel_cfg}**: falta el "
@@ -1592,6 +1618,23 @@ def _render_iters_panel(_iters_seed):
     # ───────────────────────── CONDICIONES DE SALIDA ─────────────────────────
     with st.container(border=True):
         st.markdown("<h5 style='text-align:center;'>🚪 CONDICIONES DE SALIDA</h5>", unsafe_allow_html=True)
+        # 🗓 Config POR DÍA (playbook): cuando está activa, cada fila corre con las condiciones
+        # del escenario de SU día de la semana (overrides por fila + colectivo por día) y las
+        # condiciones de ESTA sección NO se usan; las filas de días sin config se saltean.
+        _cfg_dia_ui = st.session_state.get("_iters_cfg_por_dia") or {}
+        if _cfg_dia_ui:
+            _bn1, _bn2 = st.columns([5, 1])
+            _bn1.info("🗓 **Config por día (playbook) ACTIVA**: "
+                      + " · ".join(f"**{_d}→{_cfg_dia_ui[_d].get('scenario', '?')}**"
+                                   for _d in ("Lun", "Mar", "Mié", "Jue", "Vie")
+                                   if _d in _cfg_dia_ui)
+                      + " — cada fila corre con las condiciones (salidas + refuerzo + colectivo) "
+                        "del escenario de SU día; **las condiciones de abajo NO se usan** y las "
+                        "filas de días no cubiertos se saltean.")
+            if _bn2.button("✖ Desactivar", key="cfg_dia_off",
+                           help="Vuelve al modo clásico: UNA config (la de abajo) para toda la corrida."):
+                st.session_state.pop("_iters_cfg_por_dia", None)
+                st.rerun()
         # Default dinámico según el nº de tickers en DATOS DE ITERACIÓN: con 1 solo ticker el
         # colectivo es redundante (la cartera ES ese ticker) → «solo a tickers»; con varios →
         # «a tickers y colectivo». Se re-aplica al cambiar el nº de tickers, sin pisar un cambio
@@ -1734,10 +1777,39 @@ def _render_iters_panel(_iters_seed):
                  disabled=not _specs, key="sig_run"):
         _dl = get_downloader(api_key)
         _dl.resolution = _sig_resolution   # barras a la resolución elegida para esta corrida
+        # 🗓 Config por día (playbook): overrides del RUNNER por día de la semana — el espejo puro
+        # está en trade_plan.scenario_run_overrides (misma semántica que el batch/map_scenario).
+        _cfg_dia_run = st.session_state.get("_iters_cfg_por_dia") or {}
+        _ov_by_wd: dict = {}
+        _WD_RUN = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+
+        def _wd_of_fecha(_f):
+            try:
+                return _WD_RUN[pd.Timestamp(str(_f)).weekday()]
+            except Exception:  # noqa: BLE001
+                return None
+        if _cfg_dia_run:
+            import trade_plan as _tplr
+            for _wd_r, _e_r in _cfg_dia_run.items():
+                try:
+                    _ov_by_wd[_wd_r] = {"scenario": str(_e_r.get("scenario") or ""),
+                                        **_tplr.scenario_run_overrides(_e_r.get("cfg") or {})}
+                except Exception:  # noqa: BLE001 — config ilegible: ese día se saltea
+                    pass
         # Solo 0DTE: salteamos las señales SIN 0DTE ese día (no se intentan → no ensucian
         # los resultados con avisos "No 0 DTE option").
         _skipped = []
         _keep = []
+        if _ov_by_wd:
+            _pb_skip = [s for s in _specs if _wd_of_fecha(s.get("fecha")) not in _ov_by_wd]
+            if _pb_skip:
+                _skipped.extend(_pb_skip)
+                st.warning(f"🗓 Config por día: **{len(_pb_skip)}** fila(s) caen en días sin "
+                           "config operable del playbook y se **saltean**: "
+                           + ", ".join(sorted({f"{s.get('ticker')} {s.get('fecha')}"
+                                               for s in _pb_skip})[:12])
+                           + ("…" if len(_pb_skip) > 12 else ""))
+            _specs = [s for s in _specs if _wd_of_fecha(s.get("fecha")) in _ov_by_wd]
         # Spinner visible: con MUCHAS filas esta pre-pasada consulta chains no cacheadas y sin
         # aviso parecía que la app estaba colgada antes de la barra de progreso.
         with st.spinner(f"Chequeando 0DTE de {len(_specs)} iteración(es)…"):
@@ -1770,14 +1842,23 @@ def _render_iters_panel(_iters_seed):
                 # modo concreto). entry_at_ask/exit_at_bid = (Fase 1 o Fase 2); nbbo = Fase 2.
                 _f1, _f2 = _fill_flags(s.get("fills", _FILL_MODES[0]))
                 _ef = _f1 or _f2
-                _futs.append(_ex.submit(sbt.run_one, _dl, s, _sig_inv, _sig_umb, _sig_stop, None, _i,
-                                        _ef, _ef, _auto_dte_on, s.get("criterio", "spread"), _sig_refuerzo,
-                                        _sig_refuerzo_max, call_pct=_sig_call_pct, nbbo_timeline=_f2,
-                                        search_window_min=_sig_search, dte=_sig_dte, exit_hora=_sig_exit_lbl,
-                                        confirm_candle=_sig_confirm, confirm_min_body_pct=_sig_min_body,
-                                        flip_on_wrong_direction=_sig_flip,
-                                        apply_refuerzo=_sig_apply_ref,
-                                        cut_weak_confirmation=_sig_cut_weak))
+                # 🗓 Config por día: las SALIDAS + refuerzo de la fila vienen del escenario de SU
+                # día de la semana (el playbook); sin mapa, los valores globales del panel.
+                _ov = _ov_by_wd.get(_wd_of_fecha(s.get("fecha"))) if _ov_by_wd else None
+                _futs.append(_ex.submit(
+                    sbt.run_one, _dl, s, _sig_inv,
+                    (_ov["umbral_pct"] if _ov else _sig_umb),
+                    (_ov["stop_pct"] if _ov else _sig_stop), None, _i,
+                    _ef, _ef, _auto_dte_on, s.get("criterio", "spread"),
+                    (_ov["refuerzo_loss_pct"] if _ov else _sig_refuerzo),
+                    (_ov["refuerzo_max"] if _ov else _sig_refuerzo_max),
+                    call_pct=_sig_call_pct, nbbo_timeline=_f2,
+                    search_window_min=_sig_search, dte=_sig_dte, exit_hora=_sig_exit_lbl,
+                    confirm_candle=(_ov["confirm_candle"] if _ov else _sig_confirm),
+                    confirm_min_body_pct=(_ov["confirm_min_body_pct"] if _ov else _sig_min_body),
+                    flip_on_wrong_direction=(_ov["flip_on_wrong_direction"] if _ov else _sig_flip),
+                    apply_refuerzo=(_ov["apply_refuerzo"] if _ov else _sig_apply_ref),
+                    cut_weak_confirmation=(_ov["cut_weak_confirmation"] if _ov else _sig_cut_weak)))
             _dn = 0
             for _f in as_completed(_futs):
                 try:
@@ -1800,15 +1881,36 @@ def _render_iters_panel(_iters_seed):
         # Salidas A NIVEL CARTERA (ROI colectivo / Stop colectivo): post-procesan los resultados YA
         # completos en UNA pasada cronológica por día (gana el primer trigger). El STOP colectivo solo
         # dispara con >1 ticker abierto. NO se aplica en los renders parciales (timeline incompleto).
-        _profit_frac = (_sig_coll_thr / 100.0) if (_sig_coll and _col_on) else None
-        _stop_frac = (-abs(_sig_coll_stop_thr) / 100.0) if (_sig_coll_stop and _col_on) else None   # SIEMPRE negativo (guard)
-        if _profit_frac is not None or _stop_frac is not None:
-            try:
-                _ncoll = apply_collective_exit(_res, _profit_frac, _stop_frac, stop_require_multi=True)
-                if _ncoll:
-                    st.toast(f"🟰 Salida colectiva: {_ncoll} posición(es) cerradas a nivel cartera")
-            except Exception as _ce:
-                st.warning(f"Salida colectiva no aplicada: {_ce}")
+        if _ov_by_wd:
+            # 🗓 Config por día: el colectivo de CADA día-semana usa la config de SU escenario
+            # (misma pasada cronológica por fecha, solo que en grupos por día de la semana).
+            _ncoll_t = 0
+            for _wd_c, _ov_c in _ov_by_wd.items():
+                _coll_c = _ov_c.get("collective")
+                if not _coll_c:
+                    continue
+                _grp = [r for r in _res if _wd_of_fecha(r.get("fecha")) == _wd_c]
+                if not _grp:
+                    continue
+                try:
+                    _ncoll_t += apply_collective_exit(_grp, _coll_c.get("profit_frac"),
+                                                      _coll_c.get("stop_frac"),
+                                                      stop_require_multi=True)
+                except Exception as _ce:  # noqa: BLE001
+                    st.warning(f"Salida colectiva ({_wd_c}) no aplicada: {_ce}")
+            if _ncoll_t:
+                st.toast(f"🟰 Salida colectiva (config por día): {_ncoll_t} posición(es) "
+                         "cerradas a nivel cartera")
+        else:
+            _profit_frac = (_sig_coll_thr / 100.0) if (_sig_coll and _col_on) else None
+            _stop_frac = (-abs(_sig_coll_stop_thr) / 100.0) if (_sig_coll_stop and _col_on) else None   # SIEMPRE negativo (guard)
+            if _profit_frac is not None or _stop_frac is not None:
+                try:
+                    _ncoll = apply_collective_exit(_res, _profit_frac, _stop_frac, stop_require_multi=True)
+                    if _ncoll:
+                        st.toast(f"🟰 Salida colectiva: {_ncoll} posición(es) cerradas a nivel cartera")
+                except Exception as _ce:
+                    st.warning(f"Salida colectiva no aplicada: {_ce}")
         # Guardar como el "replay" actual (modo señales) → se renderiza RICO más abajo,
         # igual que un backtest manual (Totales + detalle por iteración con render_iteration).
         st.session_state["replay"] = {
@@ -1874,11 +1976,15 @@ def _render_range_plan_generator() -> None:
         _use_sigs = _what.startswith("🔔")
         _pj = None                     # JSON del playbook (None en modo manual)
         _src = st.radio("Fuente del criterio",
-                        ["📁 Playbook del análisis (JSON)",
+                        ["📘 Playbook guardado (incremental)",
+                         "📁 Playbook del análisis (JSON)",
                          "🧠 Última interpretación (de esta sesión)", "✍️ Matriz manual"],
                         horizontal=True, key="plan_src",
-                        help="El playbook sale de **«Interpretar resultados»** (botón «⬇ Playbook "
-                             "JSON»). La matriz manual no requiere análisis previo.")
+                        help="**📘 Playbook guardado** = el de Herramientas → Playbook "
+                             "(data/playbook.json, se actualiza solo cada mañana): su gate usa la "
+                             "máquina de estados — solo días **operables**. Las otras fuentes "
+                             "salen de **«Interpretar resultados»** (botón «⬇ Playbook JSON»). "
+                             "La matriz manual no requiere análisis previo.")
         if _src.startswith("✍️"):
             _wd_cols = st.columns(5)
             _dias_sel = [_d for _i, _d in enumerate(("Lun", "Mar", "Mié", "Jue", "Vie"))
@@ -1893,7 +1999,23 @@ def _render_range_plan_generator() -> None:
                 "Usar veredicto día×ticker (gate fino)", value=True, key="plan_gate",
                 help="Si el playbook trae `por_ticker`, ese veredicto MANDA sobre el de cartera "
                      "(p. ej. SPY opera el Martes aunque la cartera diga NO OPERAR).")
-            if _src.startswith("📁"):
+            if _src.startswith("📘"):
+                import playbook_store as _pbs_gen
+                _pb_sv = _pbs_gen.load_playbook()
+                try:
+                    _pj = _tpl.pj_from_saved_playbook(_pb_sv)
+                except ValueError as _pe:
+                    st.error(str(_pe))
+                    return
+                _n_oper = sum(1 for _v in _pj.values()
+                              if isinstance(_v, dict)
+                              and str(_v.get("recommendation")).upper() == "OPERAR")
+                st.caption(f"📘 **Playbook guardado** · {_pb_sv.get('modo', 'manual')} · evaluado "
+                           f"{_pb_sv.get('evaluado_desde')} → {_pb_sv.get('evaluado_hasta')} · "
+                           f"generado {_pb_sv.get('generado_en')} · **{_n_oper}** día(s) operable(s) "
+                           "— el gate exige estado 🟢 **operable** (candidato/suspendido quedan "
+                           "NO OPERAR, y su gate día×ticker se descarta).")
+            elif _src.startswith("📁"):
                 _up = st.file_uploader("Playbook JSON del análisis", type=["json"], key="plan_pj_up")
                 if _up is None:
                     st.info("Subí el **playbook.json** (o usá la fuente «Última interpretación»).")
@@ -1952,6 +2074,7 @@ def _render_range_plan_generator() -> None:
         _EN_BY_ES = {"Lun": "Monday", "Mar": "Tuesday", "Mié": "Wednesday",
                      "Jue": "Thursday", "Vie": "Friday"}
         _apply_cfg = None
+        _load_cfg_dia = None           # {día: {scenario, cfg}} si el modo «config por día» está ON
         if _pj:
             _cfg_rows, _has_cfg = [], False
             def _cond_cell(_cfg, _fk, _vk):
@@ -1990,15 +2113,34 @@ def _render_range_plan_generator() -> None:
                                "En «Interpretar resultados» subí también el template y bajá de "
                                "nuevo el Playbook JSON para ver acá las condiciones de cada "
                                "escenario.")
-            # 🎛 Una config por corrida: elegí QUÉ escenario aplicar a «CONDICIONES DE SALIDA».
+            # 🎛 Config del escenario: por día (Fase 4) o una sola por corrida.
             _scen_cfgs: dict = {}
+            _cfg_dia_map: dict = {}
             for _d, _en in _EN_BY_ES.items():
                 _i = _pj.get(_en) or {}
                 if (str(_i.get("recommendation") or "").upper() == "OPERAR"
                         and _i.get("config") and _i.get("scenario")):
                     _e = _scen_cfgs.setdefault(str(_i["scenario"]), {"cfg": _i["config"], "dias": []})
                     _e["dias"].append(_d)
-            if _scen_cfgs:
+                    _cfg_dia_map[_d] = {"scenario": str(_i["scenario"]), "cfg": _i["config"]}
+            _n_cfgs_dist = len({tuple(sorted((k, str(v)) for k, v in _m["cfg"].items()))
+                                for _m in _scen_cfgs.values()})
+            if _cfg_dia_map and st.checkbox(
+                    "🗓 **Config por día** — cada fila corre con las condiciones del escenario "
+                    "de SU día de la semana (una sola corrida)",
+                    value=(_n_cfgs_dist > 1), key="plan_cfg_dia",
+                    help="Fase 4: al correr, cada fila usa las salidas + refuerzo del escenario "
+                         "que el playbook asigna a su día (Mié→C041, Jue→C102, …), incluida la "
+                         "salida COLECTIVA por día. Las «CONDICIONES DE SALIDA» del panel se "
+                         "ignoran mientras esté activa. Los días sin config operable se saltean. "
+                         "Desactivalo para aplicar UNA sola config a toda la corrida (selector "
+                         "de abajo)."):
+                _load_cfg_dia = _cfg_dia_map
+                st.caption("🗓 Al cargar: " + " · ".join(
+                    f"**{_d}→{_cfg_dia_map[_d]['scenario']}**"
+                    for _d in ("Lun", "Mar", "Mié", "Jue", "Vie") if _d in _cfg_dia_map)
+                    + " — las condiciones de salida del panel NO se usarán en esta corrida.")
+            elif _scen_cfgs:
                 # Escenarios con la MISMA config → una sola opción (sus IDs difieren en columnas
                 # que el panel no re-aplica). Con una única config, el checkbox arranca activado.
                 _by_cfg: dict = {}
@@ -2066,10 +2208,19 @@ def _render_range_plan_generator() -> None:
             st.session_state.pop("replay", None)
             _msg = (f"✅ **{len(_res.rows)} iteración(es) del plan cargadas** abajo en "
                     "«🔁 DATOS DE ITERACIÓN» (reemplazaron las filas anteriores).")
-            if _apply_cfg:
-                _n_ap = _apply_scenario_config(_apply_cfg, len({r["Ticker"] for r in _res.rows}))
-                _msg += (f" 🎛 {_n_ap} condición(es) del escenario aplicadas a "
-                         "«🚪 CONDICIONES DE SALIDA».")
+            if _load_cfg_dia:
+                st.session_state["_iters_cfg_por_dia"] = _load_cfg_dia
+                _msg += (" 🗓 **Config por día ACTIVA**: "
+                         + " · ".join(f"{_d}→{_load_cfg_dia[_d]['scenario']}"
+                                      for _d in ("Lun", "Mar", "Mié", "Jue", "Vie")
+                                      if _d in _load_cfg_dia)
+                         + " (las CONDICIONES DE SALIDA del panel no se usan en esta corrida).")
+            else:
+                st.session_state.pop("_iters_cfg_por_dia", None)
+                if _apply_cfg:
+                    _n_ap = _apply_scenario_config(_apply_cfg, len({r["Ticker"] for r in _res.rows}))
+                    _msg += (f" 🎛 {_n_ap} condición(es) del escenario aplicadas a "
+                             "«🚪 CONDICIONES DE SALIDA».")
             st.session_state["_plan_loaded_msg"] = _msg
             st.session_state["bt_iters"] = _res.rows
             st.session_state.pop("bt_iters_editor", None)
@@ -2089,6 +2240,7 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
         st.info("No hay iteraciones cargadas. Seleccioná señales en **Alertas** y tocá "
                 "**Backtestear** para traerlas acá, o empezá una manualmente abajo.")
         if st.button("➕ Empezar una iteración manual", key="iters_manual_start"):
+            st.session_state.pop("_iters_cfg_por_dia", None)
             st.session_state["bt_iters"] = [{"Ticker": "", "Fecha": "", "Hora": "", "Tipo": "CALL"}]
             st.session_state["_iters_sel_seed"] = True
             st.session_state.pop("bt_iters_editor", None)
@@ -2925,6 +3077,7 @@ if st.sidebar.button("📤 Backtestear con TODAS las funciones →", type="prima
         else:
             for _k in ("batch_results", "batch_meta", "replay", "_batch_pending"):   # limpiar la derecha
                 st.session_state.pop(_k, None)
+            st.session_state.pop("_iters_cfg_por_dia", None)  # seed nuevo → el dropdown decide
             st.session_state["bt_iters"] = _rows
             st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del editor
             st.session_state["_iters_sel_seed"] = True       # todas seleccionadas

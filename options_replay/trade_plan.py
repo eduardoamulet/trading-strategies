@@ -123,6 +123,108 @@ def plan_from_playbook(pj: dict, *, use_ticker_gate: bool = True) -> TradePlan:
     return plan
 
 
+def pj_from_saved_playbook(pb: dict) -> dict:
+    """Playbook PERSISTIDO (data/playbook.json — claves «Lun»..«Vie», con estados de la máquina
+    de supervivencia) → dict con la FORMA del playbook JSON del análisis (claves «Monday»..,
+    `por_ticker` anidado), para reutilizar `plan_from_playbook` y la UI del generador sin otra
+    rama.
+
+    GATE DE ESTADO: un día OPERAR pero NO-operable (candidato/suspendido) queda **NO OPERAR**
+    (motivo = estado_motivo), y sus veredictos día×ticker se DESCARTAN — el estado es una
+    protección de CARTERA (kill-switch, calibración, churn); sin esto el gate fino re-abriría
+    un día suspendido. Playbooks viejos sin `estado` = comportamiento anterior (solo
+    recommendation). Levanta ValueError sin playbook o sin per_day."""
+    if not pb or not isinstance(pb.get("per_day"), dict) or not pb["per_day"]:
+        raise ValueError("No hay playbook guardado con veredictos por día — generá uno en "
+                         "Herramientas → Playbook (o corré update_playbook.py).")
+    en_by_es = {"Lun": "Monday", "Mar": "Tuesday", "Mié": "Wednesday",
+                "Jue": "Thursday", "Vie": "Friday"}
+    out: dict = {}
+    bloqueados: set = set()                    # días OPERAR frenados por el estado
+    for es, i in pb["per_day"].items():
+        en = en_by_es.get(str(es))
+        if not en or not isinstance(i, dict):
+            continue
+        rec = str(i.get("recommendation") or "").strip().upper()
+        estado = i.get("estado")
+        ok = rec == "OPERAR" and estado in (None, "operable")
+        # Bloquean su gate día×ticker: los OPERAR frenados por estado Y todo día SUSPENDIDO
+        # (kill-switch/calibración/churn son protecciones de CARTERA — el gate fino no las
+        # puentea). Un NO OPERAR simple o candidato conserva el gate fino (comportamiento
+        # validado: SPY puede operar el martes aunque la cartera no).
+        if (rec == "OPERAR" and not ok) or estado == "suspendido":
+            bloqueados.add(str(es))
+        out[en] = {
+            "recommendation": "OPERAR" if ok else "NO OPERAR",
+            "scenario": i.get("scenario"),
+            "reason": ((f"estado {estado}: {i.get('estado_motivo') or ''}".strip()
+                        if (rec == "OPERAR" and not ok) else i.get("reason")) or ""),
+            "config": i.get("config") if isinstance(i.get("config"), dict) else None,
+            "win_rate": i.get("win_rate"), "expected_roi": i.get("avg_roi"),
+            "sharpe": i.get("sharpe"), "n": i.get("n"), "estado": estado,
+        }
+    if not out:
+        raise ValueError("El playbook guardado no tiene veredictos por día reconocibles.")
+    por_tk: dict = {}
+    for r in pb.get("por_ticker") or []:       # registros {Ticker, Día, Recomendación, …}
+        es = _canon_day(r.get("Día"))
+        tk = str(r.get("Ticker") or "").upper().strip()
+        if not es or not tk or es in bloqueados:
+            continue
+        por_tk.setdefault(es, {})[tk] = {"recommendation": r.get("Recomendación"),
+                                         "scenario": r.get("Escenario")}
+    if por_tk:
+        out["por_ticker"] = por_tk
+    return out
+
+
+def scenario_run_overrides(cfg: dict) -> dict:
+    """PURO: condiciones canónicas de un escenario → parámetros del RUNNER para una fila — el
+    ESPEJO de `ucbatch.scenario.map_scenario` (misma semántica: flags Sí/No, alcance con
+    neutralización, sentinels «no aplica»), pero desde el dict canónico del playbook. Lo consume
+    el modo «🗓 config por día»: cada fila corre con las condiciones del escenario de SU día de
+    la semana, en UNA sola corrida. `sin_lookahead` NO se mapea (tampoco lo ejecuta el batch:
+    no existe en run_one — la hora ya viene fijada en la fila)."""
+    _NO_PROFIT, _NO_STOP = 100000.0, -100000.0
+    al = str(cfg.get("alcance") or "tickers y colectivo").strip().lower()
+    tk_on = not ("solo" in al and "colectivo" in al)   # «solo colectivo» → neutraliza ticker
+    col_on = not ("solo" in al and "ticker" in al)     # «solo tickers» → sin colectivo
+
+    def _onv(fk: str, vk: str):
+        v = _fnum(cfg.get(vk))
+        return v, bool(flag_on(cfg.get(fk), default=v is not None))
+
+    v, on = _onv("ticker_roi_on", "ticker_roi")
+    umbral = float(v if v is not None else 10.0) if (tk_on and on) else _NO_PROFIT
+    v, on = _onv("ticker_stop_on", "ticker_stop")
+    stop = -abs(float(v if v is not None else 100.0)) if (tk_on and on) else _NO_STOP
+
+    filtro = str(cfg.get("filtro_confirmacion") or "No filtrar").strip().lower()
+    confirm = bool(tk_on and filtro and filtro != "no filtrar")
+    flip = confirm and ("flip" in filtro or "vuelta" in filtro)
+    cut_weak = bool(flag_on(cfg.get("cerrar_confirmacion_debil"), default=True)) if confirm else True
+    min_body = float(_fnum(cfg.get("cuerpo_min")) or 0.0) if confirm else 0.0
+
+    collective = None
+    if col_on:
+        v, on = _onv("col_roi_on", "col_roi")
+        profit = (float(v) / 100.0) if (on and v is not None) else None
+        v, on = _onv("col_stop_on", "col_stop")
+        cstop = (-abs(float(v)) / 100.0) if (on and v is not None) else None
+        if profit is not None or cstop is not None:
+            collective = {"profit_frac": profit, "stop_frac": cstop}
+
+    return {
+        "umbral_pct": umbral, "stop_pct": stop,
+        "apply_refuerzo": bool(flag_on(cfg.get("refuerzo"), default=False)),
+        "refuerzo_loss_pct": float(_fnum(cfg.get("refuerzo_umbral")) or 50.0) / 100.0,
+        "refuerzo_max": int(_fnum(cfg.get("refuerzo_n")) or 2),
+        "confirm_candle": confirm, "confirm_min_body_pct": min_body,
+        "flip_on_wrong_direction": flip, "cut_weak_confirmation": cut_weak,
+        "collective": collective,
+    }
+
+
 def plan_from_manual(dias, *, tipo: str = DEFAULT_TIPO, hora: str = DEFAULT_HORA,
                      por_ticker: Optional[dict] = None) -> TradePlan:
     """Plan manual (sin análisis previo): `dias` = iterable de días habilitados («Lun».. «Vie»,
