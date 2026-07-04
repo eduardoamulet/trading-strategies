@@ -1551,7 +1551,9 @@ def _render_iters_panel(_iters_seed):
             "Criterio de selección de contrato", _CRIT_OPTS, index=0, key="sig_crit_global",
             help="Cómo se elige el contrato. «Menor spread en rango óptimo»: el de menor spread en el "
                  "rango (con compuerta de spread). «Primer contrato cerca de ITM»: el primer contrato "
-                 "dentro del dinero (1-ITM), ignorando spread y rango de prima.")
+                 "dentro del dinero (1-ITM), ignorando spread y rango de prima. «… sino …» (compuesto): "
+                 "intenta el menor spread en rango; si NINGÚN contrato pasa, cae al 1-ITM en vez de no "
+                 "comprar (la posición queda marcada como «1-ITM (fallback)»).")
         _sig_fill_default = _sc3.selectbox(
             "Modelo de fills", _FILL_MODES, index=_FILL_MODES.index(_FILL_MODE_F2),
             key="fill_mode_sig", help=_FILL_MODE_HELP)
