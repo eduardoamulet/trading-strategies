@@ -245,3 +245,17 @@ def test_por_ticker_gate_fino():
     per_day, por_ticker = compute_weighted_verdict(_df(rows), _LUNES, half_life=35, min_n=10)
     recs = {r["Ticker"]: r["Recomendación"] for r in por_ticker if r["Día"] == "Lun"}
     assert recs == {"QQQ": "OPERAR", "SPY": "NO OPERAR"}
+
+
+def test_delete_rows_purga_solo_esa_combinacion(tmp_path):
+    """delete_rows borra la historia de UNA combinación; las demás quedan intactas."""
+    db = tmp_path / "bt.db"
+    bt_store.ingest_df(_df([("C001", "QQQ", "2026-06-01", 1000, 50),
+                            ("C001", "SPY", "2026-06-01", 1000, -20)]), path=db)   # legacy
+    bt_store.ingest_df(_df([("X001", "QQQ", "2026-06-01", 1000, 5),
+                            ("X001", "QQQ", "2026-06-02", 1000, 7)]),
+                       path=db, combination="comb_x")
+    assert bt_store.delete_rows("comb_x", path=db) == 2
+    assert bt_store.coverage("comb_x", path=db)["filas"] == 0
+    assert bt_store.coverage(path=db)["filas"] == 2                # la legacy no se toca
+    assert bt_store.delete_rows("comb_x", path=db) == 0            # idempotente

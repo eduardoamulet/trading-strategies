@@ -261,13 +261,30 @@ for _co in _combos:
             st.success(f"⭐ «{_co['nombre']}» es ahora la combinación activa.")
             st.rerun()
         if not _es_activa and _ac3.button("🗑 Eliminar", key=f"comb_del_{_co['id']}",
-                                          help="Borra la combinación y sus escenarios de la "
-                                               "base (su historia en el almacén NO se borra)."):
-            try:
-                _cmb.delete_combination(_co["id"])
+                                          help="Borrado TOTAL: la combinación, sus escenarios "
+                                               "Y su historia del almacén. Pide confirmación."):
+            st.session_state[f"comb_del_arm_{_co['id']}"] = True
+        # Confirmación en dos pasos: borrar una combinación arrastra su HISTORIA del almacén
+        # (filas de bt_results) — mostrar cuánto se va antes de tocar nada. Sin deshacer.
+        if st.session_state.get(f"comb_del_arm_{_co['id']}"):
+            import bt_store as _bts
+            _n_hist = _bts.coverage(_co["id"])["filas"]
+            st.warning(f"⚠️ **Borrado TOTAL de «{_co['nombre']}»**: {_co['n_escenarios']:,} "
+                       f"escenario(s) + **{_n_hist:,} fila(s) de historia** en el almacén. "
+                       "No hay deshacer.")
+            _cd1, _cd2, _ = st.columns([1.8, 1, 3.6])
+            if _cd1.button("🗑 Confirmar borrado total", key=f"comb_del_go_{_co['id']}",
+                           type="primary"):
+                try:
+                    _cmb.delete_combination(_co["id"])          # valida que NO sea la activa
+                    _bts.delete_rows(_co["id"])                 # purga la historia del almacén
+                    st.session_state.pop(f"comb_del_arm_{_co['id']}", None)
+                    st.rerun()
+                except ValueError as _de:
+                    st.error(str(_de))
+            if _cd2.button("Cancelar", key=f"comb_del_no_{_co['id']}"):
+                st.session_state.pop(f"comb_del_arm_{_co['id']}", None)
                 st.rerun()
-            except ValueError as _de:
-                st.error(str(_de))
 
 # ── Reevaluar ──
 st.divider()

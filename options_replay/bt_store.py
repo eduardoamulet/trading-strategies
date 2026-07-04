@@ -171,3 +171,12 @@ def combinations_summary(path: Path = DB_PATH) -> list[dict]:
             "FROM bt_results GROUP BY combination ORDER BY combination").fetchall()
     return [{"combination": r[0], "filas": r[1], "desde": r[2], "hasta": r[3], "dias": r[4]}
             for r in rows]
+
+
+def delete_rows(combination: str, path: Path = DB_PATH) -> int:
+    """Borra TODA la historia de una combinación (sus filas de bt_results) y devuelve cuántas
+    borró. DESTRUCTIVO y sin deshacer — lo usa el «borrado total» de la página Playbook, que
+    antes valida que la combinación NO sea la activa (combinations.delete_combination)."""
+    with _connect(path) as con, con:
+        cur = con.execute("DELETE FROM bt_results WHERE combination=?", (combination,))
+        return cur.rowcount
