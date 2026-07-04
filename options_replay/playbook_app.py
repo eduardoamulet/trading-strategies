@@ -60,7 +60,9 @@ if not _pb:
 else:
     st.markdown(f"**Evaluado del {_pb.get('evaluado_desde')} al {_pb.get('evaluado_hasta')}** · "
                 f"{_pb.get('tickers')} · {_pb.get('n_dias', '?')} días hábiles · "
-                f"{_pb.get('n_posiciones', 0):,} posiciones · generado {_pb.get('generado_en')}")
+                f"{_pb.get('n_posiciones', 0):,} posiciones · generado {_pb.get('generado_en')}"
+                + (f" · 🧩 combinación **{_pb['combination_nombre']}**"
+                   if _pb.get("combination_nombre") else ""))
     if _pb.get("modo"):
         _cob = _pb.get("cobertura") or {}
         st.caption(f"🔁 Modo **{_pb['modo']}** · almacén acumulado: "
@@ -159,10 +161,117 @@ else:
         except Exception:  # noqa: BLE001
             pass
 
+# ── Combinaciones de Backtesting ──
+st.divider()
+st.markdown("## 🧩 Combinaciones de Backtesting")
+st.caption("Cada combinación nace de un **Excel de variables** (columnas = variables, filas = "
+           "valores posibles) y genera sus escenarios como el **producto cartesiano completo** "
+           "de los valores. La combinación **ACTIVA** es la que usan el job diario de las 05:00 "
+           "y la Reevaluación. Reemplaza al template estático de 480 escenarios (migrado como "
+           "«Template 480 (legacy)»).")
+import combinations as _cmb
+
+try:
+    _cmb.ensure_legacy()                    # migración única del template 480 → combinations.db
+except Exception as _me:  # noqa: BLE001
+    st.warning(f"No pude migrar el template legacy: {_me}")
+
+_up_comb = st.file_uploader("📤 Importar nueva combinación (Excel de variables)", type=["xlsx"],
+                            key="comb_upload",
+                            help="Hoja «Backtesting variables»: columnas = variables (seed + "
+                                 "condiciones), filas = valores posibles de cada una. Cada "
+                                 "archivo crea una combinación NUEVA (no sobrescribe nada).")
+if _up_comb is not None and st.button("➕ Importar combinación", key="comb_import",
+                                      type="primary"):
+    try:
+        _reg = _cmb.import_file(_up_comb)
+        _n_esp = _cmb.expected_scenarios(_reg)
+        st.success(f"✅ Combinación **{_reg['nombre']}** importada — generará "
+                   f"**{_n_esp:,}** escenarios (producto cartesiano). Tocá «⚙️ Generar "
+                   "escenarios» en su contenedor.")
+        st.rerun()
+    except ValueError as _ie:
+        st.error(str(_ie))
+
+_activa = _cmb.active_combination()
+_combos = _cmb.list_combinations()
+if not _combos:
+    st.info("No hay combinaciones todavía — importá un Excel de variables arriba.")
+_EST_COMB = {"importada": "📥 importada", "generada": "✅ generada"}
+for _co in _combos:
+    _es_activa = _co["id"] == _activa
+    _titulo = (f"🧩 {_co['nombre']}"
+               + (" · ⭐ ACTIVA" if _es_activa else "")
+               + f" — {_EST_COMB.get(_co['estado'], _co['estado'])}"
+               + (f" · {_co['n_escenarios']:,} escenarios" if _co["n_escenarios"] else ""))
+    with st.expander(_titulo, expanded=False):
+        _esp = _cmb.expected_scenarios(_co)
+        st.markdown(f"**Archivo**: `{_co['archivo']}` · **Creada**: {_co['creado_en']} · "
+                    f"**Estado**: {_co['estado']}"
+                    + (f" · **Generada**: {_co['generado_en']}" if _co.get("generado_en") else ""))
+        # 📋 Información IMPORTADA del archivo: seed (globales) + variables con TODOS sus valores.
+        _seed_co = dict(_co.get("seed") or {})
+        if _seed_co:
+            _SEED_LBL = {"tickers": "Tickers", "fecha_inicial": "Fecha inicial",
+                         "fecha_final": "Fecha final"}
+            _seed_rows = [{"Parámetro": _SEED_LBL.get(_k, _k),
+                           "Valor": ", ".join(_v) if isinstance(_v, list) else str(_v)}
+                          for _k, _v in _seed_co.items()]
+            st.markdown("**📋 Seed importado** — globales de la corrida (fechas/tickers se "
+                        "overridean en cada corrida):")
+            st.dataframe(pd.DataFrame(_seed_rows), hide_index=True, use_container_width=True,
+                         height=min(38 + 35 * len(_seed_rows), 320))
+        if _co["id"] == _cmb.LEGACY_ID:
+            st.caption("Migración del template estático — sus 480 escenarios conservan los IDs "
+                       "originales (C001–C480) y toda la historia del almacén les pertenece.")
+        elif _co.get("variables"):
+            _var_rows = [{"Variable": _k, "n": len(_v),
+                          "Valores": (" · ".join(_v) if any(str(x).strip() for x in _v)
+                                      else "(vacía — no participa)")}
+                         for _k, _v in _co["variables"].items()]
+            st.markdown("**🧬 Variables importadas** — el producto cartesiano de sus valores "
+                        f"genera los escenarios (= **{_esp:,}**):")
+            st.dataframe(pd.DataFrame(_var_rows), hide_index=True, use_container_width=True,
+                         height=min(38 + 35 * len(_var_rows), 600))
+            if _esp > 50_000:
+                st.warning(f"⚠️ {_esp:,} escenarios: el batch de UN día son ~{_esp * 3:,} "
+                           "backtests — el job diario puede tardar bastante y el almacén crece "
+                           "rápido. Considerá recortar valores en el Excel.")
+        st.markdown(f"**Escenarios generados: {_co['n_escenarios']:,}**")
+        _ac1, _ac2, _ac3 = st.columns(3)
+        if _co["id"] != _cmb.LEGACY_ID and _ac1.button(
+                f"⚙️ Generar escenarios ({_esp:,})", key=f"comb_gen_{_co['id']}",
+                help="Producto cartesiano completo → se persisten en la base (re-generar "
+                     "reemplaza los de ESTA combinación)."):
+            with st.spinner(f"Generando {_esp:,} escenarios…"):
+                _n_gen = _cmb.generate_scenarios(_co["id"])
+            st.success(f"✅ {_n_gen:,} escenarios generados y persistidos.")
+            st.rerun()
+        if not _es_activa and _ac2.button(
+                "⭐ Usar en el playbook", key=f"comb_act_{_co['id']}",
+                disabled=(_co["estado"] != "generada" or not _co["n_escenarios"]),
+                help="La vuelve la combinación ACTIVA: el job diario, la Reevaluación y el "
+                     "veredicto del playbook pasan a usar SUS escenarios (el almacén y el "
+                     "veredicto están segregados por combinación)."):
+            _cmb.set_active(_co["id"])
+            st.success(f"⭐ «{_co['nombre']}» es ahora la combinación activa.")
+            st.rerun()
+        if not _es_activa and _ac3.button("🗑 Eliminar", key=f"comb_del_{_co['id']}",
+                                          help="Borra la combinación y sus escenarios de la "
+                                               "base (su historia en el almacén NO se borra)."):
+            try:
+                _cmb.delete_combination(_co["id"])
+                st.rerun()
+            except ValueError as _de:
+                st.error(str(_de))
+
 # ── Reevaluar ──
 st.divider()
-st.markdown("**🔁 Reevaluar playbook** — corre el batch completo (480 escenarios) sobre el "
-            "rango/tickers elegidos en una consola aparte y actualiza la tabla al terminar:")
+_c_act = _cmb.get_combination(_activa) if _activa else None
+st.markdown("**🔁 Reevaluar playbook** — corre el batch completo de la combinación **activa** "
+            + (f"(«{_c_act['nombre']}», {_c_act['n_escenarios']:,} escenarios) " if _c_act else "")
+            + "sobre el rango/tickers elegidos en una consola aparte y actualiza la tabla al "
+              "terminar:")
 _pb_c1, _pb_c2, _pb_c3 = st.columns([1, 1, 2])
 _pb_d0 = _pb_c1.date_input("Desde", value=_dtm.date(2026, 4, 1), key="pb_d0")
 _pb_d1 = _pb_c2.date_input("Hasta", value=_dtm.date(2026, 6, 24), key="pb_d1")

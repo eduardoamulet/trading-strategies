@@ -6,6 +6,9 @@ Session Parameters.
 
 Uso (desde la carpeta «Traiding»):
   python options_replay/run_ucbatch.py --excel "Backtesting_use_cases_template.xlsx" --notify
+  python options_replay/run_ucbatch.py --combination comb_XXXX --desde 2026-07-01 --hasta 2026-07-02
+  • --combination <id> correr los escenarios de una COMBINACIÓN de la base (combinations.db)
+                       en vez de un Excel; --desde/--hasta/--tickers overridean su seed.
   • --out <dir>        carpeta de salida (default: resultados/)
   • --processes 8      nº de procesos (0 = automático = cores−1)
   • --limit 10         correr solo los primeros N escenarios (0 = todos; útil para probar)
@@ -28,8 +31,12 @@ def main() -> None:
             _s.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
-    ap = argparse.ArgumentParser(description="Batch backtesting dirigido por el template (Data seed + scenarios).")
-    ap.add_argument("--excel", required=True, help="Backtesting_use_cases_template.xlsx")
+    ap = argparse.ArgumentParser(description="Batch backtesting dirigido por template o por COMBINACIÓN (DB).")
+    ap.add_argument("--excel", default="", help="Backtesting_use_cases_template.xlsx (modo archivo).")
+    ap.add_argument("--combination", default="", help="ID de la combinación en combinations.db (modo DB).")
+    ap.add_argument("--desde", default="", help="(modo combinación) Fecha inicial — override del seed.")
+    ap.add_argument("--hasta", default="", help="(modo combinación) Fecha final — override del seed.")
+    ap.add_argument("--tickers", default="", help="(modo combinación) Tickers coma-separados — override.")
     ap.add_argument("--out", default=str(HERE.parent / "resultados"), help="Carpeta de salida.")
     ap.add_argument("--processes", type=int, default=0, help="Nº de procesos (0 = automático).")
     ap.add_argument("--limit", type=int, default=0, help="Correr solo los primeros N escenarios (0 = todos).")
@@ -37,6 +44,8 @@ def main() -> None:
     ap.add_argument("--fill", default="", help="Results file a RELLENAR (1 fila por escenario, agregando "
                                                "sus runs y matcheando por ID). Si se da, no genera un workbook nuevo.")
     a = ap.parse_args()
+    if bool(a.excel) == bool(a.combination):
+        ap.error("indicá exactamente UNO: --excel <template> o --combination <id>.")
 
     import logging
     import os
@@ -56,7 +65,20 @@ def main() -> None:
     print(f"(log detallado → options_replay/logs/batch.log · corr={corr})", flush=True)
 
     try:
-        seed, scens = reader.read_template(a.excel)
+        if a.combination:
+            import combinations as _comb
+            seed = _comb.seed_for(a.combination, fecha_inicial=a.desde or None,
+                                  fecha_final=a.hasta or None,
+                                  tickers=([t.strip().upper() for t in a.tickers.split(",")
+                                            if t.strip()] or None))
+            scens = _comb.scenarios_for_batch(a.combination)
+            if not scens:
+                raise ValueError(f"La combinación {a.combination!r} no tiene escenarios "
+                                 "generados — generalos desde la página Playbook.")
+            _src_name, _listas, _tag = f"combination:{a.combination}", None, a.combination
+        else:
+            seed, scens = reader.read_template(a.excel)
+            _src_name, _listas, _tag = Path(a.excel).name, a.excel, ""
         if a.limit and a.limit > 0:
             scens = scens[:a.limit]
         mapped = [scenario.map_scenario(seed, s) for s in scens]
@@ -65,7 +87,7 @@ def main() -> None:
         procs = a.processes or runner.auto_processes()
         # Config de la corrida SIN datos sensibles (api_key nunca entra al dict; redact() es doble-seguro).
         log.info("BATCH cfg %s", redact({
-            "excel": Path(a.excel).name, "fill": Path(a.fill).name if a.fill else "",
+            "src": _src_name, "fill": Path(a.fill).name if a.fill else "",
             "out": a.out, "processes": procs, "limit": a.limit or 0,
             "tickers": ",".join(seed.tickers), "rango": f"{seed.fecha_inicial}..{seed.fecha_final}",
             "escenarios": len(mapped), "dias": len(days), "backtests": total}))
@@ -88,7 +110,7 @@ def main() -> None:
             out = report.fill_results(seed, rows, a.fill, Path(a.out) / report.output_filename(seed))
             print(f"   (modo RELLENAR: 1 fila por escenario sobre {Path(a.fill).name})")
         else:
-            out = report.write(seed, rows, a.out, listas_src=a.excel)
+            out = report.write(seed, rows, a.out, listas_src=_listas, tag=_tag)
         n_err = sum(1 for r in rows if r.get("n_err"))
         el = time.time() - t0
         resource_snapshot(log, "batch-end")

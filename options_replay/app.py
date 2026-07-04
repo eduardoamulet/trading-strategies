@@ -933,6 +933,22 @@ def _render_sig_results(results, elapsed, partial=False):
             _render_risk_panel(_succ, key_prefix="risk_sig")
 
 
+# ── Persistencia ANTI-RERUN-TEMPRANO (whitelist) ─────────────────────────────
+# El panel de señales renderiza ANTES que los parámetros de sesión de la sidebar; un
+# st.rerun() disparado dentro del panel (correr backtest, sembrar config por día, cargar
+# plan) aborta el script SIN instanciar los widgets de la sidebar → Streamlit descarta su
+# estado y vuelven a defaults (síntoma: «Rango de fechas» perdía las fechas al correr).
+# Re-asertar el valor ANTES de cualquier widget lo marca como seteado programáticamente y
+# sobrevive al rerun. SOLO claves de la sidebar (WHITELIST): un barrido ciego rompe los
+# widgets write-disallowed (botones/uploaders/editores) — el error salta al INSTANCIAR el
+# widget, no en la asignación, así que un try/except acá no protege.
+_PERSIST_KEYS = ("date_mode_radio", "sel_fecha_unica", "sel_fecha_inicial", "sel_fecha_final",
+                 "tickers_select", "straddle_mode_radio", "bt_mode_radio", "horario_entrada",
+                 "premium_min_input", "premium_max_input", "exit_plus_pct")
+for _pk in _PERSIST_KEYS:
+    if _pk in st.session_state:
+        st.session_state[_pk] = st.session_state[_pk]
+
 # Señales handed-off desde Alertas (una sola vez): siembran el editor y lo abren.
 _handoff = st.session_state.pop("bt_signals_handoff", None)
 if _handoff:
@@ -1065,16 +1081,14 @@ _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (Refuerzo)",
 
 @st.cache_data(ttl=600)
 def _plan_scenario_configs() -> dict:
-    """Condiciones por ID de escenario leídas del TEMPLATE del batch (hoja «Backtesting scenarios»)
-    — la MISMA fuente que usa el análisis, sin copias hardcodeadas. {} si el template no está."""
+    """Condiciones por ID de escenario de la COMBINACIÓN ACTIVA (combinations.db) — la misma
+    fuente que usan el batch y el playbook; el template estático ya no participa (quedó migrado
+    como la combinación «tpl480»). {} si no hay combinación activa."""
     try:
-        from bt_analysis import loader as _btl, playbook as _pbk
-        _tpl = (Path(__file__).resolve().parent.parent / "excels for backtesting"
-                / "Backtesting_use_cases_template.xlsx")
-        if not _tpl.exists():
-            return {}
-        _sc = _btl.load_template(str(_tpl))[1]
-        return _pbk._scenario_configs({"joined": _sc})
+        import combinations as _cmb
+        _cmb.ensure_legacy()
+        _act = _cmb.active_combination()
+        return _cmb.scenario_configs(_act) if _act else {}
     except Exception:  # noqa: BLE001
         return {}
 
@@ -1348,7 +1362,9 @@ def _render_iters_panel(_iters_seed):
         # retocar a mano sin que se pise).
         _section_rule("Configuración del análisis")
         _cfgs_plan = _plan_scenario_configs()
-        _CFG_IDS = ["C061", "C063", "C041", "C001", "C123"]   # Lun·Mar·Mié·Jue·Vie del playbook
+        # Presets legacy (Lun·Mar·Mié·Jue·Vie del playbook original) — solo si existen en la
+        # combinación ACTIVA (otra combinación tiene otros IDs → se ofrecen solo los válidos).
+        _CFG_IDS = [i for i in ("C061", "C063", "C041", "C001", "C123") if i in _cfgs_plan]
         _cfg_c1, _cfg_c2 = st.columns([1.2, 2.8])
         _sel_cfg = _cfg_c1.selectbox(
             "Seleccionar configuración",
@@ -1539,47 +1555,59 @@ def _render_iters_panel(_iters_seed):
 
     with st.container(border=True):
         st.markdown("<h5 style='text-align:center;'>📋 CONDICIONES DE ENTRADA</h5>", unsafe_allow_html=True)
-        # ── Refuerzo (martingala) — aplica a CUALQUIER tipo (CALL / PUT / CALL y PUT) si está activo ──
-        _sig_apply_ref = st.checkbox(
-            "Aplicar refuerzo (martingala) — vale para CALL, PUT o CALL y PUT", value=False,
-            key="sig_apply_ref",
-            help="Cuando una pierna cae a ≤ −«Umbral de pérdida refuerzo», compra MÁS de ESA misma pierna "
-                 "(mismo tipo) con su inversión inicial, hasta «No. de veces a reforzar». Aplica al Tipo de "
-                 "CADA fila: CALL refuerza solo el CALL, PUT solo el PUT, CALL y PUT la pierna que más "
-                 "pierde. (Las filas «CALL y PUT (Refuerzo)» ya refuerzan siempre, sin este check.)")
-        if _sig_apply_ref:
-            _sr1, _sr2 = st.columns(2)
-            _sig_refuerzo = float(_sr1.number_input(
-                "Umbral pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0, step=5.0,
-                key="sig_refuerzo",
-                help="Cuando el ROI de una pierna (CALL o PUT) cae a ≤ −este valor, se refuerza esa pierna "
-                     "(compra más del mismo tipo con su inversión inicial).")) / 100.0
-            _sig_refuerzo_max = int(_sr2.number_input(
-                "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
-                help="Máximo de refuerzos por iteración (en total, sumando las piernas)."))
-        else:
-            _sig_refuerzo = 0.50
-            _sig_refuerzo_max = 2
-
-        # ── Vencimiento DTE (incluye «Auto-DTE» como 3ª opción del dropdown) ──
-        _DTE_AUTO_LBL = ("🗓️ Auto-DTE — si una señal no tiene 0DTE ese día, operar al vencimiento más "
-                         "cercano (en vez de saltarla)")
-        _DTE_OPTS = ["0 — mismo día", "1 — overnight (D+1)", _DTE_AUTO_LBL]
-        _sig_dte_lbl = st.selectbox(
-            "Vencimiento DTE", _DTE_OPTS, index=0, key="sig_dte_lbl",
-            help="**0 — mismo día**: compra y vende el MISMO día (0DTE). · **1 — overnight (D+1)**: compra "
-                 "el día de la señal y vende el día hábil siguiente al Horario de salida. · **🗓️ Auto-DTE**: "
-                 "igual que «0 — mismo día», pero las señales SIN opción venciendo ese mismo día (típico en "
-                 "acciones fuera de viernes) —que normalmente se SALTEAN— se operan al vencimiento más cercano "
-                 "(compra el día de la señal, vende a ese vencimiento). Las que SÍ tienen 0DTE se operan 0DTE "
-                 "igual; QQQ/SPY/IWM no cambian (0DTE diario).")
-        # Mapeo a las variables que usa el run (mismo comportamiento que el checkbox de antes):
-        if _sig_dte_lbl.startswith("1"):
-            _sig_dte, _auto_dte_on = 1, False
-        elif _sig_dte_lbl == _DTE_AUTO_LBL:
-            _sig_dte, _auto_dte_on = 0, True      # = DTE 0 + Auto-DTE ON (como tildar el checkbox)
-        else:                                      # "0 — mismo día"
+        # 🗓 Config por día activa: refuerzo/DTE/granularidad se OCULTAN y quedan pinneados
+        # a las condiciones con las que se EVALUÓ el playbook (refuerzo = el del escenario de
+        # cada día vía overrides; DTE = 0 — mismo día; barras de 1 min = 60 s del Data seed).
+        # Reaparecen al desactivar el modo o elegir otra config.
+        _cfg_dia_ent = bool(st.session_state.get("_iters_cfg_por_dia"))
+        if _cfg_dia_ent:
+            st.info("🗓 **Config por día activa** — el refuerzo lo define el escenario de cada "
+                    "día; **DTE = 0 — mismo día** y **granularidad = 1 min** (las condiciones "
+                    "con las que se evaluó el playbook).")
+            _sig_apply_ref, _sig_refuerzo, _sig_refuerzo_max = False, 0.50, 2
             _sig_dte, _auto_dte_on = 0, False
+        else:
+            # ── Refuerzo (martingala) — aplica a CUALQUIER tipo (CALL / PUT / CALL y PUT) si está activo ──
+            _sig_apply_ref = st.checkbox(
+                "Aplicar refuerzo (martingala) — vale para CALL, PUT o CALL y PUT", value=False,
+                key="sig_apply_ref",
+                help="Cuando una pierna cae a ≤ −«Umbral de pérdida refuerzo», compra MÁS de ESA misma pierna "
+                     "(mismo tipo) con su inversión inicial, hasta «No. de veces a reforzar». Aplica al Tipo de "
+                     "CADA fila: CALL refuerza solo el CALL, PUT solo el PUT, CALL y PUT la pierna que más "
+                     "pierde. (Las filas «CALL y PUT (Refuerzo)» ya refuerzan siempre, sin este check.)")
+            if _sig_apply_ref:
+                _sr1, _sr2 = st.columns(2)
+                _sig_refuerzo = float(_sr1.number_input(
+                    "Umbral pérdida refuerzo (%)", value=50.0, min_value=1.0, max_value=99.0, step=5.0,
+                    key="sig_refuerzo",
+                    help="Cuando el ROI de una pierna (CALL o PUT) cae a ≤ −este valor, se refuerza esa pierna "
+                         "(compra más del mismo tipo con su inversión inicial).")) / 100.0
+                _sig_refuerzo_max = int(_sr2.number_input(
+                    "No. de veces a reforzar", value=2, min_value=1, max_value=20, step=1, key="sig_refuerzo_max",
+                    help="Máximo de refuerzos por iteración (en total, sumando las piernas)."))
+            else:
+                _sig_refuerzo = 0.50
+                _sig_refuerzo_max = 2
+
+            # ── Vencimiento DTE (incluye «Auto-DTE» como 3ª opción del dropdown) ──
+            _DTE_AUTO_LBL = ("🗓️ Auto-DTE — si una señal no tiene 0DTE ese día, operar al vencimiento más "
+                             "cercano (en vez de saltarla)")
+            _DTE_OPTS = ["0 — mismo día", "1 — overnight (D+1)", _DTE_AUTO_LBL]
+            _sig_dte_lbl = st.selectbox(
+                "Vencimiento DTE", _DTE_OPTS, index=0, key="sig_dte_lbl",
+                help="**0 — mismo día**: compra y vende el MISMO día (0DTE). · **1 — overnight (D+1)**: compra "
+                     "el día de la señal y vende el día hábil siguiente al Horario de salida. · **🗓️ Auto-DTE**: "
+                     "igual que «0 — mismo día», pero las señales SIN opción venciendo ese mismo día (típico en "
+                     "acciones fuera de viernes) —que normalmente se SALTEAN— se operan al vencimiento más cercano "
+                     "(compra el día de la señal, vende a ese vencimiento). Las que SÍ tienen 0DTE se operan 0DTE "
+                     "igual; QQQ/SPY/IWM no cambian (0DTE diario).")
+            # Mapeo a las variables que usa el run (mismo comportamiento que el checkbox de antes):
+            if _sig_dte_lbl.startswith("1"):
+                _sig_dte, _auto_dte_on = 1, False
+            elif _sig_dte_lbl == _DTE_AUTO_LBL:
+                _sig_dte, _auto_dte_on = 0, True      # = DTE 0 + Auto-DTE ON (como tildar el checkbox)
+            else:                                      # "0 — mismo día"
+                _sig_dte, _auto_dte_on = 0, False
 
         # --- Anti-lookahead: la señal de la TR-UD-15m se confirma al CIERRE de la vela de 15m, pero la
         #     «Hora» de cada fila es la APERTURA de esa vela. Entrar en la apertura mira el futuro
@@ -1627,24 +1655,27 @@ def _render_iters_panel(_iters_seed):
                            "criterio": _CRIT_KEY.get(_sig_crit_lbl, "spread"),
                            "fills": _eff_fills(_r.get("Fills"))})
 
-        # Resolución (señales): 30s/15s solo si TODOS los tickers marcados tienen la data fina.
-        try:
-            import json as _json
-            _avail = set(_json.loads((Path(__file__).resolve().parent / "data" /
-                         "resolutions_available.json").read_text(encoding="utf-8")).get("tickers", []))
-        except Exception:
-            _avail = set()
-        _sig_res_ok = bool(_specs) and {s["ticker"] for s in _specs}.issubset(_avail)
-        _sig_res_opts = ["1 min"] + (["30 seg", "15 seg"] if _sig_res_ok else [])
-        if st.session_state.get("sig_res_lbl") not in _sig_res_opts:
-            st.session_state.pop("sig_res_lbl", None)
-        _sig_res_lbl = st.selectbox(
-            "Granularidad temporal de las barras", _sig_res_opts, index=0, key="sig_res_lbl",
-            help="30s/15s solo si TODAS las señales marcadas son de tickers con data fina descargada.")
-        _sig_resolution = {"1 min": "1min", "30 seg": "30s", "15 seg": "15s"}[_sig_res_lbl]
-        if _specs and not _sig_res_ok:
-            _noav = sorted({s["ticker"] for s in _specs} - _avail)
-            st.caption(f"⏱️ Solo **1 min** disponible — {', '.join(_noav)} sin 30s/15s descargada.")
+        if _cfg_dia_ent:
+            _sig_resolution = "1min"          # 60 s del Data seed — lo que respalda el veredicto
+        else:
+            # Resolución (señales): 30s/15s solo si TODOS los tickers marcados tienen la data fina.
+            try:
+                import json as _json
+                _avail = set(_json.loads((Path(__file__).resolve().parent / "data" /
+                             "resolutions_available.json").read_text(encoding="utf-8")).get("tickers", []))
+            except Exception:
+                _avail = set()
+            _sig_res_ok = bool(_specs) and {s["ticker"] for s in _specs}.issubset(_avail)
+            _sig_res_opts = ["1 min"] + (["30 seg", "15 seg"] if _sig_res_ok else [])
+            if st.session_state.get("sig_res_lbl") not in _sig_res_opts:
+                st.session_state.pop("sig_res_lbl", None)
+            _sig_res_lbl = st.selectbox(
+                "Granularidad temporal de las barras", _sig_res_opts, index=0, key="sig_res_lbl",
+                help="30s/15s solo si TODAS las señales marcadas son de tickers con data fina descargada.")
+            _sig_resolution = {"1 min": "1min", "30 seg": "30s", "15 seg": "15s"}[_sig_res_lbl]
+            if _specs and not _sig_res_ok:
+                _noav = sorted({s["ticker"] for s in _specs} - _avail)
+                st.caption(f"⏱️ Solo **1 min** disponible — {', '.join(_noav)} sin 30s/15s descargada.")
 
     # ───────────────────────── CONDICIONES DE SALIDA ─────────────────────────
     with st.container(border=True):

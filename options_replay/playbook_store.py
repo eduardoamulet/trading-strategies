@@ -20,7 +20,6 @@ SUPUESTOS (documentados):
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -29,6 +28,8 @@ from pathlib import Path
 HERE = Path(__file__).parent
 PB_PATH = HERE / "data" / "playbook.json"
 JOB_PATH = HERE / "data" / "playbook_job.json"
+# Solo para la migración ÚNICA del template legacy a combinations.db (ensure_legacy) — el
+# pipeline ya NO lee este archivo: los escenarios viven en la base (Combinaciones).
 TEMPLATE_PATH = HERE.parent / "excels for backtesting" / "Backtesting_use_cases_template.xlsx"
 RESULTS_DIR = HERE.parent / "resultados"
 
@@ -64,22 +65,29 @@ def scenario_for_date(pb, fecha) -> dict | None:
 
 
 # ── Construcción desde un results detallado (post-batch) ─────────────────────
-def build_from_results(results_path, template_path=TEMPLATE_PATH) -> dict:
-    """Interpreta el results DETALLADO + template → dict del playbook persistible: rango evaluado,
-    tickers, veredicto por día (escenario, WR, ROI cartera, Sharpe, n, condiciones) y el desglose
-    día×ticker. Usa el mismo motor que «Interpretar resultados»."""
+def build_from_results(results_path, combination: str | None = None) -> dict:
+    """Interpreta el results DETALLADO → dict del playbook persistible: rango evaluado, tickers,
+    veredicto por día (escenario, WR, ROI cartera, Sharpe, n, condiciones) y el desglose
+    día×ticker. Las CONDICIONES salen de la COMBINACIÓN (combinations.db) — ya no del template.
+    Usa el mismo motor que «Interpretar resultados»."""
     import pandas as pd
+
+    import combinations as _comb
     from bt_analysis import engine, loader
     from trade_plan import scenario_config_summary
 
+    combination = combination or _comb.active_combination() or _comb.LEGACY_ID
+    _c = _comb.get_combination(combination) or {}
     rdf, gran = loader.load_results(str(results_path))
-    seed, sc = loader.load_template(str(template_path))
-    rep = engine.analyze(rdf, gran, scenarios_df=sc, seed=seed)
+    sc = _comb.scenarios_df(combination)
+    _seed_info = dict(_c.get("seed") or {})
+    _seed_info["Tickers"] = ", ".join(_seed_info.get("tickers") or [])
+    rep = engine.analyze(rdf, gran, scenarios_df=(None if sc.empty else sc), seed=_seed_info)
     dow = rep.get("dow") or {}
     if not dow.get("available"):
         raise ValueError("El results no permite el análisis por día de la semana "
                          "(¿granularidad agregada?). Usá un results DETALLADO.")
-    # Rango evaluado: de las FECHAS del results (no del template, que puede traer otro seed).
+    # Rango evaluado: de las FECHAS del results (no del seed, que puede traer otro rango).
     _f = pd.to_datetime(rdf.get("fecha"), errors="coerce").dropna()
     from bt_analysis import playbook as _pbk
     cfgs = _pbk._scenario_configs(rep)
@@ -99,9 +107,10 @@ def build_from_results(results_path, template_path=TEMPLATE_PATH) -> dict:
     return {
         "evaluado_desde": str(_f.min().date()) if len(_f) else None,
         "evaluado_hasta": str(_f.max().date()) if len(_f) else None,
-        "tickers": str(seed.get("Tickers") or ""),
+        "tickers": _seed_info.get("Tickers") or "",
         "generado_en": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "results_file": str(results_path),
+        "combination": combination, "combination_nombre": _c.get("nombre") or combination,
         "n_dias": rep.get("n_days"), "n_posiciones": rep.get("n_positions"),
         "per_day": per_day, "por_ticker": por_ticker,
     }
@@ -494,27 +503,36 @@ def compute_regime(df, window_dates: list[str], per_day: dict) -> list:
 
 
 def build_from_store(*, window_days: int = 120, half_life: int = 35, min_n: int = 16,
-                     template_path=TEMPLATE_PATH) -> dict:
+                     combination: str | None = None) -> dict:
     """Playbook INCREMENTAL: agrega sobre el almacén (bt_store) los últimos `window_days` días
-    hábiles con decaimiento exponencial → mismo dict que build_from_results (la página y el modo
-    automático no cambian) + metadatos del modo incremental.
+    hábiles de la COMBINACIÓN (default: la activa) con decaimiento exponencial → mismo dict que
+    build_from_results + metadatos del modo incremental. Las condiciones salen de
+    combinations.db — el template estático ya no participa.
 
     Política oficial (2026-07-03): ventana 120 días hábiles · half-life 35 (W/HL ≥ 3) · min_n 16.
-    Aplica histéresis campeón/retador (incumbents del playbook anterior) y los monitores de
-    vigencia: calibración y CUSUM (en compute_weighted_verdict), churn de veredicto (history)
-    y cambio de régimen de vol (vol realizada 5d de SPY vs mediana 60d)."""
+    Aplica histéresis campeón/retador (incumbents del playbook anterior, SOLO si es de la misma
+    combinación) y los monitores de vigencia: calibración y CUSUM (en compute_weighted_verdict),
+    churn de veredicto (history) y cambio de régimen de vol (vol 5d de SPY vs mediana 60d)."""
     import bt_store
-    from bt_analysis import loader as _l, playbook as _pbk
+    import combinations as _comb
     from trade_plan import scenario_config_summary
 
-    dates = bt_store.distinct_dates()
+    combination = combination or _comb.active_combination() or _comb.LEGACY_ID
+    _c = _comb.get_combination(combination) or {}
+    dates = bt_store.distinct_dates(combination)
     if not dates:
-        raise ValueError("El almacén está vacío — corré `update_playbook.py --bootstrap` o una "
-                         "Reevaluación desde la página Playbook.")
+        raise ValueError(f"El almacén no tiene historia para la combinación "
+                         f"«{_c.get('nombre') or combination}» — corré una Reevaluación desde "
+                         "la página Playbook (o update_playbook.py) para poblarla.")
     win = dates[-window_days:]
-    df = bt_store.load_range(win[0], win[-1])
+    df = bt_store.load_range(win[0], win[-1], combination=combination)
+    # Histéresis: los campeones del playbook anterior solo valen si son de ESTA combinación
+    # (C001 de otra combinación es otro escenario — no puede ser incumbent).
+    _prev = load_playbook()
+    if _prev and _prev.get("combination") not in (None, combination):
+        _prev = None
     per_day, por_ticker = compute_weighted_verdict(df, win, half_life=half_life, min_n=min_n,
-                                                   incumbents=_incumbents_from(load_playbook()))
+                                                   incumbents=_incumbents_from(_prev))
     try:
         regimen = compute_regime(df, win, per_day)
     except Exception:  # noqa: BLE001 — el régimen es informativo, nunca rompe el build
@@ -538,26 +556,27 @@ def build_from_store(*, window_days: int = 120, half_life: int = 35, min_n: int 
 
     regimen_vol = compute_vol_regime(dates)
 
-    # Condiciones del template por escenario (misma fuente única de siempre).
+    # Condiciones por escenario — desde la COMBINACIÓN (fuente única en combinations.db).
     try:
-        sc = _l.load_template(str(template_path))[1]
-        cfgs = _pbk._scenario_configs({"joined": sc})
-    except Exception:  # noqa: BLE001 — sin template: el playbook queda con IDs solamente
+        cfgs = _comb.scenario_configs(combination)
+    except Exception:  # noqa: BLE001 — sin condiciones: el playbook queda con IDs solamente
         cfgs = {}
     for i in per_day.values():
         cfg = cfgs.get(str(i.get("scenario") or "").strip())
         i["config"] = cfg
         i["config_txt"] = scenario_config_summary(cfg)
 
-    cov = bt_store.coverage()
+    cov = bt_store.coverage(combination)
     return {
         "evaluado_desde": win[0], "evaluado_hasta": win[-1],
         "tickers": ", ".join(cov.get("tickers") or []),
         "generado_en": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "results_file": f"bt_results.db ({cov['filas']:,} filas)",
+        "combination": combination, "combination_nombre": _c.get("nombre") or combination,
+        "n_escenarios_universo": int(_c.get("n_escenarios") or 0),
         "n_dias": len(win), "n_posiciones": int(len(df)),
-        "modo": (f"incremental · ventana {len(win)} días hábiles · half-life {half_life}d · "
-                 f"min_n {min_n}"),
+        "modo": (f"incremental · combinación «{_c.get('nombre') or combination}» · ventana "
+                 f"{len(win)} días hábiles · half-life {half_life}d · min_n {min_n}"),
         "ventana_dias": window_days, "half_life": half_life, "min_n": min_n,
         "mitades": {"vieja": [win[0], win[len(win) // 2 - 1]] if len(win) > 1 else [win[0]] * 2,
                     "reciente": [win[len(win) // 2], win[-1]]},
@@ -584,50 +603,41 @@ def append_history(pb: dict, path: Path = HISTORY_PATH) -> None:
 
 
 # ── Reevaluación en background (consola aparte, mismo patrón que el puente) ──
-def _patch_template(dst: Path, fecha_ini: str, fecha_fin: str, tickers: list[str]) -> None:
-    """Copia el template y escribe rango + tickers en el Data seed (fila 3)."""
-    from openpyxl import load_workbook
-    shutil.copy(TEMPLATE_PATH, dst)
-    wb = load_workbook(dst)
-    ws = wb["Data seed"]
-    hdr = [c.value for c in ws[2]]
-    fcols = [i + 1 for i, h in enumerate(hdr) if h and "fecha" in str(h).lower()]
-    tcol = next((i + 1 for i, h in enumerate(hdr) if h and "ticker" in str(h).lower()), None)
-    if len(fcols) < 2 or tcol is None:
-        raise ValueError("El Data seed del template no tiene las columnas Fecha/Ticker esperadas.")
-    ws.cell(row=3, column=fcols[0], value=str(fecha_ini))
-    ws.cell(row=3, column=fcols[1], value=str(fecha_fin))
-    ws.cell(row=3, column=tcol, value=", ".join(tickers))
-    wb.save(dst)
+def launch_reevaluation(fecha_ini: str, fecha_fin: str, tickers: list[str],
+                        combination: str | None = None) -> dict:
+    """Lanza run_ucbatch.py en modo COMBINACIÓN en una CONSOLA NUEVA (async, multiproceso — no
+    bloquea la app): corre los escenarios de la combinación (default: la activa) sobre el
+    rango/tickers dados. Persiste el job en data/playbook_job.json para sobrevivir
+    refresh/reinicio. Devuelve el dict del job."""
+    import combinations as _comb
+    from ucbatch import report as _ucrep, runner as _ucrun
 
-
-def launch_reevaluation(fecha_ini: str, fecha_fin: str, tickers: list[str]) -> dict:
-    """Prepara el template con el rango/tickers y lanza run_ucbatch.py en una CONSOLA NUEVA
-    (async, multiproceso — no bloquea la app). Persiste el job en data/playbook_job.json para
-    sobrevivir refresh/reinicio. Devuelve el dict del job."""
-    from ucbatch import reader as _ucr, report as _ucrep, runner as _ucrun
+    combination = combination or _comb.active_combination()
+    if not combination:
+        raise ValueError("No hay combinación ACTIVA — importá/generá una en «Combinaciones de "
+                         "Backtesting» y activala.")
+    c = _comb.get_combination(combination)
+    if not c or c.get("estado") != "generada" or not c.get("n_escenarios"):
+        raise ValueError(f"La combinación «{(c or {}).get('nombre') or combination}» no tiene "
+                         "escenarios generados — tocá «Generar escenarios» primero.")
 
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_dir = HERE / "data" / ".playbook_jobs" / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    tpl = job_dir / "template.xlsx"
-    _patch_template(tpl, fecha_ini, fecha_fin, tickers)
-
-    seed, scens = _ucr.read_template(str(tpl))
-    if not scens:
-        raise ValueError("El template no tiene escenarios.")
-    out_xlsx = RESULTS_DIR / _ucrep.output_filename(seed)
+    seed = _comb.seed_for(combination, fecha_inicial=str(fecha_ini), fecha_final=str(fecha_fin),
+                          tickers=list(tickers))
+    out_xlsx = RESULTS_DIR / _ucrep.output_filename(seed, tag=combination)
     n_days = len(_ucrun.trading_days(seed.fecha_inicial, seed.fecha_final))
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     cmd = [sys.executable, str(HERE / "run_ucbatch.py"),
-           "--excel", str(tpl), "--out", str(RESULTS_DIR), "--notify"]
+           "--combination", combination, "--desde", str(fecha_ini), "--hasta", str(fecha_fin),
+           "--tickers", ",".join(tickers), "--out", str(RESULTS_DIR), "--notify"]
     subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                      cwd=str(HERE))
     job = {"id": job_id, "started": datetime.now().strftime("%Y-%m-%d %H:%M"),
-           "out": str(out_xlsx), "template": str(tpl),
-           "rango": [str(fecha_ini), str(fecha_fin)], "tickers": tickers,
-           "n_dias": n_days, "n_escenarios": len(scens)}
+           "out": str(out_xlsx), "combination": combination,
+           "combination_nombre": c.get("nombre") or combination,
+           "rango": [str(fecha_ini), str(fecha_fin)], "tickers": list(tickers),
+           "n_dias": n_days, "n_escenarios": int(c.get("n_escenarios") or 0)}
     JOB_PATH.parent.mkdir(parents=True, exist_ok=True)
     JOB_PATH.write_text(json.dumps(job, indent=2, ensure_ascii=False), encoding="utf-8")
     return job
@@ -644,17 +654,20 @@ def check_job():
 
 def finalize_job() -> dict:
     """El batch terminó: interpreta el results del job, guarda el playbook y limpia el job.
-    Además INGESTA las filas al almacén incremental (bt_store) — así las reevaluaciones manuales
-    también suman historia. Devuelve el playbook nuevo."""
+    Además INGESTA las filas al almacén incremental (bt_store) BAJO la combinación del job —
+    así las reevaluaciones manuales también suman historia. Devuelve el playbook nuevo."""
+    import bt_store
+
     status, job = check_job()
     if status != "done":
         raise RuntimeError("El job de reevaluación todavía no terminó.")
-    pb = build_from_results(job["out"], template_path=job.get("template", TEMPLATE_PATH))
+    _combo = job.get("combination") or bt_store.LEGACY_COMBINATION
+    pb = build_from_results(job["out"], combination=_combo)
     save_playbook(pb)
     append_history(pb)
     try:
-        import bt_store
-        pb["_ingestado_al_almacen"] = bt_store.ingest_results_file(job["out"])
+        pb["_ingestado_al_almacen"] = bt_store.ingest_results_file(job["out"],
+                                                                   combination=_combo)
     except Exception:  # noqa: BLE001 — la ingesta no debe romper el finalize
         pb["_ingestado_al_almacen"] = None
     JOB_PATH.unlink(missing_ok=True)

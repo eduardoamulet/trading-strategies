@@ -55,20 +55,22 @@ def _bootstrap() -> None:
             print(f"bootstrap: {f.name} → ERROR {e}")
 
 
-def _run_batch(desde: str, hasta: str, tickers: list[str]) -> Path:
-    """Corre el batch SÍNCRONO para [desde, hasta] con el template parcheado. Devuelve el path
-    del results generado (lo nombra ucbatch a partir del seed)."""
-    from ucbatch import reader as _ucr, report as _ucrep
+def _run_batch(desde: str, hasta: str, tickers: list[str], combination: str) -> Path:
+    """Corre el batch SÍNCRONO para [desde, hasta] con los escenarios de la COMBINACIÓN
+    (combinations.db). Devuelve el path del results generado."""
+    import combinations as _comb
+    from ucbatch import report as _ucrep
 
-    job_dir = HERE / "data" / ".playbook_jobs" / ("incr_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
-    job_dir.mkdir(parents=True, exist_ok=True)
-    tpl = job_dir / "template.xlsx"
-    pbs._patch_template(tpl, desde, hasta, tickers)
-    seed, scens = _ucr.read_template(str(tpl))
-    out = pbs.RESULTS_DIR / _ucrep.output_filename(seed)
-    print(f"batch incremental: {desde} → {hasta} · {len(tickers)} tickers × {len(scens)} escenarios")
+    c = _comb.get_combination(combination)
+    if not c or not c.get("n_escenarios"):
+        raise RuntimeError(f"La combinación {combination!r} no tiene escenarios generados.")
+    seed = _comb.seed_for(combination, fecha_inicial=desde, fecha_final=hasta, tickers=tickers)
+    out = pbs.RESULTS_DIR / _ucrep.output_filename(seed, tag=combination)
+    print(f"batch incremental: {desde} → {hasta} · {len(tickers)} tickers × "
+          f"{c['n_escenarios']:,} escenarios · combinación «{c['nombre']}»")
     r = subprocess.run([sys.executable, str(HERE / "run_ucbatch.py"),
-                        "--excel", str(tpl), "--out", str(pbs.RESULTS_DIR)],
+                        "--combination", combination, "--desde", desde, "--hasta", hasta,
+                        "--tickers", ",".join(tickers), "--out", str(pbs.RESULTS_DIR)],
                        cwd=str(HERE))
     if r.returncode != 0:
         raise RuntimeError(f"run_ucbatch terminó con código {r.returncode}")
@@ -77,18 +79,20 @@ def _run_batch(desde: str, hasta: str, tickers: list[str]) -> Path:
     return out
 
 
-def verify_integrity(n_sample: int = 3) -> bool:
+def verify_integrity(n_sample: int = 3, combination: str | None = None) -> bool:
     """Revalidación MENSUAL de integridad: re-corre el batch para una muestra de días ya
-    almacenados (primero / medio / último) y compara `ganancia` fila a fila contra el almacén
-    (clave fecha+ticker+id, tolerancia $0.01). Si hay deriva, el motor cambió respecto de lo
-    almacenado → hay que subir bt_store.ENGINE_VERSION y re-backtestear (las filas viejas y
-    nuevas dejaron de ser comparables). Devuelve True si la muestra está limpia."""
+    almacenados (primero / medio / último) de la COMBINACIÓN y compara `ganancia` fila a fila
+    contra el almacén (clave fecha+ticker+id, tolerancia $0.01). Si hay deriva, el motor cambió
+    respecto de lo almacenado → hay que subir bt_store.ENGINE_VERSION y re-backtestear (las
+    filas viejas y nuevas dejaron de ser comparables). Devuelve True si la muestra está limpia."""
+    import combinations as _comb
     import pandas as pd
     from bt_analysis import loader as _ldr
 
     from ucbatch import runner as _ucrun
 
-    dates = bt_store.distinct_dates()
+    combination = combination or _comb.active_combination() or bt_store.LEGACY_COMBINATION
+    dates = bt_store.distinct_dates(combination)
     # El almacén puede contener FERIADOS viejos (días de puro error, previos al calendario
     # NYSE en trading_days) — un re-run de esos días ahora produce un batch vacío: se excluyen.
     dates = [d for d in dates if _ucrun.trading_days(d, d)]
@@ -97,20 +101,21 @@ def verify_integrity(n_sample: int = 3) -> bool:
         return True
     idx = sorted({0, len(dates) // 2, len(dates) - 1})
     sample = [dates[i] for i in idx][:max(1, n_sample)]
-    cov = bt_store.coverage()
+    cov = bt_store.coverage(combination)
     tickers = cov["tickers"] or ["QQQ", "SPY", "IWM"]
-    print(f"verify: re-corriendo {len(sample)} día(s) de muestra: {', '.join(sample)}")
+    print(f"verify [{combination}]: re-corriendo {len(sample)} día(s) de muestra: "
+          f"{', '.join(sample)}")
 
     limpio = True
     for d in sample:
-        out = _run_batch(d, d, tickers)
+        out = _run_batch(d, d, tickers, combination)
         rdf, gran = _ldr.load_results(str(out))
         if gran != "detailed":
             print(f"verify {d}: el re-run no es detallado — no comparable")
             limpio = False
             continue
         nuevo = rdf.assign(fecha=rdf["fecha"].astype(str).str[:10])
-        viejo = bt_store.load_range(d, d)
+        viejo = bt_store.load_range(d, d, combination=combination)
         viejo = viejo.assign(fecha=viejo["fecha"].astype(str).str[:10])
         keys = ["fecha", "ticker", "id"]
         m = viejo[keys + ["ganancia"]].merge(nuevo[keys + ["ganancia"]], on=keys, how="outer",
@@ -152,16 +157,30 @@ def main() -> None:
     ap.add_argument("--verify", action="store_true",
                     help="Revalidación de integridad: re-corre días de muestra y compara con "
                          "el almacén. (Corre sola el día 1 de cada mes.)")
+    ap.add_argument("--combination", default="",
+                    help="ID de la Combinación de Backtesting a actualizar (default: la ACTIVA).")
     args = ap.parse_args()
+
+    import combinations as _comb
+    _comb.ensure_legacy()                      # migración única del template 480 → combinations.db
+    combination = args.combination or _comb.active_combination()
+    if not combination:
+        print("No hay combinación ACTIVA — importá/generá una en la página Playbook "
+              "(«Combinaciones de Backtesting») o pasá --combination.")
+        return
+    _c = _comb.get_combination(combination) or {}
+    print(f"combinación activa: «{_c.get('nombre') or combination}» "
+          f"({_c.get('n_escenarios', 0):,} escenarios)")
 
     if args.bootstrap:
         _bootstrap()
 
-    cov = bt_store.coverage()
-    print(f"almacén: {cov['filas']:,} filas · {cov['dias']} días ({cov['desde']} → {cov['hasta']}) "
-          f"· tickers: {', '.join(cov['tickers'])}")
+    cov = bt_store.coverage(combination)
+    print(f"almacén [{combination}]: {cov['filas']:,} filas · {cov['dias']} días "
+          f"({cov['desde']} → {cov['hasta']}) · tickers: {', '.join(cov['tickers'])}")
     if not cov["filas"]:
-        print("Almacén vacío: corré con --bootstrap o lanzá una Reevaluación desde la página Playbook.")
+        print("Sin historia para esta combinación: lanzá una Reevaluación desde la página "
+              "Playbook para poblarla (o --bootstrap si es la legacy tpl480).")
         return
 
     # Días hábiles faltantes: (último almacenado, ayer]. Hoy se excluye (la sesión puede estar
@@ -172,14 +191,15 @@ def main() -> None:
         pend = [d for d in _ucrun.trading_days(cov["hasta"], hoy)
                 if cov["hasta"] < d < hoy]
         if pend:
-            out = _run_batch(pend[0], pend[-1], cov["tickers"] or ["QQQ", "SPY", "IWM"])
-            n = bt_store.ingest_results_file(out)
+            out = _run_batch(pend[0], pend[-1], cov["tickers"] or ["QQQ", "SPY", "IWM"],
+                             combination)
+            n = bt_store.ingest_results_file(out, combination=combination)
             print(f"ingesta: {out.name} → +{n:,} filas nuevas")
         else:
             print("sin días faltantes — el almacén está al día.")
 
     pb = pbs.build_from_store(window_days=args.window, half_life=args.half_life,
-                              min_n=args.min_n)
+                              min_n=args.min_n, combination=combination)
     pbs.save_playbook(pb)
     pbs.append_history(pb)
     print(f"playbook: {pb['evaluado_desde']} → {pb['evaluado_hasta']} · {pb['modo']}")
@@ -205,7 +225,7 @@ def main() -> None:
 
     # Revalidación de integridad: a pedido (--verify) o automática el día 1 de cada mes.
     if args.verify or (date.today().day == 1 and not args.skip_batch):
-        verify_integrity()
+        verify_integrity(combination=combination)
 
 
 if __name__ == "__main__":

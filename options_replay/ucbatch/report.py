@@ -50,12 +50,15 @@ _ENRICH = [
 ]
 
 
-def output_filename(seed) -> str:
+def output_filename(seed, tag: str = "") -> str:
+    """`tag` (opcional) = slug de la COMBINACIÓN — evita que dos combinaciones con el mismo
+    rango/tickers se pisen el results file."""
     tipo = seed.tipo.replace(" ", "_")
     tks = "_".join(seed.tickers)
     fi = seed.fecha_inicial.replace("-", "–")          # restituir guión largo (como el template)
     ff = seed.fecha_final.replace("-", "–")
-    return f"Backtesting_Results_{tipo}_of_{tks}_from_{fi}_to_{ff}.xlsx"
+    _tag = f"_{str(tag).strip().replace(' ', '_')}" if str(tag or "").strip() else ""
+    return f"Backtesting_Results{_tag}_{tipo}_of_{tks}_from_{fi}_to_{ff}.xlsx"
 
 
 def _headers(ws, enrich: bool = False) -> None:
@@ -115,10 +118,10 @@ def build(seed, rows: list, listas_src=None) -> Workbook:
     return wb
 
 
-def write(seed, rows: list, out_dir, listas_src=None) -> Path:
+def write(seed, rows: list, out_dir, listas_src=None, tag: str = "") -> Path:
     """Arma y guarda el workbook. Devuelve el Path."""
     wb = build(seed, rows, listas_src=listas_src)
-    out = Path(out_dir) / output_filename(seed)
+    out = Path(out_dir) / output_filename(seed, tag=tag)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
     return out
