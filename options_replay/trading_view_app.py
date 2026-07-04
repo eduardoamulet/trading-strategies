@@ -392,7 +392,10 @@ if "tv_iters" in st.session_state:
              "tipo": str(r["Tipo"]),
              "prob": (None if pd.isna(r.get("% Cumpl.")) else r.get("% Cumpl.")),
              "estrategia": str(r.get("Estrategia") or ""),
-             "criterio": str(r.get("Criterio") or ""), "fills": str(r.get("Fills") or "")}
+             "criterio": str(r.get("Criterio") or ""), "fills": str(r.get("Fills") or ""),
+             # El anti-lookahead del panel SOLO aplica a señales de Trading view (la Hora del
+             # export TR-UD es la APERTURA de la vela) — este marcador lo habilita allá.
+             "origen": "tradingview"}
             for _, r in _sel.iterrows()]
         st.session_state["bt_sidebar_collapse"] = True   # llegar a Backtesting con la sidebar contraída
         st.switch_page("options_replay/app.py")

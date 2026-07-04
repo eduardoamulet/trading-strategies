@@ -963,6 +963,11 @@ if _handoff:
          **({"Fills": s["fills"]} if s.get("fills") else {})} for s in _handoff]
     st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del data_editor
     st.session_state.pop("_iters_cfg_por_dia", None)  # handoff nuevo → config por día afuera
+    # ¿Las señales vienen de TRADING VIEW? (marcador del handoff; heurística TR-UD para
+    # exports viejos). Habilita el anti-lookahead del panel — con otro origen se oculta.
+    st.session_state["_iters_es_tv"] = any(
+        str(s.get("origen") or "") == "tradingview"
+        or str(s.get("estrategia") or "").upper().startswith("TR-UD") for s in _handoff)
     st.session_state["_iters_sel_seed"] = True       # nuevo handoff → todas seleccionadas
     st.session_state["bt_iters_open"] = True
 
@@ -1362,6 +1367,7 @@ def _render_iters_panel(_iters_seed):
         _seed_dates = sorted({str(_r.get("Fecha") or "").strip()[:10]
                               for _r in _iters_seed if str(_r.get("Fecha") or "").strip()})
         _auto_entry = None
+        _auto_map: dict = {}           # {día: {scenario, cfg}} — días mezclados en modo automático
         if _sel_cfg == "(playbook automático)":
             import playbook_store as _pbs
             _pb_auto = _pbs.load_playbook()
@@ -1380,15 +1386,21 @@ def _render_iters_panel(_iters_seed):
             elif len(_wds) > 1:
                 # Días MEZCLADOS → modo CONFIG POR DÍA: cada fila correrá con las condiciones del
                 # escenario de SU día (solo días OPERAR + estado operable; el resto se saltea).
-                _auto_map = {}
+                # ACÁ solo se CALCULA y se muestra; la SIEMBRA en session_state ocurre una única
+                # vez por firma (selección+fechas) en el guard de abajo — si no, el botón
+                # «✖ Desactivar» del banner no serviría (cada rerun re-sembraría el mapa).
                 for _wd_a in sorted(_wds):
                     _e_a = (_pb_auto.get("per_day") or {}).get(_wd_a) or {}
                     if (str(_e_a.get("recommendation") or "").upper() == "OPERAR"
                             and _e_a.get("estado") in (None, "operable") and _e_a.get("config")):
                         _auto_map[_wd_a] = {"scenario": str(_e_a.get("scenario") or ""),
                                             "cfg": _e_a["config"]}
-                if _auto_map:
-                    st.session_state["_iters_cfg_por_dia"] = _auto_map
+                if not _auto_map:
+                    _cfg_c2.warning(f"Las filas mezclan **{len(_wds)} días de semana** "
+                                    f"({', '.join(sorted(_wds))}) y NINGUNO está operable en el "
+                                    "playbook (o no tiene condiciones) — no se aplicó ninguna "
+                                    "config y la corrida usaría las condiciones del panel.")
+                elif st.session_state.get("_iters_cfg_por_dia"):
                     _no_op_a = sorted(_wds - set(_auto_map))
                     _cfg_c2.caption("🗓 **Config por día activa** (filas con varios días): "
                                     + " · ".join(f"**{_d}→{_auto_map[_d]['scenario']}**"
@@ -1399,11 +1411,14 @@ def _render_iters_panel(_iters_seed):
                                        else "")
                                     + " Las CONDICIONES DE SALIDA del panel no se usan.")
                 else:
-                    st.session_state.pop("_iters_cfg_por_dia", None)
-                    _cfg_c2.warning(f"Las filas mezclan **{len(_wds)} días de semana** "
-                                    f"({', '.join(sorted(_wds))}) y NINGUNO está operable en el "
-                                    "playbook (o no tiene condiciones) — no se aplicó ninguna "
-                                    "config y la corrida usaría las condiciones del panel.")
+                    # El usuario la desactivó (banner «✖ Desactivar») → modo clásico hasta que
+                    # la reactive o cambie la firma (selección/fechas).
+                    _cfg_c2.caption("🗓 Config por día **desactivada** — TODAS las filas correrán "
+                                    "con las CONDICIONES DE SALIDA del panel (incluidos los días "
+                                    "no operables del playbook).")
+                    if _cfg_c2.button("🗓 Reactivar config por día", key="cfg_dia_on"):
+                        st.session_state["_iters_cfg_por_dia"] = _auto_map
+                        st.rerun()
             else:
                 _auto_entry = _pbs.scenario_for_date(_pb_auto, _seed_dates[0])
                 _dia_auto = next(iter(_wds), "?")
@@ -1447,6 +1462,15 @@ def _render_iters_panel(_iters_seed):
                     _n_ap = _apply_scenario_config(_auto_entry["config"], _n_tk_seed)
                     st.toast(f"📗 Playbook: {_auto_entry.get('scenario')} aplicado "
                              f"({_n_ap} condición(es))")
+                elif _auto_map:
+                    # Días mezclados → sembrar el mapa UNA vez por firma (después el usuario
+                    # puede desactivarlo con «✖ Desactivar» sin que un rerun lo re-siembre).
+                    # El rerun refresca la caption de arriba a «activa» (el guard de firma ya
+                    # quedó marcado → no re-entra: sin loop).
+                    st.session_state["_iters_cfg_por_dia"] = _auto_map
+                    st.rerun()
+                else:
+                    st.session_state.pop("_iters_cfg_por_dia", None)
             elif _sel_cfg != "(manual)":
                 st.session_state.pop("_iters_cfg_por_dia", None)   # C0xx = UNA config por corrida
                 _cfg_ap = _cfgs_plan.get(_sel_cfg)
@@ -1559,21 +1583,28 @@ def _render_iters_panel(_iters_seed):
 
         # --- Anti-lookahead: la señal de la TR-UD-15m se confirma al CIERRE de la vela de 15m, pero la
         #     «Hora» de cada fila es la APERTURA de esa vela. Entrar en la apertura mira el futuro
-        #     (usa el cierre de esa misma vela). ON desplaza la entrada al cierre (Hora + timeframe). ---
-        _is_alert_hr = (_sig_entry_lbl == "(hora de la alerta)")
-        _nl1, _nl2 = st.columns([3, 1])
-        _sig_no_lookahead = _nl1.checkbox(
-            "⏱️ Entrar al CIERRE de la vela de la señal (sin lookahead)",
-            value=False, key="sig_no_lookahead", disabled=not _is_alert_hr,
-            help="La señal se CONFIRMA cuando la vela de 15m CIERRA, no en su apertura. La «Hora» de cada "
-                 "fila es la APERTURA de esa vela → entrar ahí adelanta la entrada y MIRA EL FUTURO "
-                 "(resultados inflados). ON desplaza la entrada al CIERRE de la vela (Hora + timeframe), "
-                 "que es lo más temprano que en la realidad podrías operar. Solo con «(hora de la alerta)».")
-        _sig_candle_min = int(_nl2.number_input(
-            "Timeframe vela (min)", min_value=1, max_value=60, value=15, step=5, key="sig_candle_min",
-            disabled=(not _sig_no_lookahead) or (not _is_alert_hr),
-            help="Duración de la vela que dispara la señal. TR-UD-15m = 15."))
-        _no_lookahead_on = bool(_sig_no_lookahead) and _is_alert_hr
+        #     (usa el cierre de esa misma vela). ON desplaza la entrada al cierre (Hora + timeframe).
+        #     SOLO aplica a señales de TRADING VIEW (el export TR-UD trae la apertura de la vela);
+        #     con cualquier otro origen (Investep, plan por rango, manual) la Hora ya es operable →
+        #     los widgets se OCULTAN y no participan de la lógica. ---
+        if bool(st.session_state.get("_iters_es_tv")):
+            _is_alert_hr = (_sig_entry_lbl == "(hora de la alerta)")
+            _nl1, _nl2 = st.columns([3, 1])
+            _sig_no_lookahead = _nl1.checkbox(
+                "⏱️ Entrar al CIERRE de la vela de la señal (sin lookahead)",
+                value=False, key="sig_no_lookahead", disabled=not _is_alert_hr,
+                help="La señal se CONFIRMA cuando la vela de 15m CIERRA, no en su apertura. La «Hora» de cada "
+                     "fila es la APERTURA de esa vela → entrar ahí adelanta la entrada y MIRA EL FUTURO "
+                     "(resultados inflados). ON desplaza la entrada al CIERRE de la vela (Hora + timeframe), "
+                     "que es lo más temprano que en la realidad podrías operar. Solo con «(hora de la alerta)». "
+                     "Visible únicamente con señales de Trading view (TR-UD).")
+            _sig_candle_min = int(_nl2.number_input(
+                "Timeframe vela (min)", min_value=1, max_value=60, value=15, step=5, key="sig_candle_min",
+                disabled=(not _sig_no_lookahead) or (not _is_alert_hr),
+                help="Duración de la vela que dispara la señal. TR-UD-15m = 15."))
+            _no_lookahead_on = bool(_sig_no_lookahead) and _is_alert_hr
+        else:
+            _sig_no_lookahead, _sig_candle_min, _no_lookahead_on = False, 15, False
 
         def _eff_fills(label) -> str:
             _l = str(label or "(default)").strip()
@@ -1635,136 +1666,149 @@ def _render_iters_panel(_iters_seed):
                            help="Vuelve al modo clásico: UNA config (la de abajo) para toda la corrida."):
                 st.session_state.pop("_iters_cfg_por_dia", None)
                 st.rerun()
-        # Default dinámico según el nº de tickers en DATOS DE ITERACIÓN: con 1 solo ticker el
-        # colectivo es redundante (la cartera ES ese ticker) → «solo a tickers»; con varios →
-        # «a tickers y colectivo». Se re-aplica al cambiar el nº de tickers, sin pisar un cambio
-        # manual mientras ese nº no cambie.
-        _n_tk = len({s["ticker"] for s in _specs}) if _specs else 0
-        _alcance_opts = ["Aplicar a tickers y colectivo", "Aplicar solo a tickers", "Aplicar solo a colectivo"]
-        if st.session_state.get("_sig_alcance_ntk") != _n_tk:
-            st.session_state["sig_alcance"] = "Aplicar solo a tickers" if _n_tk == 1 else "Aplicar a tickers y colectivo"
-            st.session_state["_sig_alcance_ntk"] = _n_tk
-        _alcance = st.radio(
-            "Alcance de salida", options=_alcance_opts, horizontal=True, key="sig_alcance",
-            help="Qué condiciones de salida se APLICAN y se VALIDAN:\n\n"
-                 "• **a tickers y colectivo**: ambas secciones activas.\n\n"
-                 "• **solo a tickers**: el colectivo se deshabilita y se ignora.\n\n"
-                 "• **solo a colectivo**: las condiciones por ticker se deshabilitan y se ignoran.\n\n"
-                 "_Default automático: «solo a tickers» con 1 ticker (el colectivo no aplica); "
-                 "«a tickers y colectivo» con varios. Podés cambiarlo a mano._")
-        _tk_on = _alcance != "Aplicar solo a colectivo"
-        _col_on = _alcance != "Aplicar solo a tickers"
-        _section_rule("🎯 Aplicar condiciones para tickers")
-        # ── Salida POR TICKER (umbral ROI / stop loss) — cada una con su checkbox que la activa ──
-        _so1, _so2 = st.columns(2)
-        with _so1:
-            _sig_apply_umb = st.checkbox(
-                "Cerrar si cumple Umbral ROI (%) del ticker", value=True, key="sig_apply_umb",
-                disabled=not _tk_on,
-                help="Si está activo, cada iteración/pierna cierra en GANANCIA al tocar el Umbral ROI de "
-                     "abajo. Si NO, no hay salida por ganancia (corre hasta stop / cierre / otra condición).")
-            _sig_umb = float(st.number_input(
-                "Umbral ROI (%) del ticker", value=15.0, step=5.0, key="sig_umb",
-                disabled=not _sig_apply_umb or not _tk_on,
-                help="ROI(%) al que CADA iteración/pierna cierra en GANANCIA (por contrato del ticker, no la "
-                     "cartera). Ej: 15 = vende al +15%."))
-            if not _sig_apply_umb:
-                _sig_umb = 100000.0   # check OFF → el profit target nunca se alcanza
-        with _so2:
-            _sig_apply_stop = st.checkbox(
-                "Cerrar si cumple Stop loss (%) del ticker", value=True, key="sig_apply_stop",
-                disabled=not _tk_on,
-                help="Si está activo, cada iteración/pierna CORTA la pérdida al tocar el Stop loss de "
-                     "abajo. Si NO, no hay stop (aguanta hasta cierre / otra condición).")
-            if float(st.session_state.get("sig_stop", -80.0)) > 0:   # el stop SIEMPRE es ≤ 0
-                st.session_state["sig_stop"] = -abs(float(st.session_state["sig_stop"]))
-            _sig_stop = float(st.number_input(
-                "Stop loss (%) del ticker", value=-80.0, step=10.0, key="sig_stop",
-                max_value=0.0, disabled=not _sig_apply_stop or not _tk_on,
-                help="ROI(%) NEGATIVO (≤ 0; el campo no acepta positivos) al que CADA iteración/pierna CORTA "
-                     "la pérdida (por contrato del ticker). Ej: −80 = corta al perder 80%; −100 = sin stop efectivo."))
-            if not _sig_apply_stop:
-                _sig_stop = -100000.0   # check OFF → el stop nunca se alcanza
-        # ── Filtro de confirmación de la 1ª vela (gestión POR TICKER: cierra / da vuelta la pierna) ──
-        _cf_left, _cf_right = st.columns(2)
-        with _cf_left:
-            _sig_conf_mode = st.radio(
-                "Filtro de confirmación de la 1ª vela",
-                options=["No filtrar", "Dar vuelta (flip) si va en contra", "Cerrar si va en contra"],
-                index=1, key="sig_conf_mode", disabled=not _tk_on,
-                help="A los 15 min de la entrada, si la 1ª vela de 15m DESDE la hora de entrada (cualquiera, NO "
-                     "solo las 9:30) cerró EN CONTRA de la señal:\n\n"
-                     "• **No filtrar**: no hace nada (corre hasta su salida normal / cierre).\n\n"
-                     "• **Cerrar si va en contra**: vende ahí (motivo «Señal en sentido del movimiento "
-                     "equivocado»).\n\n"
-                     "• **Dar vuelta (flip)**: reemplaza la señal por la pierna OPUESTA entrando al cierre de la "
-                     "1ª vela (entrada+15m) y la corre hasta el cierre del día (apuesta a que el movimiento "
-                     "adverso continúa, ~60%). Validado 4 años: PF 1.62 vs 1.57 de cortar.\n\n"
-                     "Solo aplica a iteraciones de UNA pierna (Sólo CALL / Sólo PUT).")
-        _sig_confirm = (_sig_conf_mode != "No filtrar")
-        _sig_flip = (_sig_conf_mode == "Dar vuelta (flip) si va en contra")
-        _sig_min_body = 0.0
-        _sig_cut_weak = True
-        if _sig_confirm:
-            with _cf_right:
-                # ¿TODAS las filas marcadas son modos "End of Day"? Esos corren hasta el cierre por diseño →
-                # la salida por vela doji NO aplica (deshabilitamos el checkbox; el motor igual la exime por fila).
-                _all_eod = bool(_specs) and all(
-                    "end of day" in str(_s.get("tipo", "")).lower() for _s in _specs)
-                _sig_cut_weak = st.checkbox(
-                    "Cerrar si confirmación débil (vela doji, sin convicción)",
-                    value=True, key="sig_cut_weak", disabled=_all_eod,
-                    help="Si la 1ª vela es un DOJI (cuerpo dentro de ±anti-doji, sin convicción), corta la "
-                         "operación con motivo «Confirmación débil». Destildá para que el doji NO corte (sigue "
-                         "hasta su salida normal / cierre del día). Los modos «End of Day» (Sólo CALL/PUT End of "
-                         "Day, etc.) la IGNORAN siempre — corren hasta el cierre por diseño.")
-                if _all_eod:
-                    st.caption("↳ _Deshabilitado: las operaciones «End of Day» corren hasta el cierre; "
-                               "el doji no las corta._")
-                _sig_min_body = float(st.number_input(
-                    "↳ Cuerpo mínimo de la vela de confirmación (%) — anti-doji", min_value=0.0,
-                    max_value=1.0, value=0.05, step=0.05, key="sig_min_body",
-                    help="Banda muerta de ±este valor. A FAVOR: si el cuerpo no llega al umbral, no confirma "
-                         "→ corta al cierre de la 1ª vela (entrada+15m). EN CONTRA: el flip SOLO invierte si el "
-                         "movimiento adverso SUPERA el umbral; dentro de ±umbral (ruido tipo −0.01%) corta, no "
-                         "invierte. 0 = comportamiento original (flipea con cualquier negativo). Típico ≤0.10; "
-                         "subilo para exigir velas adversas más grandes antes de flipear."))
-        if not _tk_on:   # «solo colectivo»: las condiciones por ticker NO se aplican ni validan
+            # Pedido UX: con la config POR DÍA activa, los widgets de salida se OCULTAN
+            # (no se usan: cada fila corre con los overrides del escenario de SU día y el
+            # colectivo va por grupo de día-semana). Estos valores NEUTRALES solo mantienen
+            # vivas las referencias del runner (cortocircuitadas por los overrides). Al
+            # desactivar —o elegir otra config— los widgets reaparecen con sus defaults.
+            _alcance = "Aplicar a tickers y colectivo"
+            _tk_on = _col_on = True
             _sig_umb, _sig_stop = 100000.0, -100000.0
             _sig_confirm = _sig_flip = False
+            _sig_min_body, _sig_cut_weak = 0.0, True
+            _sig_coll = _sig_coll_stop = False
+            _sig_coll_thr, _sig_coll_stop_thr = 5.0, -80.0
+        else:
+            # Default dinámico según el nº de tickers en DATOS DE ITERACIÓN: con 1 solo ticker el
+            # colectivo es redundante (la cartera ES ese ticker) → «solo a tickers»; con varios →
+            # «a tickers y colectivo». Se re-aplica al cambiar el nº de tickers, sin pisar un cambio
+            # manual mientras ese nº no cambie.
+            _n_tk = len({s["ticker"] for s in _specs}) if _specs else 0
+            _alcance_opts = ["Aplicar a tickers y colectivo", "Aplicar solo a tickers", "Aplicar solo a colectivo"]
+            if st.session_state.get("_sig_alcance_ntk") != _n_tk:
+                st.session_state["sig_alcance"] = "Aplicar solo a tickers" if _n_tk == 1 else "Aplicar a tickers y colectivo"
+                st.session_state["_sig_alcance_ntk"] = _n_tk
+            _alcance = st.radio(
+                "Alcance de salida", options=_alcance_opts, horizontal=True, key="sig_alcance",
+                help="Qué condiciones de salida se APLICAN y se VALIDAN:\n\n"
+                     "• **a tickers y colectivo**: ambas secciones activas.\n\n"
+                     "• **solo a tickers**: el colectivo se deshabilita y se ignora.\n\n"
+                     "• **solo a colectivo**: las condiciones por ticker se deshabilitan y se ignoran.\n\n"
+                     "_Default automático: «solo a tickers» con 1 ticker (el colectivo no aplica); "
+                     "«a tickers y colectivo» con varios. Podés cambiarlo a mano._")
+            _tk_on = _alcance != "Aplicar solo a colectivo"
+            _col_on = _alcance != "Aplicar solo a tickers"
+            _section_rule("🎯 Aplicar condiciones para tickers")
+            # ── Salida POR TICKER (umbral ROI / stop loss) — cada una con su checkbox que la activa ──
+            _so1, _so2 = st.columns(2)
+            with _so1:
+                _sig_apply_umb = st.checkbox(
+                    "Cerrar si cumple Umbral ROI (%) del ticker", value=True, key="sig_apply_umb",
+                    disabled=not _tk_on,
+                    help="Si está activo, cada iteración/pierna cierra en GANANCIA al tocar el Umbral ROI de "
+                         "abajo. Si NO, no hay salida por ganancia (corre hasta stop / cierre / otra condición).")
+                _sig_umb = float(st.number_input(
+                    "Umbral ROI (%) del ticker", value=15.0, step=5.0, key="sig_umb",
+                    disabled=not _sig_apply_umb or not _tk_on,
+                    help="ROI(%) al que CADA iteración/pierna cierra en GANANCIA (por contrato del ticker, no la "
+                         "cartera). Ej: 15 = vende al +15%."))
+                if not _sig_apply_umb:
+                    _sig_umb = 100000.0   # check OFF → el profit target nunca se alcanza
+            with _so2:
+                _sig_apply_stop = st.checkbox(
+                    "Cerrar si cumple Stop loss (%) del ticker", value=True, key="sig_apply_stop",
+                    disabled=not _tk_on,
+                    help="Si está activo, cada iteración/pierna CORTA la pérdida al tocar el Stop loss de "
+                         "abajo. Si NO, no hay stop (aguanta hasta cierre / otra condición).")
+                if float(st.session_state.get("sig_stop", -80.0)) > 0:   # el stop SIEMPRE es ≤ 0
+                    st.session_state["sig_stop"] = -abs(float(st.session_state["sig_stop"]))
+                _sig_stop = float(st.number_input(
+                    "Stop loss (%) del ticker", value=-80.0, step=10.0, key="sig_stop",
+                    max_value=0.0, disabled=not _sig_apply_stop or not _tk_on,
+                    help="ROI(%) NEGATIVO (≤ 0; el campo no acepta positivos) al que CADA iteración/pierna CORTA "
+                         "la pérdida (por contrato del ticker). Ej: −80 = corta al perder 80%; −100 = sin stop efectivo."))
+                if not _sig_apply_stop:
+                    _sig_stop = -100000.0   # check OFF → el stop nunca se alcanza
+            # ── Filtro de confirmación de la 1ª vela (gestión POR TICKER: cierra / da vuelta la pierna) ──
+            _cf_left, _cf_right = st.columns(2)
+            with _cf_left:
+                _sig_conf_mode = st.radio(
+                    "Filtro de confirmación de la 1ª vela",
+                    options=["No filtrar", "Dar vuelta (flip) si va en contra", "Cerrar si va en contra"],
+                    index=1, key="sig_conf_mode", disabled=not _tk_on,
+                    help="A los 15 min de la entrada, si la 1ª vela de 15m DESDE la hora de entrada (cualquiera, NO "
+                         "solo las 9:30) cerró EN CONTRA de la señal:\n\n"
+                         "• **No filtrar**: no hace nada (corre hasta su salida normal / cierre).\n\n"
+                         "• **Cerrar si va en contra**: vende ahí (motivo «Señal en sentido del movimiento "
+                         "equivocado»).\n\n"
+                         "• **Dar vuelta (flip)**: reemplaza la señal por la pierna OPUESTA entrando al cierre de la "
+                         "1ª vela (entrada+15m) y la corre hasta el cierre del día (apuesta a que el movimiento "
+                         "adverso continúa, ~60%). Validado 4 años: PF 1.62 vs 1.57 de cortar.\n\n"
+                         "Solo aplica a iteraciones de UNA pierna (Sólo CALL / Sólo PUT).")
+            _sig_confirm = (_sig_conf_mode != "No filtrar")
+            _sig_flip = (_sig_conf_mode == "Dar vuelta (flip) si va en contra")
             _sig_min_body = 0.0
-        _section_rule("🌐 Aplicar condiciones para colectivo")
-        _cc1, _cc2 = st.columns(2)
-        with _cc1:
-            _sig_coll = st.checkbox(
-                "Cerrar si cumple Umbral de ROI colectivo (%)", value=True, key="sig_coll_exit",
-                disabled=not _col_on,
-                help="Salida A NIVEL CARTERA: dentro de cada día, cuando el ROI de CARTERA de las posiciones "
-                     "abiertas (ganancia $ ÷ invertido $ = el TOTAL en pantalla) alcanza el umbral, vende TODAS "
-                     "de golpe (motivo «ROI colectivo»). Las que ya salieron por su umbral/stop no cuentan "
-                     "después. Puede dispararse varias veces por día si entran nuevas señales.")
-            _sig_coll_thr = float(st.number_input(
-                "Umbral de ROI colectivo (%)", value=5.0, step=1.0, key="sig_coll_thr",
-                disabled=not _sig_coll or not _col_on,
-                help="Cuando el ROI de CARTERA de las posiciones abiertas (ganancia ÷ invertido = el TOTAL) "
-                     "≥ este valor, se cierran TODAS en ese minuto, con motivo «ROI colectivo»."))
-        with _cc2:
-            _sig_coll_stop = st.checkbox(
-                "Cerrar si cumple Stop loss (%) del colectivo", value=False, key="sig_coll_stop",
-                disabled=not _col_on,
-                help="STOP A NIVEL CARTERA — solo con >1 TICKER abierto: cuando el ROI de CARTERA de las "
-                     "posiciones abiertas cae a ≤ «Stop loss (%) de colectivo» (la pérdida llega a ese %), "
-                     "vende TODAS de golpe (motivo «Stop colectivo»). Con un solo ticker abierto NO aplica "
-                     "(manda su stop individual). En la pasada de cartera gana el PRIMER trigger del día (ROI "
-                     "colectivo o stop colectivo).")
-            if float(st.session_state.get("sig_coll_stop_thr", -80.0)) > 0:   # el stop SIEMPRE es ≤ 0
-                st.session_state["sig_coll_stop_thr"] = -abs(float(st.session_state["sig_coll_stop_thr"]))
-            _sig_coll_stop_thr = float(st.number_input(
-                "Stop loss (%) de colectivo", value=-80.0, step=5.0, key="sig_coll_stop_thr",
-                max_value=0.0, disabled=not _sig_coll_stop or not _col_on,
-                help="ROI(%) NEGATIVO de CARTERA (≤ 0; el campo no acepta positivos). Cuando el ROI de las "
-                     "abiertas (ganancia ÷ invertido = el TOTAL) ≤ este valor y hay >1 ticker abierto, se "
-                     "cierran TODAS (motivo «Stop colectivo»). Ej: −80 = corta si la cartera pierde 80% o más."))
+            _sig_cut_weak = True
+            if _sig_confirm:
+                with _cf_right:
+                    # ¿TODAS las filas marcadas son modos "End of Day"? Esos corren hasta el cierre por diseño →
+                    # la salida por vela doji NO aplica (deshabilitamos el checkbox; el motor igual la exime por fila).
+                    _all_eod = bool(_specs) and all(
+                        "end of day" in str(_s.get("tipo", "")).lower() for _s in _specs)
+                    _sig_cut_weak = st.checkbox(
+                        "Cerrar si confirmación débil (vela doji, sin convicción)",
+                        value=True, key="sig_cut_weak", disabled=_all_eod,
+                        help="Si la 1ª vela es un DOJI (cuerpo dentro de ±anti-doji, sin convicción), corta la "
+                             "operación con motivo «Confirmación débil». Destildá para que el doji NO corte (sigue "
+                             "hasta su salida normal / cierre del día). Los modos «End of Day» (Sólo CALL/PUT End of "
+                             "Day, etc.) la IGNORAN siempre — corren hasta el cierre por diseño.")
+                    if _all_eod:
+                        st.caption("↳ _Deshabilitado: las operaciones «End of Day» corren hasta el cierre; "
+                                   "el doji no las corta._")
+                    _sig_min_body = float(st.number_input(
+                        "↳ Cuerpo mínimo de la vela de confirmación (%) — anti-doji", min_value=0.0,
+                        max_value=1.0, value=0.05, step=0.05, key="sig_min_body",
+                        help="Banda muerta de ±este valor. A FAVOR: si el cuerpo no llega al umbral, no confirma "
+                             "→ corta al cierre de la 1ª vela (entrada+15m). EN CONTRA: el flip SOLO invierte si el "
+                             "movimiento adverso SUPERA el umbral; dentro de ±umbral (ruido tipo −0.01%) corta, no "
+                             "invierte. 0 = comportamiento original (flipea con cualquier negativo). Típico ≤0.10; "
+                             "subilo para exigir velas adversas más grandes antes de flipear."))
+            if not _tk_on:   # «solo colectivo»: las condiciones por ticker NO se aplican ni validan
+                _sig_umb, _sig_stop = 100000.0, -100000.0
+                _sig_confirm = _sig_flip = False
+                _sig_min_body = 0.0
+            _section_rule("🌐 Aplicar condiciones para colectivo")
+            _cc1, _cc2 = st.columns(2)
+            with _cc1:
+                _sig_coll = st.checkbox(
+                    "Cerrar si cumple Umbral de ROI colectivo (%)", value=True, key="sig_coll_exit",
+                    disabled=not _col_on,
+                    help="Salida A NIVEL CARTERA: dentro de cada día, cuando el ROI de CARTERA de las posiciones "
+                         "abiertas (ganancia $ ÷ invertido $ = el TOTAL en pantalla) alcanza el umbral, vende TODAS "
+                         "de golpe (motivo «ROI colectivo»). Las que ya salieron por su umbral/stop no cuentan "
+                         "después. Puede dispararse varias veces por día si entran nuevas señales.")
+                _sig_coll_thr = float(st.number_input(
+                    "Umbral de ROI colectivo (%)", value=5.0, step=1.0, key="sig_coll_thr",
+                    disabled=not _sig_coll or not _col_on,
+                    help="Cuando el ROI de CARTERA de las posiciones abiertas (ganancia ÷ invertido = el TOTAL) "
+                         "≥ este valor, se cierran TODAS en ese minuto, con motivo «ROI colectivo»."))
+            with _cc2:
+                _sig_coll_stop = st.checkbox(
+                    "Cerrar si cumple Stop loss (%) del colectivo", value=False, key="sig_coll_stop",
+                    disabled=not _col_on,
+                    help="STOP A NIVEL CARTERA — solo con >1 TICKER abierto: cuando el ROI de CARTERA de las "
+                         "posiciones abiertas cae a ≤ «Stop loss (%) de colectivo» (la pérdida llega a ese %), "
+                         "vende TODAS de golpe (motivo «Stop colectivo»). Con un solo ticker abierto NO aplica "
+                         "(manda su stop individual). En la pasada de cartera gana el PRIMER trigger del día (ROI "
+                         "colectivo o stop colectivo).")
+                if float(st.session_state.get("sig_coll_stop_thr", -80.0)) > 0:   # el stop SIEMPRE es ≤ 0
+                    st.session_state["sig_coll_stop_thr"] = -abs(float(st.session_state["sig_coll_stop_thr"]))
+                _sig_coll_stop_thr = float(st.number_input(
+                    "Stop loss (%) de colectivo", value=-80.0, step=5.0, key="sig_coll_stop_thr",
+                    max_value=0.0, disabled=not _sig_coll_stop or not _col_on,
+                    help="ROI(%) NEGATIVO de CARTERA (≤ 0; el campo no acepta positivos). Cuando el ROI de las "
+                         "abiertas (ganancia ÷ invertido = el TOTAL) ≤ este valor y hay >1 ticker abierto, se "
+                         "cierran TODAS (motivo «Stop colectivo»). Ej: −80 = corta si la cartera pierde 80% o más."))
 
     # Aviso ANTES de correr: señales en días SIN mercado (fin de semana / feriado) → se saltean.
     _nontrading = [(_s.get("ticker", "?"), _s.get("fecha", ""), _r)
@@ -2222,6 +2266,7 @@ def _render_range_plan_generator() -> None:
                     _msg += (f" 🎛 {_n_ap} condición(es) del escenario aplicadas a "
                              "«🚪 CONDICIONES DE SALIDA».")
             st.session_state["_plan_loaded_msg"] = _msg
+            st.session_state.pop("_iters_es_tv", None)        # el plan por rango ≠ Trading view
             st.session_state["bt_iters"] = _res.rows
             st.session_state.pop("bt_iters_editor", None)
             st.session_state["_iters_sel_seed"] = True
@@ -2241,6 +2286,7 @@ with st.expander("🔬 Backtest de señales / iteraciones", expanded=_iters_open
                 "**Backtestear** para traerlas acá, o empezá una manualmente abajo.")
         if st.button("➕ Empezar una iteración manual", key="iters_manual_start"):
             st.session_state.pop("_iters_cfg_por_dia", None)
+            st.session_state.pop("_iters_es_tv", None)
             st.session_state["bt_iters"] = [{"Ticker": "", "Fecha": "", "Hora": "", "Tipo": "CALL"}]
             st.session_state["_iters_sel_seed"] = True
             st.session_state.pop("bt_iters_editor", None)
@@ -3078,6 +3124,7 @@ if st.sidebar.button("📤 Backtestear con TODAS las funciones →", type="prima
             for _k in ("batch_results", "batch_meta", "replay", "_batch_pending"):   # limpiar la derecha
                 st.session_state.pop(_k, None)
             st.session_state.pop("_iters_cfg_por_dia", None)  # seed nuevo → el dropdown decide
+            st.session_state.pop("_iters_es_tv", None)        # seed del sidebar ≠ Trading view
             st.session_state["bt_iters"] = _rows
             st.session_state.pop("bt_iters_editor", None)   # forzar re-seed del editor
             st.session_state["_iters_sel_seed"] = True       # todas seleccionadas
