@@ -6,7 +6,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from pathlib import Path
 
-OUT = Path(r"C:\Users\ROG ZEPHYRUS\OneDrive\Documents\Claude AI\Traiding\Trade_Journal_Template_v2.xlsx")
+OUT = Path(__file__).resolve().parent / "Trade_Journal_Template_v2.xlsx"       # ruta-independiente
 
 # ---- Styles ----
 ARIAL = "Arial"

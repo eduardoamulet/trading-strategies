@@ -1,6 +1,7 @@
 @echo off
 title Batch backtesting (ucbatch) - NO cerrar hasta el OK
-cd /d "C:\Users\ROG ZEPHYRUS\OneDrive\Documents\Claude AI\Traiding"
+rem RUTA-INDEPENDIENTE: %~dp0 = la carpeta de este .bat (sobrevive a mover el repo)
+cd /d "%~dp0"
 
 rem Busca el results file mas reciente en Downloads (evita problemas con el guion largo del nombre)
 set "RES="

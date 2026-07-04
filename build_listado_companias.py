@@ -6,8 +6,9 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import CellIsRule
 
-SRC = Path(r"C:\Users\ROG ZEPHYRUS\OneDrive\Documents\Claude AI\Traiding\Listado_Compañias_Mas_Rapidas.csv")
-OUT = Path(r"C:\Users\ROG ZEPHYRUS\OneDrive\Documents\Claude AI\Traiding\Listado_Compañias_Mas_Rapidas.xlsx")
+_HERE = Path(__file__).resolve().parent                     # ruta-independiente
+SRC = _HERE / "Listado_Compañias_Mas_Rapidas.csv"
+OUT = _HERE / "Listado_Compañias_Mas_Rapidas.xlsx"
 
 # ---- Styles ----
 ARIAL = "Arial"

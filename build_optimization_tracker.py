@@ -10,7 +10,7 @@ from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-OUT = Path(r"C:\Users\ROG ZEPHYRUS\OneDrive\Documents\Claude AI\Traiding\Strategy_Optimization_Tracker.xlsx")
+OUT = Path(__file__).resolve().parent / "Strategy_Optimization_Tracker.xlsx"   # ruta-independiente
 
 ARIAL = "Arial"
 BOLD = Font(name=ARIAL, size=10, bold=True)
