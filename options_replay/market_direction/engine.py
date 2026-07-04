@@ -21,6 +21,11 @@ from .model import RuleBasedModel
 
 _FB = FeatureBuilder()
 
+# Versión de la LÓGICA del motor de dirección. La señal histórica es DETERMINISTA por
+# (ticker, fecha, hora) para una versión dada → options_replay/md_cache.py la cachea con esta
+# clave. SUBILA al cambiar indicadores/modelo/confirmación: invalida el cache automáticamente.
+MD_ENGINE_VERSION = "2026-07-04"
+
 
 def market_direction_engine(ticker: str, date: str, start_time: str, *,
                             provider=None, model=None, generator=None) -> TradeSignal:

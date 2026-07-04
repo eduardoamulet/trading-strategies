@@ -1,7 +1,9 @@
 """Backtesting Engine — orquesta escenario × día × ticker.
 
-Paraleliza por (escenario, día): cada tarea corre los N tickers de ese día (posiciones
-independientes) y luego aplica la salida COLECTIVA sobre las abiertas (que exige tenerlas juntas).
+Paraleliza por DÍA × TRAMO-DE-ESCENARIOS: cada tarea corre un tramo contiguo de escenarios de
+un día (todos los tickers de cada escenario juntos, porque la salida COLECTIVA los acopla) y con
+pocos días el día se parte en tramos para usar todos los cores (antes 1 día = 1 core). La señal
+de dirección se cachea en data/md_cache.db (determinista) — no se recomputa por corrida.
 Sin estado mutable compartido entre workers; el merge ocurre al final, en el proceso padre.
 
 Reusa `run_one` (1 posición) y `apply_collective_exit` (ROI de cartera). El multiproceso DEBE
@@ -74,18 +76,46 @@ def _init(data_dir, api_key, seed, resolution, mapped, corr) -> None:
         _G["dir_provider"] = None
 
 
-def _run_day(day) -> list:
-    """Corre UN DÍA: los N escenarios × N tickers con los DATOS del día MEMOIZADOS (se leen 1× y se
-    reusan entre escenarios). Aplica el colectivo por escenario. Devuelve las filas escalares del día.
+def _chunk_ranges(n_scen: int, n_days: int, procs: int, min_chunk: int = 60) -> list:
+    """Particiona [0, n_scen) en tramos CONTIGUOS para paralelizar DENTRO del día cuando hay más
+    cores que días (antes el incremental de 1 día usaba 1 solo core). Nº de tramos ≈ procs/n_días,
+    capado para que ningún tramo baje de `min_chunk` escenarios: cada worker de más paga ~1 s de
+    spawn+imports en Windows y relee los datos del día — medido 2026-07-04, 480 escenarios × 1 día:
+    8 workers = 9.2 s, 15 workers = 12.8 s. min_chunk=60 → 8 tramos para el template 480.
+    Los tramos concatenados en orden reproducen EXACTAMENTE el orden original (verify-safe)."""
+    import math
+    if n_scen <= 0:
+        return []
+    k = max(1, min(math.ceil(procs / max(1, n_days)), math.ceil(n_scen / max(1, min_chunk))))
+    base, extra = divmod(n_scen, k)
+    bounds, lo = [], 0
+    for i in range(k):
+        hi = lo + base + (1 if i < extra else 0)
+        bounds.append((lo, hi))
+        lo = hi
+    return bounds
 
-    El `MemoDownloader` se crea y descarta por día → la memoria queda acotada a un día por worker, y
-    los datos NO se releen 480× (uno por escenario)."""
-    from .memo_downloader import MemoDownloader
-    seed, mapped_all = _G["seed"], _G["mapped"]
-    memo = MemoDownloader(_G["dl"])           # cache de datos SCOPED a este día
-    # Señal del Market Direction Engine a la ENTRADA — 1× por ticker/día (la entrada es fija para los
-    # 480 escenarios), reusada en cada posición de ese ticker → cruza el «contexto de mercado» con el ROI.
-    dir_fields = {tk: _direction_fields(tk, day, seed.entrada) for tk in seed.tickers}
+
+def _run_day_chunk(task) -> list:
+    """Corre UN TRAMO de escenarios de UN DÍA: mapped[lo:hi] × N tickers con los DATOS del día
+    MEMOIZADOS. La salida COLECTIVA acopla los tickers de un mismo escenario y cada escenario
+    viaja ENTERO dentro de su tramo → partir por escenarios no la rompe.
+
+    El `MemoDownloader` y la señal de dirección se cachean POR WORKER PARA EL DÍA ACTUAL (los
+    tramos del mismo día en el mismo worker no releen nada); al cambiar de día se descartan →
+    memoria acotada a un día por worker."""
+    day, lo, hi = task
+    seed = _G["seed"]
+    mapped_all = _G["mapped"][lo:hi]
+    if _G.get("_memo_day") != day:
+        from .memo_downloader import MemoDownloader
+        # Señal del Market Direction Engine a la ENTRADA — 1× por ticker/día (la entrada es fija
+        # para todos los escenarios); md_cache la hace ~gratis entre workers y entre corridas.
+        _G["_memo_day"] = day
+        _G["_memo"] = MemoDownloader(_G["dl"])            # cache de datos SCOPED a este día
+        _G["_dir"] = {tk: _direction_fields(tk, day, seed.entrada) for tk in seed.tickers}
+    memo = _G["_memo"]
+    dir_fields = _G["_dir"]
     rows = []
     for mapped in mapped_all:
         results = []
@@ -112,25 +142,27 @@ def _run_day(day) -> list:
 
 
 def _direction_fields(ticker: str, day: str, hora: str) -> dict:
-    """Señal del Market Direction Engine a la entrada (score/confianza/tendencia/acción). Solo compute
-    (usa el cache de underlying); si falla, devuelve None. Enriquece el análisis: «con este contexto,
-    qué escenario funciona»."""
+    """Señal del Market Direction Engine a la entrada — CACHEADA en data/md_cache.db (la señal
+    histórica es determinista por ticker/fecha/hora + MD_ENGINE_VERSION): la 1ª vez se computa
+    (~2 s), después es una lectura de ms. Si falla, devuelve None (nunca tumba el backtest)."""
     try:
-        from market_direction.engine import market_direction_engine
-        sig = market_direction_engine(ticker, day, str(hora), provider=_G.get("dir_provider"))
-        return {"md_action": sig.action.value, "md_score": round(float(sig.score), 1),
-                "md_confidence": round(float(sig.confidence), 3), "md_trend": sig.trend.value}
+        import md_cache
+        return md_cache.get_or_compute(ticker, day, str(hora), provider=_G.get("dir_provider"))
     except Exception:   # noqa: BLE001 — el enriquecimiento nunca debe tumbar el backtest
         return {"md_action": None, "md_score": None, "md_confidence": None, "md_trend": None}
 
 
 def run(seed, mapped_scenarios, data_dir, api_key, processes=None, progress_cb=None) -> tuple:
-    """Ejecuta TODO el batch, paralelizando POR DÍA (cada día lee sus datos 1× y corre los N
-    escenarios encima → sin releer 480×; memoria acotada a un día por worker). Devuelve (filas, días).
+    """Ejecuta TODO el batch, paralelizando por DÍA × TRAMO-DE-ESCENARIOS. Con más días que
+    cores, cada tarea es un día entero (comportamiento previo); con POCOS días (el incremental
+    diario = 1), el día se parte en tramos contiguos de escenarios (_chunk_ranges) para usar
+    todos los cores. La salida COLECTIVA acopla los tickers de un mismo día+escenario y cada
+    escenario viaja entero en su tramo → la partición no la afecta. Devuelve (filas, días) con
+    las filas en EL MISMO ORDEN de siempre (día-mayor, escenario ascendente — verify-safe).
     Llamar desde un entrypoint con `if __name__ == '__main__': mp.freeze_support()` (NO desde Streamlit).
 
-    ROBUSTEZ: un día que lance excepción se LOGUEA (con traza + día) y se SALTA; el batch NO se
-    tumba (antes el `for ... in imap` sin try/except rompía el iterator y colgaba/mataba todo)."""
+    ROBUSTEZ: una tarea que lance excepción se LOGUEA (con traza + día/tramo) y se SALTA; el
+    batch NO se tumba (antes el `for ... in imap` sin try/except rompía el iterator)."""
     import multiprocessing as mp
 
     import obs_log
@@ -142,29 +174,29 @@ def run(seed, mapped_scenarios, data_dir, api_key, processes=None, progress_cb=N
     corr = obs_log.correlation_id()
     days = trading_days(seed.fecha_inicial, seed.fecha_final)
     resolution = resolution_from_seg(seed.granularidad_seg)
-    # La unidad de paralelismo es el DÍA (no día×ticker): la salida COLECTIVA acopla los
-    # tickers de un mismo día+escenario (apply_collective_exit) — partir más fino la rompería.
-    # Sí capeamos los workers al nº de días: una corrida de 1 día (el incremental diario) no
-    # paga el arranque de 15 procesos para usar 1.
-    procs = min(int(processes) if processes else auto_processes(), max(1, len(days)))
+    procs_avail = int(processes) if processes else auto_processes()
+    bounds = _chunk_ranges(len(mapped_scenarios), len(days), procs_avail)
+    tasks = [(day, lo, hi) for day in days for (lo, hi) in bounds]
+    procs = min(procs_avail, max(1, len(tasks)))
     rows: list = []
     n_fail = 0
     with mp.Pool(procs, initializer=_init,
                  initargs=(str(data_dir), api_key, seed, resolution, mapped_scenarios, corr)) as pool:
-        it = pool.imap(_run_day, days, chunksize=1)     # preserva el orden → el i-ésimo result = days[i]
-        for i in range(len(days)):
-            day = days[i]
+        it = pool.imap(_run_day_chunk, tasks, chunksize=1)   # preserva el orden → i-ésimo result = tasks[i]
+        for i in range(len(tasks)):
+            day, lo, hi = tasks[i]
             try:
-                day_rows = next(it)
-                rows.extend(day_rows or [])
-                log.debug("día %s OK (%d filas)", day, len(day_rows or []))
+                chunk_rows = next(it)
+                rows.extend(chunk_rows or [])
+                log.debug("día %s tramo [%d,%d) OK (%d filas)", day, lo, hi, len(chunk_rows or []))
             except StopIteration:
                 break
-            except Exception:                            # noqa: BLE001 — aislar el fallo de UN día
+            except Exception:                            # noqa: BLE001 — aislar el fallo de UNA tarea
                 n_fail += 1
-                obs_log.log_exception(log, f"día {day} FALLÓ — se salta (el batch continúa)", dia=day)
+                obs_log.log_exception(log, f"día {day} tramo [{lo},{hi}) FALLÓ — se salta "
+                                           "(el batch continúa)", dia=day)
             if progress_cb:
-                progress_cb(i + 1, len(days))
+                progress_cb(i + 1, len(tasks))
     if n_fail:
-        log.warning("batch terminó con %d/%d días fallidos (ver trazas arriba)", n_fail, len(days))
+        log.warning("batch terminó con %d/%d tareas fallidas (ver trazas arriba)", n_fail, len(tasks))
     return rows, days
