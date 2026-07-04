@@ -13,10 +13,15 @@ Nunca reprocesa días ya almacenados: las filas son hechos inmutables; solo la A
 (el veredicto) se recalcula, y eso tarda milisegundos.
 
 Uso:
-  python update_playbook.py                     # incremental estándar (ventana 60 · HL 35 · n≥10)
+  python update_playbook.py                     # incremental estándar (ventana 120 · HL 35 · n≥16)
   python update_playbook.py --bootstrap         # + ingesta los xlsx detallados de resultados/
   python update_playbook.py --skip-batch        # solo re-agregar (sin backtestear días nuevos)
-  python update_playbook.py --window 40 --half-life 20 --min-n 8
+  python update_playbook.py --window 60 --half-life 20 --min-n 10
+  python update_playbook.py --verify            # revalidación de integridad (sola, corre el día 1)
+
+Política oficial (2026-07-03): ventana 120 días hábiles + half-life 35 + min_n 16; histéresis
+campeón/retador; monitores de vigencia (calibración, CUSUM, churn, régimen de vol); los
+parámetros solo se cambian en la revisión trimestral (window_sweep.py) o si el CUSUM alerta.
 """
 from __future__ import annotations
 
@@ -72,15 +77,76 @@ def _run_batch(desde: str, hasta: str, tickers: list[str]) -> Path:
     return out
 
 
+def verify_integrity(n_sample: int = 3) -> bool:
+    """Revalidación MENSUAL de integridad: re-corre el batch para una muestra de días ya
+    almacenados (primero / medio / último) y compara `ganancia` fila a fila contra el almacén
+    (clave fecha+ticker+id, tolerancia $0.01). Si hay deriva, el motor cambió respecto de lo
+    almacenado → hay que subir bt_store.ENGINE_VERSION y re-backtestear (las filas viejas y
+    nuevas dejaron de ser comparables). Devuelve True si la muestra está limpia."""
+    import pandas as pd
+    from bt_analysis import loader as _ldr
+
+    dates = bt_store.distinct_dates()
+    if not dates:
+        print("verify: almacén vacío — nada que verificar.")
+        return True
+    idx = sorted({0, len(dates) // 2, len(dates) - 1})
+    sample = [dates[i] for i in idx][:max(1, n_sample)]
+    cov = bt_store.coverage()
+    tickers = cov["tickers"] or ["QQQ", "SPY", "IWM"]
+    print(f"verify: re-corriendo {len(sample)} día(s) de muestra: {', '.join(sample)}")
+
+    limpio = True
+    for d in sample:
+        out = _run_batch(d, d, tickers)
+        rdf, gran = _ldr.load_results(str(out))
+        if gran != "detailed":
+            print(f"verify {d}: el re-run no es detallado — no comparable")
+            limpio = False
+            continue
+        nuevo = rdf.assign(fecha=rdf["fecha"].astype(str).str[:10])
+        viejo = bt_store.load_range(d, d)
+        viejo = viejo.assign(fecha=viejo["fecha"].astype(str).str[:10])
+        keys = ["fecha", "ticker", "id"]
+        m = viejo[keys + ["ganancia"]].merge(nuevo[keys + ["ganancia"]], on=keys, how="outer",
+                                             suffixes=("_store", "_rerun"), indicator=True)
+        falta = m[m["_merge"] != "both"]
+        both = m[m["_merge"] == "both"]
+        g_s = pd.to_numeric(both["ganancia_store"], errors="coerce")
+        g_r = pd.to_numeric(both["ganancia_rerun"], errors="coerce")
+        # filas-error (NaN en ambos lados) = iguales; deriva = difiere el número o el estado NaN
+        drift = both[((g_s - g_r).abs() > 0.01) | (g_s.isna() != g_r.isna())]
+        if len(falta) or len(drift):
+            limpio = False
+            print(f"verify {d}: ❌ {len(drift)} filas con deriva de ganancia · "
+                  f"{len(falta)} filas sin contraparte (de {len(m):,})")
+        else:
+            print(f"verify {d}: ✓ {len(m):,} filas idénticas (tolerancia $0.01)")
+        out.unlink(missing_ok=True)          # el re-run es efímero: no contamina resultados/
+
+    if limpio:
+        print("verify: ✓ almacén consistente con el motor actual "
+              f"(ENGINE_VERSION {bt_store.ENGINE_VERSION})")
+    else:
+        print("verify: ❌ DERIVA DETECTADA — el motor ya no reproduce las filas almacenadas.\n"
+              "  Acción: subir bt_store.ENGINE_VERSION, borrar data/bt_results.db y "
+              "re-backtestear (o mantener versiones separadas). Las filas viejas y nuevas "
+              "NO son comparables.")
+    return limpio
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Actualización incremental del playbook")
-    ap.add_argument("--window", type=int, default=60, help="Ventana rodante (días hábiles).")
+    ap.add_argument("--window", type=int, default=120, help="Ventana rodante (días hábiles).")
     ap.add_argument("--half-life", type=int, default=35, help="Half-life del decaimiento (días hábiles).")
-    ap.add_argument("--min-n", type=int, default=10, help="Muestra mínima por día de la semana.")
+    ap.add_argument("--min-n", type=int, default=16, help="Muestra mínima por día de la semana.")
     ap.add_argument("--bootstrap", action="store_true",
                     help="Ingesta los results detallados existentes en resultados/ antes de actualizar.")
     ap.add_argument("--skip-batch", action="store_true",
                     help="No backtestear días faltantes; solo re-agregar el veredicto.")
+    ap.add_argument("--verify", action="store_true",
+                    help="Revalidación de integridad: re-corre días de muestra y compara con "
+                         "el almacén. (Corre sola el día 1 de cada mes.)")
     args = ap.parse_args()
 
     if args.bootstrap:
@@ -113,8 +179,28 @@ def main() -> None:
     pbs.append_history(pb)
     print(f"playbook: {pb['evaluado_desde']} → {pb['evaluado_hasta']} · {pb['modo']}")
     for d, i in pb["per_day"].items():
+        rt = i.get("retador")
+        flags = "".join([
+            " · ⚠calibración" if i.get("calib_alerta") else "",
+            " · ⚠CUSUM" if i.get("cusum_alerta") else "",
+            (f" · churn {int(i['churn']['tasa'] * 100)}%"
+             if (i.get("churn") or {}).get("alerta") else ""),
+            (f" · retador {rt['scenario']} ({rt['racha']}/5)" if rt else ""),
+        ])
         print(f"  {d}: {i.get('scenario')} · {i.get('recommendation')} · "
-              f"WR {i.get('win_rate')}% · Sharpe {i.get('sharpe')} · n={i.get('n')}")
+              f"WR {i.get('win_rate')}% (P5 {i.get('wr_p5')}%) · Sharpe {i.get('sharpe')} · "
+              f"n={i.get('n')} · estado: {i.get('estado')}{flags}")
+    rv = pb.get("regimen_vol")
+    if rv:
+        print(f"régimen vol {rv['ticker']}: 5d/mediana60d = {rv['ratio']}× "
+              + ("⚠ ALERTA (>2×)" if rv.get("alerta") else "(normal)"))
+    if pb.get("revision_anticipada"):
+        print("⚠ CUSUM fuera de banda en ≥1 día → revisión anticipada de parámetros "
+              "(correr window_sweep.py)")
+
+    # Revalidación de integridad: a pedido (--verify) o automática el día 1 de cada mes.
+    if args.verify or (date.today().day == 1 and not args.skip_batch):
+        verify_integrity()
 
 
 if __name__ == "__main__":

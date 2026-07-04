@@ -68,15 +68,82 @@ else:
                    "data/bt_results.db) — se actualiza solo cada mañana con la Tarea Programada "
                    "(backtestea únicamente los días nuevos).")
     _REC_COLOR = {"OPERAR": "#16a34a", "NO OPERAR": "#dc2626"}
+    _EST_ICON = {"operable": "🟢 operable", "candidato": "🟡 candidato",
+                 "suspendido": "⏸ suspendido", "sin ventaja": "— sin ventaja"}
+    _tiene_estado = any(i.get("estado") for i in (_pb.get("per_day") or {}).values())
     _rows_pb = [{"Día": d, "Escenario": i.get("scenario"),
-                 "WR %": i.get("win_rate"), "ROI cartera %": i.get("avg_roi"),
+                 "WR %": i.get("win_rate"),
+                 **({"WR P5 %": i.get("wr_p5")} if _tiene_estado else {}),
+                 "ROI cartera %": i.get("avg_roi"),
                  "Sharpe": i.get("sharpe"), "n": i.get("n"),
                  "Veredicto": i.get("recommendation"),
+                 **({"Estado": _EST_ICON.get(i.get("estado"), i.get("estado") or "—")}
+                    if _tiene_estado else {}),
                  "Condiciones (del template)": i.get("config_txt", "—")}
                 for d, i in (_pb.get("per_day") or {}).items()]
     st.dataframe(pd.DataFrame(_rows_pb).style.map(
         lambda v: f"color:{_REC_COLOR.get(v, '')};font-weight:700" if v in _REC_COLOR else "",
         subset=["Veredicto"]), use_container_width=True, hide_index=True)
+    _rv = _pb.get("regimen_vol")
+    if _rv and _rv.get("alerta"):
+        st.warning(f"🌊 **Régimen de volatilidad alterado** ({_rv.get('ticker')}): la vol "
+                   f"realizada de las últimas 5 sesiones es **{_rv.get('ratio')}×** la mediana "
+                   "de 60 sesiones (>2×). Los estados no-operables siguen bloqueados; considerá "
+                   "reducir tamaño en los 🟢 hasta que normalice.")
+    if _pb.get("revision_anticipada"):
+        st.warning("⏰ **CUSUM fuera de banda** en ≥1 día: el ROI realizado viene sistemáticamente "
+                   "por debajo del prometido — corresponde una revisión anticipada de parámetros "
+                   "(`python window_sweep.py`).")
+    if _tiene_estado:
+        st.caption("**WR P5 %** = límite inferior creíble (percentil 5 de la posterior Beta) del "
+                   "win-rate — el gate exige P5>55%, no el WR puntual (inmune a muestras chicas). "
+                   "**Estado** (máquina de supervivencia sobre las dos mitades de la ventana): "
+                   "🟢 operable = pasa el gate en ambas mitades (el automático SOLO aplica estos) · "
+                   "🟡 candidato = pasa solo en la reciente (edge sin confirmar) · ⏸ suspendido = "
+                   "edge decaído, kill-switch (3 sesiones seguidas perdedoras / ROI acumulado "
+                   "≤ −15%), calibración rota o churn · — sin ventaja.")
+        with st.expander("ℹ️ Motivo del estado por día"):
+            for _d, _i in (_pb.get("per_day") or {}).items():
+                if _i.get("estado_motivo"):
+                    st.markdown(f"- **{_d}** ({_EST_ICON.get(_i.get('estado'), '?')}): "
+                                f"{_i['estado_motivo']}")
+        with st.expander("🩺 Monitores de vigencia (calibración · CUSUM · churn · retador)"):
+            _mrows = []
+            for _d, _i in (_pb.get("per_day") or {}).items():
+                _ch = _i.get("churn") or {}
+                _rt = _i.get("retador") or {}
+                _mrows.append({
+                    "Día": _d,
+                    "WR reciente (10) %": _i.get("wr_reciente", "—"),
+                    "P5 prometido %": _i.get("wr_p5", "—"),
+                    "Calibración": ("❌ rota" if _i.get("calib_alerta")
+                                    else ("✓" if _i.get("wr_reciente") is not None else "—")),
+                    "CUSUM (dev / banda)": (f"{_i.get('cusum_dev')} / {_i.get('cusum_umbral')}"
+                                            + (" ⚠" if _i.get("cusum_alerta") else "")
+                                            if _i.get("cusum_dev") is not None else "—"),
+                    "Churn campeón": (f"{int(_ch['tasa'] * 100)}% de {_ch['n']}"
+                                      + (" ❌" if _ch.get("alerta") else "")
+                                      if _ch.get("tasa") is not None
+                                      else f"n={_ch.get('n', 0)} (insuf.)"),
+                    "Retador": (f"{_rt.get('scenario')} ({_rt.get('racha')}/5)" if _rt else "—"),
+                })
+            st.dataframe(pd.DataFrame(_mrows), use_container_width=True, hide_index=True)
+            st.caption("**Calibración**: WR realizado de las últimas 10 sesiones del campeón vs "
+                       "su P5 prometido — por debajo del piso creíble → el día se suspende. "
+                       "**CUSUM**: Σ(ROI−prometido) de 10 sesiones vs la banda −2σ√10 — fuera de "
+                       "banda NO suspende, pide revisión anticipada de parámetros. **Churn**: % "
+                       "de re-agregaciones en que cambió el campeón (>30% suspende por "
+                       "fragilidad). **Retador**: escenario operable que domina al campeón en P5 "
+                       "— lo reemplaza recién tras 5 re-agregaciones consecutivas dominando "
+                       "(histéresis anti flip-flop); si el campeón muere, la promoción es "
+                       "inmediata.")
+    _reg = _pb.get("regimen") or []
+    if _reg:
+        with st.expander("🌡 Régimen de mercado (md_score a la entrada) — informativo"):
+            st.caption("P(ganar) del escenario elegido según el régimen ex-ante del Market "
+                       "Direction Engine (promedio del día). **No condiciona el gate** — con "
+                       "pocos meses el n por bucket es chico: leer como tendencia.")
+            st.dataframe(pd.DataFrame(_reg), use_container_width=True, hide_index=True)
     _pt = _pb.get("por_ticker") or []
     if _pt:
         try:

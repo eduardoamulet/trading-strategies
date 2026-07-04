@@ -111,22 +111,37 @@ def build_from_results(results_path, template_path=TEMPLATE_PATH) -> dict:
 HISTORY_PATH = HERE / "data" / "playbook_history.jsonl"
 
 
+def _beta_p5(wins_w: float, losses_w: float) -> float:
+    """Límite INFERIOR creíble (percentil 5) del win-rate: posterior Beta(1+wins, 1+losses)
+    con pseudo-conteos PONDERADOS (el decaimiento reduce la evidencia efectiva → intervalos
+    más anchos con muestras viejas/chicas — la lección del Lun C061). En %."""
+    from scipy.stats import beta
+    return float(beta.ppf(0.05, 1.0 + max(wins_w, 0.0), 1.0 + max(losses_w, 0.0)) * 100.0)
+
+
 def _wmetrics(rois, w) -> dict:
-    """Métricas PONDERADAS de una serie de ROI de cartera diarios: win-rate, media, Sharpe con
-    pesos exponenciales (los días recientes votan más). `n` queda SIN ponderar (muestra honesta)."""
+    """Métricas PONDERADAS de una serie de ROI de cartera diarios: win-rate, media, Sharpe y el
+    límite creíble P5 del win-rate (Beta), con pesos exponenciales (los días recientes votan
+    más). `n` queda SIN ponderar (muestra honesta)."""
     sw = float(w.sum())
     if sw <= 0 or len(rois) == 0:
         return {}
-    wr = float(w[rois > 0].sum() / sw * 100)
+    wins_w = float(w[rois > 0].sum())
+    wr = wins_w / sw * 100
     mean = float((w * rois).sum() / sw)
     var = float((w * (rois - mean) ** 2).sum() / sw)
     std = var ** 0.5
     sharpe = (mean / std) if std > 0 else float("nan")
-    return {"n": int(len(rois)), "win_rate": round(wr, 1), "avg_roi": round(mean, 3),
+    return {"n": int(len(rois)), "win_rate": round(wr, 1),
+            "wr_p5": round(_beta_p5(wins_w, sw - wins_w), 1),
+            "avg_roi": round(mean, 3),
             "sharpe": (round(sharpe, 3) if sharpe == sharpe else None)}
 
 
 def _gate(m: dict, min_n: int) -> tuple[bool, str]:
+    """Gate BAYESIANO: en vez del win-rate puntual exige que el LÍMITE INFERIOR creíble (P5)
+    supere 55% — un WR 75% con n=12 NO pasa (P5≈52%), el mismo 75–80% sostenido n≈30 sí
+    (P5≈66%). Elimina de raíz los veredictos por muestra chica (la lección del Lun C061)."""
     if not m:
         return False, "sin datos"
     if m["n"] < min_n:
@@ -134,9 +149,49 @@ def _gate(m: dict, min_n: int) -> tuple[bool, str]:
     # Sharpe None = desviación 0 (serie constante): si la media es positiva, es el MEJOR caso
     # (ganancia determinística), no un rechazo.
     sh_ok = (m["sharpe"] > 0) if m["sharpe"] is not None else (m["avg_roi"] > 0)
-    ok = m["win_rate"] > 55 and m["avg_roi"] > 0 and sh_ok
-    return ok, ("ventaja ponderada: WR>55% · ROI cartera>0 · Sharpe>0" if ok
-                else "sin ventaja (WR≤55% o ROI≤0 o Sharpe≤0)")
+    ok = m.get("wr_p5", 0) > 55 and m["avg_roi"] > 0 and sh_ok
+    return ok, ("ventaja creíble: P5(WR)>55% · ROI cartera>0 · Sharpe>0" if ok
+                else f"sin ventaja creíble (P5 WR={m.get('wr_p5')}% ≤55, o ROI≤0, o Sharpe≤0)")
+
+
+def _half_pass(rois, min_n_half: int) -> bool:
+    """Gate SIMPLE (sin pesos) sobre una mitad de la ventana — para la máquina de estados de
+    supervivencia: WR>55% · media>0 · n≥min_n_half."""
+    from bt_analysis import detailed as det
+    m = det.series_metrics(rois)
+    if not m or m["n"] < min_n_half:
+        return False
+    sh = m.get("sharpe")
+    sh_ok = (sh > 0) if (sh is not None and sh == sh) else (m["avg_roi"] > 0)
+    return m["win_rate"] > 55 and m["avg_roi"] > 0 and sh_ok
+
+
+def _estado_supervivencia(daily, w1: set, w2: set, min_n_half: int) -> tuple[str, str]:
+    """Máquina de estados del escenario elegido, con la regla de las DOS VENTANAS (validada con
+    feb–mar vs abr–jun) computada sobre las mitades de la ventana rodante + kill-switch:
+
+      operable    — pasa el gate en AMBAS mitades (edge que sobrevive ventanas)
+      candidato   — pasa solo en la mitad RECIENTE (edge nuevo, sin confirmar)
+      suspendido  — pasaba antes y ya no / kill-switch (3 sesiones seguidas perdedoras
+                    o ROI acumulado de la ventana ≤ −15%)
+      sin ventaja — no pasa en ninguna
+
+    `daily` = serie de ROI de cartera indexada por fecha (str), cronológica."""
+    rois = daily.sort_index()
+    # Kill-switch primero (manda sobre todo): protege del régimen que se dio vuelta.
+    if len(rois) >= 3 and bool((rois.tail(3) < 0).all()):
+        return "suspendido", "kill-switch: 3 sesiones seguidas perdedoras"
+    if float(rois.sum()) <= -15.0:
+        return "suspendido", f"kill-switch: ROI acumulado {rois.sum():.1f}% ≤ −15%"
+    p1 = _half_pass(rois[rois.index.isin(w1)], min_n_half)
+    p2 = _half_pass(rois[rois.index.isin(w2)], min_n_half)
+    if p1 and p2:
+        return "operable", "pasa el gate en las DOS mitades de la ventana"
+    if p2:
+        return "candidato", "pasa solo en la mitad reciente — edge sin confirmar (1 ventana)"
+    if p1:
+        return "suspendido", "pasaba en la mitad vieja y ya no — edge decaído"
+    return "sin ventaja", "no pasa el gate en ninguna mitad"
 
 
 def _rank(m: dict) -> float:
@@ -147,12 +202,157 @@ def _rank(m: dict) -> float:
     return 9e9 if (m.get("avg_roi") or 0) > 0 else -9e9
 
 
+# ── Monitores de vigencia (política de mantenimiento) ────────────────────────
+_CALIB_N = 10          # sesiones recientes para calibración y CUSUM
+RETADOR_RACHA = 5      # re-agregaciones consecutivas que el retador debe dominar para destronar
+
+
+def _monitor_calibracion(row: dict, serie) -> None:
+    """Monitor «calibración rota»: si el WR REALIZADO de las últimas _CALIB_N sesiones cae por
+    debajo del P5 prometido, el piso creíble está roto → suspende el día. Solo interviene en
+    días accionables (OPERAR) y nunca pisa una suspensión previa (kill-switch conserva su
+    motivo). Los campos wr_reciente/calib_alerta se publican siempre (informativos)."""
+    rec = serie.sort_index().tail(_CALIB_N)
+    if len(rec) < _CALIB_N:
+        return
+    wr_rec = round(float((rec > 0).mean() * 100), 1)
+    row["wr_reciente"] = wr_rec
+    p5 = row.get("wr_p5")
+    row["calib_alerta"] = bool(p5 is not None and wr_rec < p5)
+    if row["calib_alerta"] and row.get("recommendation") == "OPERAR" \
+            and row.get("estado") != "suspendido":
+        row["estado"] = "suspendido"
+        row["estado_motivo"] = (f"calibración rota: WR realizado {wr_rec}% en las últimas "
+                                f"{_CALIB_N} sesiones < P5 prometido {p5}%")
+        row["recommendation"] = "NO OPERAR"
+        row["reason"] = row["estado_motivo"]
+
+
+def _monitor_cusum(row: dict, serie) -> None:
+    """Monitor «CUSUM del error de pronóstico»: Σ(ROI_t − ROI prometido) de las últimas
+    _CALIB_N sesiones contra la banda −2σ·√n. NO suspende: fuera de banda significa que lo
+    realizado viene sistemáticamente bajo lo prometido → pide REVISIÓN ANTICIPADA de
+    parámetros (la única causa válida de tocar ventana/half-life fuera del trimestre)."""
+    import numpy as np
+    s = serie.sort_index()
+    rec = s.tail(_CALIB_N)
+    prom = row.get("avg_roi")
+    if len(rec) < _CALIB_N or prom is None:
+        return
+    sigma = float(s.std(ddof=1)) if len(s) > 1 else 0.0
+    if not sigma > 0:
+        return
+    dev = float((rec - prom).sum())
+    umbral = -2.0 * sigma * float(np.sqrt(len(rec)))
+    row["cusum_dev"] = round(dev, 2)
+    row["cusum_umbral"] = round(umbral, 2)
+    row["cusum_alerta"] = bool(dev < umbral)
+
+
+def compute_churn(history: list, per_day: dict, *, lookback: int = 20,
+                  umbral: float = 0.30, min_snaps: int = 6) -> dict:
+    """Monitor «churn de veredicto» (PURO): tasa de cambio del escenario campeón por día-semana
+    a lo largo de las últimas re-agregaciones (snapshots del history + el veredicto actual).
+    Un campeón que rota seguido es selección por ruido entre variantes correlacionadas —
+    fragilidad, no señal. Con menos de `min_snaps` puntos no alerta (sin evidencia)."""
+    out: dict = {}
+    for wd, info in (per_day or {}).items():
+        past = [s.get("per_day", {}).get(wd, {}).get("scenario") for s in (history or [])]
+        serie = [x for x in past if x][-lookback:]
+        if info.get("scenario"):
+            serie.append(info["scenario"])
+        if len(serie) < min_snaps:
+            out[wd] = {"n": len(serie), "tasa": None, "alerta": False}
+            continue
+        flips = sum(1 for a, b in zip(serie, serie[1:]) if a != b)
+        tasa = flips / (len(serie) - 1)
+        out[wd] = {"n": len(serie), "tasa": round(tasa, 2), "alerta": bool(tasa > umbral)}
+    return out
+
+
+def _load_history_snapshots(path: Path = HISTORY_PATH, *, solo_incremental: bool = True) -> list:
+    """Snapshots del history (JSONL) para el churn. Filtra los del modo incremental (una
+    reevaluación manual con otro rango elige otro escenario legítimamente y contaminaría la
+    tasa) y deduplica por día de generación quedándose con el último."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except Exception:  # noqa: BLE001 — sin history todavía
+        return []
+    dedup: dict = {}
+    for ln in lines:
+        try:
+            s = json.loads(ln)
+        except Exception:  # noqa: BLE001 — línea corrupta: se salta
+            continue
+        if solo_incremental and "incremental" not in str(s.get("modo", "")):
+            continue
+        dedup[str(s.get("generado_en", ""))[:10]] = s
+    return [dedup[k] for k in sorted(dedup)]
+
+
+def _incumbents_from(pb) -> dict:
+    """Campeones vigentes (y su retador en racha) del playbook anterior → histéresis."""
+    out: dict = {}
+    for wd, i in ((pb or {}).get("per_day") or {}).items():
+        if i.get("scenario"):
+            out[wd] = {"scenario": i["scenario"], "retador": i.get("retador")}
+    return out
+
+
+def compute_vol_regime(dates: list[str], *, ticker: str = "SPY", n_recent: int = 5,
+                       n_base: int = 60, factor: float = 2.0) -> dict | None:
+    """Monitor «cambio de régimen de vol»: vol realizada intradía (std de retornos 1-min) de
+    las últimas `n_recent` sesiones vs la MEDIANA de las últimas `n_base` — el proxy de VIX
+    sin dependencia nueva (usa el mismo cache de subyacente del MD engine). ratio > factor →
+    alerta. Devuelve None si no hay datos suficientes (nunca rompe el build)."""
+    try:
+        import numpy as np
+        import pandas as pd
+        from market_direction.data import default_provider
+        from market_direction.data.caching_provider import CachingProvider
+
+        prov = CachingProvider(default_provider())
+        rv: dict = {}
+        for f in (dates or [])[-n_base:]:
+            try:
+                s = prov.session(ticker, f)
+                if s is None or getattr(s, "empty", True) or len(s) < 30:
+                    continue
+                r = pd.Series(np.asarray(s.closes, float)).pct_change().dropna()
+                if len(r):
+                    rv[f] = float(r.std())
+            except Exception:  # noqa: BLE001 — día sin datos: se salta
+                continue
+        if len(rv) < max(20, n_recent * 2):
+            return None
+        ser = pd.Series(rv).sort_index()
+        vol_rec = float(ser.tail(n_recent).mean())
+        med = float(ser.median())
+        if not med > 0:
+            return None
+        ratio = vol_rec / med
+        return {"ticker": ticker, "vol_5d": round(vol_rec, 6), "mediana_60d": round(med, 6),
+                "ratio": round(ratio, 2), "alerta": bool(ratio > factor),
+                "n_sesiones": int(len(ser))}
+    except Exception:  # noqa: BLE001 — el monitor es informativo, jamás tumba el build
+        return None
+
+
 def compute_weighted_verdict(df, window_dates: list[str], *, half_life: int = 35,
-                             min_n: int = 10) -> tuple[dict, list]:
+                             min_n: int = 16, incumbents: dict | None = None) -> tuple[dict, list]:
     """PURO: filas canónicas (formato loader) + fechas de la ventana → (per_day, por_ticker) con
     pesos w = 0.5^(días_hábiles_atrás / half_life). ROI del día = Σpnl/Σinv (nivel cartera);
     por_ticker usa el Σ del ticker ese día. El mejor escenario del día se elige por Sharpe
-    ponderado; el gate exige n (sin ponderar) ≥ min_n."""
+    ponderado; el gate exige n (sin ponderar) ≥ min_n.
+
+    `incumbents` (opcional) activa la HISTÉRESIS campeón/retador: {wd: {"scenario", "retador"}}
+    del playbook anterior. El campeón vigente solo cede si está muerto (gate/estado) con retador
+    vivo — promoción inmediata — o si el retador operable lo domina en P5 durante RETADOR_RACHA
+    re-agregaciones consecutivas. Evita el flip-flop entre variantes correlacionadas.
+
+    Cada día publica además los monitores de vigencia: wr_reciente/calib_alerta (suspende si el
+    WR realizado de las últimas 10 sesiones < P5 prometido) y cusum_dev/umbral/alerta
+    (informativo: pide revisión anticipada de parámetros)."""
     import numpy as np
     from bt_analysis import detailed as det
 
@@ -171,6 +371,11 @@ def compute_weighted_verdict(df, window_dates: list[str], *, half_life: int = 35
         g["roi"] = g["pnl"] / g["inv"].replace(0, np.nan) * 100.0
         return g.dropna(subset=["roi"])
 
+    # Mitades de la ventana para la máquina de estados (regla de las dos ventanas).
+    half = len(window_dates) // 2
+    w1, w2 = set(window_dates[:half]), set(window_dates[half:])
+    min_n_half = max(4, min_n // 2)
+
     per_day: dict = {}
     g_cart = _daily(d, ["weekday", "id"])
     for wd in det._WD_ORDER:
@@ -178,18 +383,55 @@ def compute_weighted_verdict(df, window_dates: list[str], *, half_life: int = 35
             sub = g_cart.xs(wd, level="weekday")
         except KeyError:
             continue
-        cand = []
+        cand: dict = {}
         for sid, gg in sub.groupby(level="id"):
             m = _wmetrics(gg["roi"], gg["w"])
             if m:
-                cand.append({"scenario": sid, **m})
+                cand[sid] = {"scenario": sid, **m}
         if not cand:
-            per_day[wd] = {"recommendation": "NO OPERAR", "reason": "sin datos ese día"}
+            per_day[wd] = {"recommendation": "NO OPERAR", "reason": "sin datos ese día",
+                           "estado": "sin ventaja", "estado_motivo": "sin datos",
+                           "retador": None}
             continue
-        best = max(cand, key=_rank)
-        ok, reason = _gate(best, min_n)
-        per_day[wd] = {**best, "recommendation": "OPERAR" if ok else "NO OPERAR",
-                       "reason": reason}
+
+        best = max(cand.values(), key=_rank)
+        chosen_id, retador = best["scenario"], None
+        inc = (incumbents or {}).get(wd) or {}
+        inc_id = inc.get("scenario")
+        if inc_id and inc_id in cand and inc_id != best["scenario"]:
+            # HISTÉRESIS campeón/retador (anti flip-flop entre variantes correlacionadas).
+            c_ok, _ = _gate(cand[inc_id], min_n)
+            c_est, _ = _estado_supervivencia(sub.xs(inc_id, level="id")["roi"],
+                                             w1, w2, min_n_half)
+            r_ok, _ = _gate(best, min_n)
+            r_est, _ = _estado_supervivencia(sub.xs(best["scenario"], level="id")["roi"],
+                                             w1, w2, min_n_half)
+            campeon_muerto = (not c_ok) or c_est in ("suspendido", "sin ventaja")
+            retador_vivo = r_ok and r_est == "operable"
+            domina = retador_vivo and (best.get("wr_p5") or 0) > (cand[inc_id].get("wr_p5") or 0)
+            if campeon_muerto and retador_vivo:
+                pass                       # promoción inmediata: no se sostiene un campeón muerto
+            elif domina:
+                prev_rt = inc.get("retador") or {}
+                racha = (prev_rt.get("racha", 0) + 1
+                         if prev_rt.get("scenario") == best["scenario"] else 1)
+                if racha < RETADOR_RACHA:
+                    chosen_id = inc_id
+                    retador = {"scenario": best["scenario"], "racha": racha,
+                               "wr_p5": best.get("wr_p5")}
+            else:
+                chosen_id = inc_id         # el retador no domina: el campeón sigue, racha a cero
+
+        m = cand[chosen_id]
+        ok, reason = _gate(m, min_n)
+        # Estado de supervivencia del CAMPEÓN (serie diaria cronológica de cartera).
+        serie = sub.xs(chosen_id, level="id")["roi"]
+        estado, motivo = _estado_supervivencia(serie, w1, w2, min_n_half)
+        row = {**m, "recommendation": "OPERAR" if ok else "NO OPERAR",
+               "reason": reason, "estado": estado, "estado_motivo": motivo, "retador": retador}
+        _monitor_calibracion(row, serie)
+        _monitor_cusum(row, serie)
+        per_day[wd] = row
 
     por_ticker: list = []
     g_tk = _daily(d, ["ticker", "weekday", "id"])
@@ -211,11 +453,56 @@ def compute_weighted_verdict(df, window_dates: list[str], *, half_life: int = 35
     return per_day, por_ticker
 
 
-def build_from_store(*, window_days: int = 60, half_life: int = 35, min_n: int = 10,
+def compute_regime(df, window_dates: list[str], per_day: dict) -> list:
+    """FASE 3 (light, INFORMATIVO — no condiciona el gate): para el escenario elegido de cada
+    día, parte las sesiones por el RÉGIMEN ex-ante — el md_score del Market Direction Engine a
+    la entrada (bajo <45 · medio 45–65 · alto >65, promedio de los tickers del día) — y muestra
+    P(ganar | régimen). Con ~6 meses el n por bucket es chico: leer como tendencia, no como gate."""
+    import numpy as np
+    import pandas as pd
+    from bt_analysis import detailed as det
+
+    d = det.prepare(df[df["fecha"].astype(str).str[:10].isin(window_dates)].copy())
+    if d.empty or "md_score" not in d.columns:
+        return []
+    d["md_score"] = pd.to_numeric(d["md_score"], errors="coerce")
+    d = d.dropna(subset=["md_score"])
+    if d.empty:
+        return []
+    d["_fstr"] = d["date"].dt.strftime("%Y-%m-%d")
+    out = []
+    for wd, info in (per_day or {}).items():
+        sid = info.get("scenario")
+        if not sid:
+            continue
+        sub = d[(d["weekday"] == wd) & (d["id"] == sid)]
+        if sub.empty:
+            continue
+        g = sub.groupby("_fstr").agg(pnl=("pnl", "sum"), inv=("inv", "sum"),
+                                     score=("md_score", "mean"))
+        g["roi"] = g["pnl"] / g["inv"].replace(0, np.nan) * 100.0
+        g = g.dropna(subset=["roi"])
+        g["bucket"] = pd.cut(g["score"], bins=[-1, 45, 65, 101],
+                             labels=["bajo (<45)", "medio (45–65)", "alto (>65)"])
+        for b, gg in g.groupby("bucket", observed=True):
+            if not len(gg):
+                continue
+            out.append({"Día": wd, "Escenario": sid, "Régimen (md_score)": str(b),
+                        "n": int(len(gg)), "WR %": round(float((gg["roi"] > 0).mean() * 100), 1),
+                        "ROI prom %": round(float(gg["roi"].mean()), 2)})
+    return out
+
+
+def build_from_store(*, window_days: int = 120, half_life: int = 35, min_n: int = 16,
                      template_path=TEMPLATE_PATH) -> dict:
     """Playbook INCREMENTAL: agrega sobre el almacén (bt_store) los últimos `window_days` días
     hábiles con decaimiento exponencial → mismo dict que build_from_results (la página y el modo
-    automático no cambian) + metadatos del modo incremental."""
+    automático no cambian) + metadatos del modo incremental.
+
+    Política oficial (2026-07-03): ventana 120 días hábiles · half-life 35 (W/HL ≥ 3) · min_n 16.
+    Aplica histéresis campeón/retador (incumbents del playbook anterior) y los monitores de
+    vigencia: calibración y CUSUM (en compute_weighted_verdict), churn de veredicto (history)
+    y cambio de régimen de vol (vol realizada 5d de SPY vs mediana 60d)."""
     import bt_store
     from bt_analysis import loader as _l, playbook as _pbk
     from trade_plan import scenario_config_summary
@@ -226,7 +513,30 @@ def build_from_store(*, window_days: int = 60, half_life: int = 35, min_n: int =
                          "Reevaluación desde la página Playbook.")
     win = dates[-window_days:]
     df = bt_store.load_range(win[0], win[-1])
-    per_day, por_ticker = compute_weighted_verdict(df, win, half_life=half_life, min_n=min_n)
+    per_day, por_ticker = compute_weighted_verdict(df, win, half_life=half_life, min_n=min_n,
+                                                   incumbents=_incumbents_from(load_playbook()))
+    try:
+        regimen = compute_regime(df, win, per_day)
+    except Exception:  # noqa: BLE001 — el régimen es informativo, nunca rompe el build
+        regimen = []
+
+    # Monitor churn de veredicto: fragilidad de la selección a lo largo de las re-agregaciones.
+    churn = compute_churn(_load_history_snapshots(), per_day)
+    for wd, ch in churn.items():
+        i = per_day.get(wd)
+        if not i:
+            continue
+        i["churn"] = ch
+        if ch.get("alerta") and i.get("recommendation") == "OPERAR" \
+                and i.get("estado") != "suspendido":
+            i["estado"] = "suspendido"
+            i["estado_motivo"] = (f"churn de veredicto: el campeón cambió en el "
+                                  f"{int(ch['tasa'] * 100)}% de las últimas {ch['n']} "
+                                  "re-agregaciones (>30%) — selección frágil")
+            i["recommendation"] = "NO OPERAR"
+            i["reason"] = i["estado_motivo"]
+
+    regimen_vol = compute_vol_regime(dates)
 
     # Condiciones del template por escenario (misma fuente única de siempre).
     try:
@@ -249,8 +559,12 @@ def build_from_store(*, window_days: int = 60, half_life: int = 35, min_n: int =
         "modo": (f"incremental · ventana {len(win)} días hábiles · half-life {half_life}d · "
                  f"min_n {min_n}"),
         "ventana_dias": window_days, "half_life": half_life, "min_n": min_n,
+        "mitades": {"vieja": [win[0], win[len(win) // 2 - 1]] if len(win) > 1 else [win[0]] * 2,
+                    "reciente": [win[len(win) // 2], win[-1]]},
         "cobertura": {"desde": cov["desde"], "hasta": cov["hasta"], "dias": cov["dias"]},
-        "per_day": per_day, "por_ticker": por_ticker,
+        "per_day": per_day, "por_ticker": por_ticker, "regimen": regimen,
+        "regimen_vol": regimen_vol,
+        "revision_anticipada": bool(any(i.get("cusum_alerta") for i in per_day.values())),
     }
 
 
@@ -261,7 +575,7 @@ def append_history(pb: dict, path: Path = HISTORY_PATH) -> None:
             "evaluado": [pb.get("evaluado_desde"), pb.get("evaluado_hasta")],
             "modo": pb.get("modo", "manual"),
             "per_day": {d: {k: i.get(k) for k in ("scenario", "recommendation", "win_rate",
-                                                  "avg_roi", "sharpe", "n")}
+                                                  "wr_p5", "avg_roi", "sharpe", "n", "estado")}
                         for d, i in (pb.get("per_day") or {}).items()}}
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)

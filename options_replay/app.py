@@ -1392,11 +1392,28 @@ def _render_iters_panel(_iters_seed):
                                     f"**NO OPERAR** — no se aplicó ninguna config. "
                                     f"{_auto_entry.get('reason', '')}")
                     _auto_entry = None
+                elif _auto_entry.get("estado") not in (None, "operable"):
+                    # Máquina de supervivencia: OPERAR pero el estado no es «operable»
+                    # (candidato = 1 sola ventana; suspendido = kill-switch/edge decaído) →
+                    # el automático NO aplica. Playbooks viejos sin estado siguen aplicando.
+                    _est_auto = _auto_entry.get("estado")
+                    _cfg_c2.warning(f"📙 Playbook: los **{_dia_auto}** pasan el gate pero el "
+                                    f"escenario **{_auto_entry.get('scenario')}** está "
+                                    f"**{_est_auto}** ({_auto_entry.get('estado_motivo', '')}) — "
+                                    "el automático solo aplica estados 🟢 **operable** (gate en "
+                                    "las DOS mitades de la ventana). Aplicalo a mano si querés "
+                                    "probarlo igual.")
+                    _auto_entry = None
                 else:
                     _cfg_c2.caption(f"📗 **{_dia_auto} → {_auto_entry.get('scenario')}** (evaluado "
                                     f"{_pb_auto.get('evaluado_desde')} → "
                                     f"{_pb_auto.get('evaluado_hasta')}) · "
                                     f"{_auto_entry.get('config_txt', '')}")
+                    if (_pb_auto.get("regimen_vol") or {}).get("alerta"):
+                        _cfg_c2.warning("🌊 **Régimen de volatilidad alterado** (vol realizada 5d "
+                                        "> 2× la mediana de 60d): la config operable se aplica "
+                                        "igual, pero considerá reducir el tamaño hasta que "
+                                        "normalice.")
         _cfg_sig = f"{_sel_cfg}|{','.join(_seed_dates)}"
         if _cfg_sig != st.session_state.get("_iters_cfg_applied"):
             st.session_state["_iters_cfg_applied"] = _cfg_sig
