@@ -255,7 +255,13 @@ with st.expander("4 · Tickers que vencen ese mismo día de la semana", expanded
         st.info("No hay tickers en la base.")
     else:
         # Un ticker vence el día W ⟺ entrando ese día su vencimiento más cercano es el MISMO día (0DTE).
-        _buck4 = {lbl: _pref4.loc[_pref4[col] == "mismo día", "ticker"].tolist() for lbl, col in _dias4}
+        # Los PRIORITARIOS (🟢, los 11 de §3) van primero en cada columna, luego el resto.
+        _top4 = set(_pref4.loc[_pref4["es_top"], "ticker"])
+        _buck4 = {}
+        for lbl, col in _dias4:
+            _tks4 = _pref4.loc[_pref4[col] == "mismo día", "ticker"].tolist()
+            _buck4[lbl] = ([f"🟢 {t}" for t in _tks4 if t in _top4]
+                           + [t for t in _tks4 if t not in _top4])
         _maxn4 = max((len(v) for v in _buck4.values()), default=0)
         if _maxn4 == 0:
             st.warning("Ningún ticker tiene vencimientos calculados todavía. Tocá "
@@ -266,7 +272,8 @@ with st.expander("4 · Tickers que vencen ese mismo día de la semana", expanded
                                   for lbl, _ in _dias4})
             st.dataframe(_tbl4, hide_index=True, use_container_width=True,
                          height=min(38 + 35 * _maxn4, 560))
-            st.caption("Cuántos vencen cada día: "
+            st.caption("🟢 = **prioritario** (los 11 de §3) — listados primero en cada día. "
+                       "Cuántos vencen cada día: "
                        + " · ".join(f"**{lbl}** {len(_buck4[lbl])}" for lbl, _ in _dias4)
                        + f"  ·  ({len(_pref4)} tickers en la base)")
 
