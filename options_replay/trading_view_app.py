@@ -201,7 +201,8 @@ _FILL_FLAGS = {
     "NBBO por barra · triggers sobre el bid (Fase 2)": (True, True),
 }
 _CRIT_KEY = {"Opción 1 — Menor spread": "spread",
-             "Opción 2 — Primer contrato cerca de ITM": "itm_first"}
+             "Opción 2 — Primer contrato cerca de ITM": "itm_first",
+             "Opción 1 sino Opción 2 — Menor spread, con fallback 1-ITM": "spread_itm_first"}
 
 
 # NOTA: el backtest de estas señales NO corre acá. El botón «▶ Backtestear → Backtesting» las manda

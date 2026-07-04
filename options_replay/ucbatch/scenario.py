@@ -47,7 +47,13 @@ def _fill_flags(fills: str) -> tuple:
 
 
 def _selection(criterio: str) -> str:
-    return "itm_first" if "itm" in (criterio or "").lower() else "spread"
+    """«Criterio de selección de contrato» → código del engine. El COMPUESTO («… sino …»)
+    se detecta PRIMERO: su etiqueta contiene «spread» e «itm» a la vez y el contains simple
+    lo mapearía mal."""
+    c = (criterio or "").lower()
+    if "sino" in c or ("spread" in c and "itm" in c):
+        return "spread_itm_first"      # Opción 1; si no compra → fallback 1-ITM
+    return "itm_first" if "itm" in c else "spread"
 
 
 def _dte_flags(dte: str) -> tuple:

@@ -404,7 +404,7 @@ def _probe_premium_range(
     ext_max: Optional[float] = None,
     spot: Optional[float] = None,
     spread_cfg: Optional[dict] = None,
-    selection_criterion: str = "itm",   # "itm" (cercano a ITM) | "spread" (menor spread) | "value" (prima ≈ value_target, IGNORA spread) | "itm_first" (1-ITM más cercano, IGNORA spread y rango)
+    selection_criterion: str = "itm",   # "itm" (cercano a ITM) | "spread" (menor spread) | "value" (prima ≈ value_target, IGNORA spread) | "itm_first" (1-ITM más cercano, IGNORA spread y rango) | "spread_itm_first" (Opción 1; si no compra → fallback 1-ITM)
     value_target: float = 2.0,          # objetivo de prima ($) para selection_criterion="value"
 ) -> tuple[Optional[StrikeProbe], list[StrikeProbe], str]:
     """Selector de contrato.
@@ -420,7 +420,9 @@ def _probe_premium_range(
     4.   SELECCIÓN: el de MENOR spread; empate → MAYOR ask; empate → el primero (orden por
          cercanía a ATM). tier="optimo"/"extended".
     Otros criterios: "itm_first" (Opción 2 = el 1-ITM, ignora spread y rango) · "value"
-    (prima ≈ value_target) · "itm" (legado, cascada previa).
+    (prima ≈ value_target) · "itm" (legado, cascada previa) · "spread_itm_first"
+    (COMPUESTO: la Opción 1 completa; si termina sin compra, fallback a la Opción 2 =
+    el 1-ITM entre todos los strikes con prima → tier="itm_fallback", trazable).
     Devuelve (probe_elegido, todos_los_probes, tier). tier="" si no hubo compra.
 
     Retro-compat: ext_min/ext_max default al rango óptimo; si spread_cfg es None o el
@@ -439,7 +441,7 @@ def _probe_premium_range(
     # open del bar) y aplica la compuerta de spread como RANGO [mín,máx] por bucket de PRECIO
     # DEL CONTRATO (ASK) (_ask_spread_range). Un 'Spread máx'/ceiling explícito (override)
     # reemplaza el rango por un techo. Los demás criterios mantienen el flujo previo.
-    _opt1 = (selection_criterion == "spread")
+    _opt1 = (selection_criterion in ("spread", "spread_itm_first"))
     _override = spread_cfg.get("_max_spread_override")
     # Rango de fetch de quotes = unión de óptimo y extendido. En Opción 1 se ensancha
     # ±_ASK_MARGIN porque el filtro es por ASK y el ASK puede diferir del open del bar.
@@ -526,7 +528,7 @@ def _probe_premium_range(
         #   "itm_first" (opción 2): IGNORA el spread; el MÁS CERCANO a ITM (menor itm_depth
         #               ≥ 0 = el "1-ITM", primer strike dentro del dinero). Único criterio.
         #   "itm"       (legado): de los 2 de menor spread, el más cercano a ITM.
-        if selection_criterion == "spread":
+        if selection_criterion in ("spread", "spread_itm_first"):
             # Paso 4 (tu spec): menor spread → desempate por MAYOR ask → el primero de la lista
             # (min es estable → respeta el orden por cercanía a ATM). Sin desempate por ITM.
             return min(cands, key=lambda p: (_sp(p), -(p.ask if p.ask is not None else 0.0)))
@@ -565,19 +567,26 @@ def _probe_premium_range(
     #   Paso 3:   sobre ESE set, filtro de spread por strike (rango mín-máx). NO se cruza al
     #             otro tier: si el tier elegido queda sin nadie tras el spread → no se compra.
     #   Paso 4:   _select = menor spread → menor ASK → el primero de la lista.
+    # "spread_itm_first" (compuesto): corre la Opción 1 COMPLETA; solo si esta termina sin
+    # compra (ningún tier con prima, o el tier elegido quedó vacío tras la compuerta de
+    # spread), FALLBACK a la Opción 2: el 1-ITM entre TODOS los strikes con prima válida,
+    # ignorando rango y spread (misma regla que "itm_first") → tier="itm_fallback".
     if _opt1:
         opt_set = [p for p in valid if p.in_range]        # ASK en Rango Óptimo
         ext_set = [p for p in valid if p.in_extended]     # ASK en Rango Extendido
-        if opt_set:
-            base, tier = opt_set, "optimo"
-        elif ext_set:
-            base, tier = ext_set, "extended"
-        else:
-            return None, probes, ""
-        passed = [p for p in base if _passes_spread(p)]   # Paso 3: rango de spread por strike
-        if not passed:
-            return None, probes, ""
-        return _select(passed), probes, tier
+        if opt_set or ext_set:
+            base, tier = (opt_set, "optimo") if opt_set else (ext_set, "extended")
+            passed = [p for p in base if _passes_spread(p)]   # Paso 3: rango de spread por strike
+            if passed:
+                return _select(passed), probes, tier
+        if selection_criterion == "spread_itm_first":
+            fb = min(valid, key=_itm_rank)                # el 1-ITM (idéntico a "itm_first")
+            # NBBO del elegido solo para display (puede no haberse cotizado): NO afecta la selección.
+            if spread_enabled and fb.spread is None and fb.occ:
+                q = _robust_quote(downloader, fb.occ, date, start_ts, ref_premium=fb.opening_premium)
+                fb.bid, fb.ask, fb.spread = q.get("bid"), q.get("ask"), q.get("spread")
+            return fb, probes, "itm_fallback"
+        return None, probes, ""
 
     # Legacy "itm": cascada previa (Óptimo+spread, luego Extendido+spread). SIN fallback.
     cand_opt = [p for p in valid if p.in_range and _passes_spread(p)]

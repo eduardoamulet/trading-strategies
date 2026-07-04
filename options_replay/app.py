@@ -1120,10 +1120,13 @@ def _render_iters_panel(_iters_seed):
             or {"SÓLO CALL": "CALL", "SOLO CALL": "CALL",
                 "SÓLO PUT": "PUT", "SOLO PUT": "PUT"}.get(str(v).strip().upper(), "CALL"))
         # Criterio de selección de contrato POR FILA: Opción 1 (menor spread, default) /
-        # Opción 2 (primer contrato cerca de ITM = 1-ITM; ignora spread y rango de prima).
-        _CRIT_OPTS = ["Menor spread en rango óptimo", "Primer contrato cerca de ITM"]
+        # Opción 2 (primer contrato cerca de ITM = 1-ITM; ignora spread y rango de prima) /
+        # COMPUESTO (Opción 1 completa; si no compra, fallback a la Opción 2 → tier itm_fallback).
+        _CRIT_OPTS = ["Menor spread en rango óptimo", "Primer contrato cerca de ITM",
+                      "Menor spread en rango óptimo sino Primer contrato cerca de ITM"]
         _CRIT_KEY = {"Menor spread en rango óptimo": "spread",
-                     "Primer contrato cerca de ITM": "itm_first"}
+                     "Primer contrato cerca de ITM": "itm_first",
+                     "Menor spread en rango óptimo sino Primer contrato cerca de ITM": "spread_itm_first"}
         if "Criterio" not in _seed_df.columns:
             _seed_df["Criterio"] = _CRIT_OPTS[0]
         _seed_df["Criterio"] = _seed_df["Criterio"].apply(
@@ -3733,6 +3736,7 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
             "fallback": "<span style='color:#b71c1c'>fallback</span>",
             "value": "<span style='color:#1565c0'>valor</span>",
             "itm_first": "<span style='color:#1565c0'>1-ITM</span>",
+            "itm_fallback": "<span style='color:#b71c1c'>1-ITM (fallback)</span>",
         }.get(tier, tier or "")
         return (f"<b>{label}:</b> bid ${bid:.2f} / ask ${ask:.2f} · "
                 f"spread <b>${spread:.2f}</b> · {_tier_badge}")
