@@ -1265,170 +1265,51 @@ def _run_one_iteration(
     elif mode in ("put_only", "put_only_eod"):
         invest_call = 0.0
 
-    if under_full[(under_full["timestamp"] >= start_ts)
-                  & (under_full["timestamp"] <= end_ts)].empty:
-        raise ValueError(f"No bars after {start_ts}")
+    # ── Contexto INVARIANTE entre escenarios: selección + merged + NBBO + primas ──
+    # En el batch, los 480 escenarios de un mismo ticker/día comparten la ENTRADA (misma hora/
+    # criterio/ventana/fills del Data seed) y solo difieren en la SALIDA → todo esto es idéntico
+    # y se computa 1× por ticker/día: el MemoDownloader del runner expone `_day_ctx` como cache.
+    # Fuera del batch (Downloader plano, sin `_day_ctx`) no se cachea: mismo camino de siempre.
+    # Una selección FALLIDA (NoMatchError/ValueError) también se cachea — los otros 479
+    # escenarios fallan al instante en vez de re-probar strikes minuto a minuto.
+    _ctx_cache = getattr(downloader, "_day_ctx", None)
+    _ctx = _ctx_key = None
+    if _ctx_cache is not None:
+        _ctx_key = (ticker, date, str(start_ts), str(end_ts), mode, float(premium_min),
+                    float(premium_max), int(max_strikes_to_probe),
+                    None if ext_min is None else float(ext_min),
+                    None if ext_max is None else float(ext_max),
+                    int(check_step_min or 1), str(exit_plus_time), str(selection_criterion),
+                    float(value_target), repr(spread_cfg), bool(entry_at_ask),
+                    bool(nbbo_timeline), float(search_window_min or 0.0))
+        _ctx = _ctx_cache.get(_ctx_key)
+        if isinstance(_ctx, Exception):
+            raise _ctx
+    if _ctx is None:
+        try:
+            _ctx = _prepare_iteration_context(
+                downloader, ticker, date, under_full, calls_chain, puts_chain,
+                premium_min, premium_max, start_ts, end_ts, max_strikes_to_probe, mode,
+                ext_min, ext_max, check_step_min, exit_plus_time, selection_criterion,
+                value_target, spread_cfg, entry_at_ask, nbbo_timeline, search_window_min)
+        except (NoMatchError, ValueError) as _e:
+            if _ctx_cache is not None and _ctx_key is not None:
+                _ctx_cache[_ctx_key] = _e
+            raise
+        if _ctx_cache is not None and _ctx_key is not None:
+            _ctx_cache[_ctx_key] = _ctx
 
-    spread_cfg = spread_cfg or load_spread_config()
-
-    def _empty_leg(_under):
-        return pd.DataFrame({"timestamp": _under["timestamp"], "open": 0.0, "high": 0.0,
-                             "low": 0.0, "close": 0.0, "volume": 0})
-
-    def _try_select(probe_ts):
-        """Intenta seleccionar CALL+PUT (según `mode`) con los datos AL minuto `probe_ts`
-        (spot, prima y spread de ese momento). Devuelve {'ok':True,...} si TODAS las piernas
-        requeridas encuentran contrato; {'ok':False,'leg','probes'} si alguna no (→ seguir
-        buscando); None si ya no hay barras desde `probe_ts`."""
-        _under = under_full[(under_full["timestamp"] >= probe_ts)
-                            & (under_full["timestamp"] <= end_ts)].reset_index(drop=True)
-        if _under.empty:
-            return None
-        _spot = float(_under.iloc[0]["open"])
-        _calls = calls_chain.assign(_d=(calls_chain["strike_price"] - _spot).abs()).sort_values(["_d", "strike_price"])
-        _puts = puts_chain.assign(_d=(puts_chain["strike_price"] - _spot).abs()).sort_values(["_d", "strike_price"])
-        if mode not in ("put_only", "put_only_eod"):
-            _cp, _cprobes, _ctier = _probe_premium_range(
-                downloader, ticker, date, _calls, "C", probe_ts, end_ts,
-                premium_min, premium_max, max_strikes_to_probe, ext_min=ext_min, ext_max=ext_max,
-                spot=_spot, spread_cfg=spread_cfg, selection_criterion=selection_criterion, value_target=value_target)
-            if _cp is None:
-                return {"ok": False, "leg": "CALL", "probes": _cprobes}
-            _dfc = downloader.option(_cp.occ, date)
-        else:
-            _cp, _cprobes, _ctier, _dfc = (StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False),
-                                           [], "", _empty_leg(_under))
-        if mode not in ("call_only", "call_only_eod"):
-            _pp, _pprobes, _ptier = _probe_premium_range(
-                downloader, ticker, date, _puts, "P", probe_ts, end_ts,
-                premium_min, premium_max, max_strikes_to_probe, ext_min=ext_min, ext_max=ext_max,
-                spot=_spot, spread_cfg=spread_cfg, selection_criterion=selection_criterion, value_target=value_target)
-            if _pp is None:
-                return {"ok": False, "leg": "PUT", "probes": _pprobes}
-            _dfp = downloader.option(_pp.occ, date)
-        else:
-            _pp, _pprobes, _ptier, _dfp = (StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False),
-                                           [], "", _empty_leg(_under))
-        return {"ok": True, "ts": probe_ts, "under": _under, "spot": _spot,
-                "call_pick": _cp, "call_probes": _cprobes, "call_tier": _ctier, "df_c": _dfc,
-                "put_pick": _pp, "put_probes": _pprobes, "put_tier": _ptier, "df_p": _dfp}
-
-    # VENTANA DE BÚSQUEDA: desde start_ts, repreguntar Opción 1 cada minuto hasta
-    # start_ts + search_window_min, y ENTRAR en el primer minuto donde TODAS las piernas
-    # pasan. 0 = un solo intento a start_ts (clásico). Espera a que el spread de la subasta
-    # se cierre (transitorio → entra) sin forzar contratos ilíquidos (spread persistente →
-    # nunca pasa → NoMatchError = "Sin resultado"). Granularidad 1 min = la del cache de quotes.
-    _win = max(0, int(round(float(search_window_min or 0))))
-    _attempt, _last_fail, _t = None, None, start_ts
-    _limit = start_ts + pd.Timedelta(minutes=_win)
-    while _t <= _limit:
-        _res = _try_select(_t)
-        if _res is None:
-            break
-        if _res.get("ok"):
-            _attempt = _res
-            break
-        _last_fail = _res
-        _t = _t + pd.Timedelta(minutes=1)
-    if _attempt is None:
-        _lf = _last_fail or {"leg": "CALL", "probes": []}
-        raise NoMatchError(_lf["leg"], _lf["probes"], premium_min, premium_max)
-
-    start_ts = _attempt["ts"]
-    under, spot_at_start = _attempt["under"], _attempt["spot"]
-    call_pick, call_probes, call_tier, df_c = (_attempt["call_pick"], _attempt["call_probes"],
-                                               _attempt["call_tier"], _attempt["df_c"])
-    put_pick, put_probes, put_tier, df_p = (_attempt["put_pick"], _attempt["put_probes"],
-                                            _attempt["put_tier"], _attempt["df_p"])
-    call_fallback, put_fallback = (call_tier == "fallback"), (put_tier == "fallback")
-
-    merged = _merge_minute(under, df_c, df_p, start_ts, end_ts)
-    if merged.empty:
-        raise ValueError("No overlapping minute bars between underlying, CALL and PUT")
-
-    # "Sell verification (min)": el ROI se verifica cada `check_step_min` minutos
-    # (no cada minuto), simulando que el API se consulta a ese período. Subsampleamos
-    # el minuto-a-minuto a una grilla absoluta desde la entrada (offset 0, N, 2N, …).
-    # La fila 0 (entrada) siempre se conserva. N=1 => comportamiento original.
-    _step = int(check_step_min) if check_step_min else 1
-    if _step > 1 and len(merged) > 1:
-        _t0 = merged["timestamp"].iloc[0]
-        _mins = ((merged["timestamp"] - _t0).dt.total_seconds() / 60.0).round().astype(int)
-        merged = merged[_mins % _step == 0].reset_index(drop=True)
-
-    # "Hora de salida" (solo modo "CALL o PUT (plus)"): ambas piernas se venden a
-    # MÁS TARDAR a esta hora, en vez de al cierre (16:00). Se capea la ventana acá:
-    # si la condición de la estrategia no se cumple antes, la última fila será esta
-    # hora y ambas piernas se liquidan ahí.
-    if mode == "call_or_put_plus" and exit_plus_time is not None and not merged.empty:
-        _hs_ts = merged["timestamp"].iloc[0].normalize() + pd.Timedelta(
-            hours=int(exit_plus_time.hour), minutes=int(exit_plus_time.minute))
-        _capped = merged[merged["timestamp"] <= _hs_ts]
-        # Si la Hora de salida queda ANTES de la entrada, el cap dejaría la ventana
-        # vacía → se IGNORA el cap (se usa la ventana completa) en vez de fallar la
-        # iteración. (La UI igual valida que sea posterior a la hora de orden.)
-        if not _capped.empty:
-            merged = _capped.reset_index(drop=True)
-
-    # Fills NBBO POR BARRA (Fase 2): la VALUACIÓN y los triggers usan el BID por minuto (lo
-    # que REALMENTE cobrás si vendés en ese bar), no el precio del bar. Reemplazamos call_px/
-    # put_px por la línea de bid (mark) alineada al cierre de cada minuto; la entrada sigue al
-    # ASK y los refuerzos se compran al ASK (series _ask_*_ser). Así TODOS los modos/triggers
-    # disparan sobre el bid sin tocar su lógica. Si no hay timeline para una pierna, esa pierna
-    # cae al precio del bar (degradación segura). bid=0 (worthless) es válido → no se rellena.
-    _ask_c_ser = _ask_p_ser = None
-    if nbbo_timeline:
-        _idx = pd.DatetimeIndex(merged["timestamp"])
-
-        def _nbbo_series(pick, bar_col):
-            if not pick.occ or (pick.opening_premium or 0) <= 0:
-                return None, None
-            try:
-                qs = downloader.option_quote_series(pick.occ, date)
-            except Exception:
-                qs = None
-            if qs is None or qs.empty:
-                return None, None
-            qs = qs.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
-            _bar = pd.Series(merged[bar_col].values, index=_idx)
-            _bid = qs["bid"].reindex(_idx, method="ffill")
-            _ask = qs["ask"].reindex(_idx, method="ffill")
-            _bid = _bid.where(_bid.notna(), _bar)   # minutos sin quote → precio del bar
-            _ask = _ask.where(_ask.notna(), _bar)
-            return _bid, _ask
-
-        _bid_c, _ask_c_ser = _nbbo_series(call_pick, "call_px")
-        _bid_p, _ask_p_ser = _nbbo_series(put_pick, "put_px")
-        if _bid_c is not None:
-            merged["call_px"] = _bid_c.values
-        if _bid_p is not None:
-            merged["put_px"] = _bid_p.values
-        merged["total"] = merged["call_px"] + merged["put_px"]
-
-    # Base de costo de entrada: 'open' del bar (default), el ASK del NBBO al minuto de entrada
-    # (entry_at_ask / Fase 1 → pagás la oferta), o el ASK de la línea NBBO (Fase 2, fila 0).
-    # Si el ask no está cacheado, se pide al vuelo; si no hay NBBO, cae al 'open'.
-    def _entry_prem(pick, ask_ser=None):
-        # Comprás al INICIO del minuto de entrada → ask PUNTUAL en start_ts (igual que Fase 1).
-        # nbbo_timeline también implica entrada al ask. El ask de la línea (fin del minuto) es
-        # solo fallback si el point-quote falla.
-        if (entry_at_ask or nbbo_timeline) and (pick.opening_premium or 0) > 0:
-            ask = pick.ask
-            if ask is None and pick.occ:
-                try:
-                    ask = _robust_quote(downloader, pick.occ, date, start_ts,
-                                        ref_premium=pick.opening_premium).get("ask")
-                except Exception:
-                    ask = None
-            if ask and ask > 0:
-                return float(ask)
-            if nbbo_timeline and ask_ser is not None:
-                a0 = float(ask_ser.iloc[0])
-                if a0 and a0 > 0:
-                    return a0
-        return float(pick.opening_premium or 0.0)
-    call_entry = _entry_prem(call_pick, _ask_c_ser)
-    put_entry = _entry_prem(put_pick, _ask_p_ser)
+    start_ts = _ctx["start_ts"]
+    spot_at_start = _ctx["spot_at_start"]
+    call_pick, call_probes, call_tier = _ctx["call_pick"], _ctx["call_probes"], _ctx["call_tier"]
+    put_pick, put_probes, put_tier = _ctx["put_pick"], _ctx["put_probes"], _ctx["put_tier"]
+    call_fallback, put_fallback = _ctx["call_fallback"], _ctx["put_fallback"]
+    # Copia DEFENSIVA: la lógica de salida trunca `merged` y le escribe columnas/celdas
+    # (strikes, pnl_acum, exit_at_bid, ref_*); el contexto cacheado debe quedar INTACTO para
+    # el próximo escenario. Series ask y picks se comparten (solo lectura aguas abajo).
+    merged = _ctx["merged"].copy()
+    _ask_c_ser, _ask_p_ser = _ctx["ask_c"], _ctx["ask_p"]
+    call_entry, put_entry = _ctx["call_entry"], _ctx["put_entry"]
 
     # Cálculo de % por leg. Si la pierna fue "skip" (opening_premium == 0),
     # forzamos pct = 0 para evitar división por cero y para que no contamine
@@ -1680,6 +1561,189 @@ def _run_one_iteration(
         put_exit_reason=put_exit_reason,
         refuerzo=_refuerzo,
     )
+
+
+def _prepare_iteration_context(downloader, ticker, date, under_full, calls_chain,
+                               puts_chain, premium_min, premium_max, start_ts, end_ts,
+                               max_strikes_to_probe, mode, ext_min, ext_max, check_step_min,
+                               exit_plus_time, selection_criterion, value_target, spread_cfg,
+                               entry_at_ask, nbbo_timeline, search_window_min) -> dict:
+    """Parte INVARIANTE de una posición entre escenarios que comparten la ENTRADA: ventana de
+    búsqueda + selección de contrato (probing de strikes), `merged` minuto a minuto, timeline
+    NBBO (Fase 2) y primas de entrada. Extraída VERBATIM de _run_one_iteration para poder
+    cachearla 1× por ticker/día en el batch (los 480 escenarios solo difieren en la salida).
+    Lanza NoMatchError/ValueError exactamente igual que antes."""
+    if under_full[(under_full["timestamp"] >= start_ts)
+                  & (under_full["timestamp"] <= end_ts)].empty:
+        raise ValueError(f"No bars after {start_ts}")
+
+    spread_cfg = spread_cfg or load_spread_config()
+
+    def _empty_leg(_under):
+        return pd.DataFrame({"timestamp": _under["timestamp"], "open": 0.0, "high": 0.0,
+                             "low": 0.0, "close": 0.0, "volume": 0})
+
+    def _try_select(probe_ts):
+        """Intenta seleccionar CALL+PUT (según `mode`) con los datos AL minuto `probe_ts`
+        (spot, prima y spread de ese momento). Devuelve {'ok':True,...} si TODAS las piernas
+        requeridas encuentran contrato; {'ok':False,'leg','probes'} si alguna no (→ seguir
+        buscando); None si ya no hay barras desde `probe_ts`."""
+        _under = under_full[(under_full["timestamp"] >= probe_ts)
+                            & (under_full["timestamp"] <= end_ts)].reset_index(drop=True)
+        if _under.empty:
+            return None
+        _spot = float(_under.iloc[0]["open"])
+        _calls = calls_chain.assign(_d=(calls_chain["strike_price"] - _spot).abs()).sort_values(["_d", "strike_price"])
+        _puts = puts_chain.assign(_d=(puts_chain["strike_price"] - _spot).abs()).sort_values(["_d", "strike_price"])
+        if mode not in ("put_only", "put_only_eod"):
+            _cp, _cprobes, _ctier = _probe_premium_range(
+                downloader, ticker, date, _calls, "C", probe_ts, end_ts,
+                premium_min, premium_max, max_strikes_to_probe, ext_min=ext_min, ext_max=ext_max,
+                spot=_spot, spread_cfg=spread_cfg, selection_criterion=selection_criterion, value_target=value_target)
+            if _cp is None:
+                return {"ok": False, "leg": "CALL", "probes": _cprobes}
+            _dfc = downloader.option(_cp.occ, date)
+        else:
+            _cp, _cprobes, _ctier, _dfc = (StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False),
+                                           [], "", _empty_leg(_under))
+        if mode not in ("call_only", "call_only_eod"):
+            _pp, _pprobes, _ptier = _probe_premium_range(
+                downloader, ticker, date, _puts, "P", probe_ts, end_ts,
+                premium_min, premium_max, max_strikes_to_probe, ext_min=ext_min, ext_max=ext_max,
+                spot=_spot, spread_cfg=spread_cfg, selection_criterion=selection_criterion, value_target=value_target)
+            if _pp is None:
+                return {"ok": False, "leg": "PUT", "probes": _pprobes}
+            _dfp = downloader.option(_pp.occ, date)
+        else:
+            _pp, _pprobes, _ptier, _dfp = (StrikeProbe(strike=0.0, opening_premium=0.0, occ="", in_range=False),
+                                           [], "", _empty_leg(_under))
+        return {"ok": True, "ts": probe_ts, "under": _under, "spot": _spot,
+                "call_pick": _cp, "call_probes": _cprobes, "call_tier": _ctier, "df_c": _dfc,
+                "put_pick": _pp, "put_probes": _pprobes, "put_tier": _ptier, "df_p": _dfp}
+
+    # VENTANA DE BÚSQUEDA: desde start_ts, repreguntar Opción 1 cada minuto hasta
+    # start_ts + search_window_min, y ENTRAR en el primer minuto donde TODAS las piernas
+    # pasan. 0 = un solo intento a start_ts (clásico). Espera a que el spread de la subasta
+    # se cierre (transitorio → entra) sin forzar contratos ilíquidos (spread persistente →
+    # nunca pasa → NoMatchError = "Sin resultado"). Granularidad 1 min = la del cache de quotes.
+    _win = max(0, int(round(float(search_window_min or 0))))
+    _attempt, _last_fail, _t = None, None, start_ts
+    _limit = start_ts + pd.Timedelta(minutes=_win)
+    while _t <= _limit:
+        _res = _try_select(_t)
+        if _res is None:
+            break
+        if _res.get("ok"):
+            _attempt = _res
+            break
+        _last_fail = _res
+        _t = _t + pd.Timedelta(minutes=1)
+    if _attempt is None:
+        _lf = _last_fail or {"leg": "CALL", "probes": []}
+        raise NoMatchError(_lf["leg"], _lf["probes"], premium_min, premium_max)
+
+    start_ts = _attempt["ts"]
+    under, spot_at_start = _attempt["under"], _attempt["spot"]
+    call_pick, call_probes, call_tier, df_c = (_attempt["call_pick"], _attempt["call_probes"],
+                                               _attempt["call_tier"], _attempt["df_c"])
+    put_pick, put_probes, put_tier, df_p = (_attempt["put_pick"], _attempt["put_probes"],
+                                            _attempt["put_tier"], _attempt["df_p"])
+    call_fallback, put_fallback = (call_tier == "fallback"), (put_tier == "fallback")
+
+    merged = _merge_minute(under, df_c, df_p, start_ts, end_ts)
+    if merged.empty:
+        raise ValueError("No overlapping minute bars between underlying, CALL and PUT")
+
+    # "Sell verification (min)": el ROI se verifica cada `check_step_min` minutos
+    # (no cada minuto), simulando que el API se consulta a ese período. Subsampleamos
+    # el minuto-a-minuto a una grilla absoluta desde la entrada (offset 0, N, 2N, …).
+    # La fila 0 (entrada) siempre se conserva. N=1 => comportamiento original.
+    _step = int(check_step_min) if check_step_min else 1
+    if _step > 1 and len(merged) > 1:
+        _t0 = merged["timestamp"].iloc[0]
+        _mins = ((merged["timestamp"] - _t0).dt.total_seconds() / 60.0).round().astype(int)
+        merged = merged[_mins % _step == 0].reset_index(drop=True)
+
+    # "Hora de salida" (solo modo "CALL o PUT (plus)"): ambas piernas se venden a
+    # MÁS TARDAR a esta hora, en vez de al cierre (16:00). Se capea la ventana acá:
+    # si la condición de la estrategia no se cumple antes, la última fila será esta
+    # hora y ambas piernas se liquidan ahí.
+    if mode == "call_or_put_plus" and exit_plus_time is not None and not merged.empty:
+        _hs_ts = merged["timestamp"].iloc[0].normalize() + pd.Timedelta(
+            hours=int(exit_plus_time.hour), minutes=int(exit_plus_time.minute))
+        _capped = merged[merged["timestamp"] <= _hs_ts]
+        # Si la Hora de salida queda ANTES de la entrada, el cap dejaría la ventana
+        # vacía → se IGNORA el cap (se usa la ventana completa) en vez de fallar la
+        # iteración. (La UI igual valida que sea posterior a la hora de orden.)
+        if not _capped.empty:
+            merged = _capped.reset_index(drop=True)
+
+    # Fills NBBO POR BARRA (Fase 2): la VALUACIÓN y los triggers usan el BID por minuto (lo
+    # que REALMENTE cobrás si vendés en ese bar), no el precio del bar. Reemplazamos call_px/
+    # put_px por la línea de bid (mark) alineada al cierre de cada minuto; la entrada sigue al
+    # ASK y los refuerzos se compran al ASK (series _ask_*_ser). Así TODOS los modos/triggers
+    # disparan sobre el bid sin tocar su lógica. Si no hay timeline para una pierna, esa pierna
+    # cae al precio del bar (degradación segura). bid=0 (worthless) es válido → no se rellena.
+    _ask_c_ser = _ask_p_ser = None
+    if nbbo_timeline:
+        _idx = pd.DatetimeIndex(merged["timestamp"])
+
+        def _nbbo_series(pick, bar_col):
+            if not pick.occ or (pick.opening_premium or 0) <= 0:
+                return None, None
+            try:
+                qs = downloader.option_quote_series(pick.occ, date)
+            except Exception:
+                qs = None
+            if qs is None or qs.empty:
+                return None, None
+            qs = qs.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+            _bar = pd.Series(merged[bar_col].values, index=_idx)
+            _bid = qs["bid"].reindex(_idx, method="ffill")
+            _ask = qs["ask"].reindex(_idx, method="ffill")
+            _bid = _bid.where(_bid.notna(), _bar)   # minutos sin quote → precio del bar
+            _ask = _ask.where(_ask.notna(), _bar)
+            return _bid, _ask
+
+        _bid_c, _ask_c_ser = _nbbo_series(call_pick, "call_px")
+        _bid_p, _ask_p_ser = _nbbo_series(put_pick, "put_px")
+        if _bid_c is not None:
+            merged["call_px"] = _bid_c.values
+        if _bid_p is not None:
+            merged["put_px"] = _bid_p.values
+        merged["total"] = merged["call_px"] + merged["put_px"]
+
+    # Base de costo de entrada: 'open' del bar (default), el ASK del NBBO al minuto de entrada
+    # (entry_at_ask / Fase 1 → pagás la oferta), o el ASK de la línea NBBO (Fase 2, fila 0).
+    # Si el ask no está cacheado, se pide al vuelo; si no hay NBBO, cae al 'open'.
+    def _entry_prem(pick, ask_ser=None):
+        # Comprás al INICIO del minuto de entrada → ask PUNTUAL en start_ts (igual que Fase 1).
+        # nbbo_timeline también implica entrada al ask. El ask de la línea (fin del minuto) es
+        # solo fallback si el point-quote falla.
+        if (entry_at_ask or nbbo_timeline) and (pick.opening_premium or 0) > 0:
+            ask = pick.ask
+            if ask is None and pick.occ:
+                try:
+                    ask = _robust_quote(downloader, pick.occ, date, start_ts,
+                                        ref_premium=pick.opening_premium).get("ask")
+                except Exception:
+                    ask = None
+            if ask and ask > 0:
+                return float(ask)
+            if nbbo_timeline and ask_ser is not None:
+                a0 = float(ask_ser.iloc[0])
+                if a0 and a0 > 0:
+                    return a0
+        return float(pick.opening_premium or 0.0)
+    call_entry = _entry_prem(call_pick, _ask_c_ser)
+    put_entry = _entry_prem(put_pick, _ask_p_ser)
+
+    return {"start_ts": start_ts, "spot_at_start": spot_at_start,
+            "call_pick": call_pick, "call_probes": call_probes, "call_tier": call_tier,
+            "call_fallback": call_fallback, "put_pick": put_pick, "put_probes": put_probes,
+            "put_tier": put_tier, "put_fallback": put_fallback, "merged": merged,
+            "ask_c": _ask_c_ser, "ask_p": _ask_p_ser,
+            "call_entry": call_entry, "put_entry": put_entry}
 
 
 def _merge_minute(

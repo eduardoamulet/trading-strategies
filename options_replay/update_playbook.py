@@ -86,7 +86,12 @@ def verify_integrity(n_sample: int = 3) -> bool:
     import pandas as pd
     from bt_analysis import loader as _ldr
 
+    from ucbatch import runner as _ucrun
+
     dates = bt_store.distinct_dates()
+    # El almacén puede contener FERIADOS viejos (días de puro error, previos al calendario
+    # NYSE en trading_days) — un re-run de esos días ahora produce un batch vacío: se excluyen.
+    dates = [d for d in dates if _ucrun.trading_days(d, d)]
     if not dates:
         print("verify: almacén vacío — nada que verificar.")
         return True

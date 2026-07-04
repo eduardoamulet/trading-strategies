@@ -21,6 +21,11 @@ class MemoDownloader:
     def __init__(self, inner):
         object.__setattr__(self, "_inner", inner)
         object.__setattr__(self, "_cache", {})
+        # Cache de SEGUNDO nivel (lo consume el engine): contexto invariante por posición
+        # (selección de contrato + merged + NBBO + primas) — los 480 escenarios de un
+        # ticker/día lo comparten y el engine lo computa 1× (ver _prepare_iteration_context).
+        # Vive y muere con este wrapper (= con el día del worker), igual que _cache.
+        object.__setattr__(self, "_day_ctx", {})
 
     def __getattr__(self, name):
         inner = object.__getattribute__(self, "_inner")
@@ -44,7 +49,7 @@ class MemoDownloader:
 
     def __setattr__(self, name, value):
         # p.ej. `dl.resolution = ...` → va al inner (no rompe el estado del Downloader real)
-        if name in ("_inner", "_cache"):
+        if name in ("_inner", "_cache", "_day_ctx"):
             object.__setattr__(self, name, value)
         else:
             setattr(object.__getattribute__(self, "_inner"), name, value)

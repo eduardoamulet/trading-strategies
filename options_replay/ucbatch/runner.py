@@ -22,10 +22,29 @@ from .scenario import resolution_from_seg
 _G: dict = {}   # estado por-proceso (Downloader + seed), seteado en _init
 
 
+# Feriados NYSE (cierres COMPLETOS) 2025–2027 — estático, sin dependencia externa. Los medios
+# días (24-dic, viernes post-Thanksgiving, 3-jul cuando aplica como media sesión) SÍ son días
+# hábiles y se backtestean normal. Fuera de este rango de años, cae al comportamiento anterior
+# (el feriado entra y produce filas de error — inofensivo, solo ruido).
+_NYSE_HOLIDAYS = frozenset({
+    # 2025
+    "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18", "2025-05-26",
+    "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27", "2025-12-25",
+    # 2026
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25",
+    "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+    # 2027
+    "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31",
+    "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
+})
+
+
 def trading_days(fecha_inicial: str, fecha_final: str) -> list:
-    """Días hábiles [inicial, final] inclusive (excluye sáb/dom; los feriados sin datos saldrán
-    como filas de error)."""
-    return [d.date().isoformat() for d in pd.bdate_range(fecha_inicial, fecha_final)]
+    """Días hábiles [inicial, final] inclusive: excluye sáb/dom Y feriados NYSE (antes cada
+    feriado entraba al batch como un día de puro error — 1.440 filas basura que además se
+    ingestaban al almacén del playbook)."""
+    return [d for d in (x.date().isoformat() for x in pd.bdate_range(fecha_inicial, fecha_final))
+            if d not in _NYSE_HOLIDAYS]
 
 
 def auto_processes() -> int:
@@ -123,7 +142,11 @@ def run(seed, mapped_scenarios, data_dir, api_key, processes=None, progress_cb=N
     corr = obs_log.correlation_id()
     days = trading_days(seed.fecha_inicial, seed.fecha_final)
     resolution = resolution_from_seg(seed.granularidad_seg)
-    procs = int(processes) if processes else auto_processes()
+    # La unidad de paralelismo es el DÍA (no día×ticker): la salida COLECTIVA acopla los
+    # tickers de un mismo día+escenario (apply_collective_exit) — partir más fino la rompería.
+    # Sí capeamos los workers al nº de días: una corrida de 1 día (el incremental diario) no
+    # paga el arranque de 15 procesos para usar 1.
+    procs = min(int(processes) if processes else auto_processes(), max(1, len(days)))
     rows: list = []
     n_fail = 0
     with mp.Pool(procs, initializer=_init,
