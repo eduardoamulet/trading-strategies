@@ -92,12 +92,27 @@ with st.expander("🗓️ Tarea programada", expanded=True):
             _info = json.loads(_out)
         except Exception:
             _info = None
+    # Códigos del Task Scheduler traducidos (los crípticos de siempre):
+    _RES_LBL = {
+        0: "OK ✅",
+        1: "terminó con error ⚠",                # exit code 1 del .bat
+        267009: "corriendo ahora 🏃",            # 0x41301 SCHED_S_TASK_RUNNING
+        267011: "todavía no corrió",             # 0x41303 SCHED_S_TASK_HAS_NOT_RUN
+        267014: "cancelada a mano",              # 0x41306 SCHED_S_TASK_TERMINATED
+        2147942402: "no encontró el .bat ⚠",     # 0x80070002 — ruta movida/renombrada
+    }
     if _info:
         c = st.columns(4)
-        c[0].metric("Última corrida", _dotnet_date(_info.get("LastRunTime")))
+        # LastRunTime = 1999-11-30 (o 1899-12-30) es el CENTINELA de «nunca corrió», no una fecha.
+        _last = _dotnet_date(_info.get("LastRunTime"))
+        if _last.startswith(("1999-", "1899-")):
+            _last = "— (nunca corrió aún)"
+        c[0].metric("Última corrida", _last)
         c[1].metric("Próxima corrida", _dotnet_date(_info.get("NextRunTime")))
         _res = _info.get("LastTaskResult")
-        c[2].metric("Último resultado", "OK ✅" if _res == 0 else (f"código {_res}" if _res is not None else "—"))
+        c[2].metric("Último resultado",
+                    _RES_LBL.get(_res, f"código {_res}") if _res is not None else "—",
+                    help=(f"Código crudo del Task Scheduler: {_res}" if _res else None))
         c[3].metric("Corridas perdidas", str(_info.get("NumberOfMissedRuns") if _info.get("NumberOfMissedRuns") is not None else "—"))
     else:
         st.info("No encontré la tarea **SignalForge Update Data** (o no es Windows). "
