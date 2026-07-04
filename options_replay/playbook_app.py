@@ -177,21 +177,25 @@ except Exception as _me:  # noqa: BLE001
     st.warning(f"No pude migrar el template legacy: {_me}")
 
 _up_comb = st.file_uploader("📤 Importar nueva combinación (Excel de variables)", type=["xlsx"],
-                            key="comb_upload",
+                            key="comb_upload", accept_multiple_files=True,
                             help="Hoja «Backtesting variables»: columnas = variables (seed + "
                                  "condiciones), filas = valores posibles de cada una. Cada "
-                                 "archivo crea una combinación NUEVA (no sobrescribe nada).")
-if _up_comb is not None and st.button("➕ Importar combinación", key="comb_import",
-                                      type="primary"):
-    try:
-        _reg = _cmb.import_file(_up_comb)
-        _n_esp = _cmb.expected_scenarios(_reg)
-        st.success(f"✅ Combinación **{_reg['nombre']}** importada — generará "
-                   f"**{_n_esp:,}** escenarios (producto cartesiano). Tocá «⚙️ Generar "
-                   "escenarios» en su contenedor.")
-        st.rerun()
-    except ValueError as _ie:
-        st.error(str(_ie))
+                                 "archivo crea una combinación NUEVA (no sobrescribe nada). "
+                                 "Podés arrastrar VARIOS a la vez: se importa uno por archivo.")
+if _up_comb and st.button(f"➕ Importar combinación{'es' if len(_up_comb) > 1 else ''} "
+                          f"({len(_up_comb)})", key="comb_import", type="primary"):
+    _errs = 0
+    for _f_comb in _up_comb:
+        try:
+            _reg = _cmb.import_file(_f_comb)
+            _n_esp = _cmb.expected_scenarios(_reg)
+            st.success(f"✅ **{_reg['nombre']}** importada — generará **{_n_esp:,}** escenarios "
+                       "(producto cartesiano). Tocá «⚙️ Generar escenarios» en su contenedor.")
+        except ValueError as _ie:
+            _errs += 1
+            st.error(f"❌ `{_f_comb.name}`: {_ie}")
+    if not _errs:
+        st.rerun()          # con errores NO re-corremos: que los mensajes queden legibles
 
 _activa = _cmb.active_combination()
 _combos = _cmb.list_combinations()
