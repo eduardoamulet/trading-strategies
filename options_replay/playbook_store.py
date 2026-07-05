@@ -66,19 +66,28 @@ def scenario_for_date(pb, fecha) -> dict | None:
 
 # ── Construcción desde un results detallado (post-batch) ─────────────────────
 def build_from_results(results_path, combination: str | None = None) -> dict:
-    """Interpreta el results DETALLADO → dict del playbook persistible: rango evaluado, tickers,
-    veredicto por día (escenario, WR, ROI cartera, Sharpe, n, condiciones) y el desglose
-    día×ticker. Las CONDICIONES salen de la COMBINACIÓN (combinations.db) — ya no del template.
-    Usa el mismo motor que «Interpretar resultados»."""
+    """(compat) Interpreta un results FILE → playbook. El camino sin-Excel (ingesta directa)
+    usa `build_from_df` con las filas del almacén — misma semántica, sin parsear archivos."""
+    from bt_analysis import loader
+    rdf, gran = loader.load_results(str(results_path))
+    return build_from_df(rdf, gran, combination=combination, results_ref=str(results_path))
+
+
+def build_from_df(rdf, gran: str = "detailed", combination: str | None = None,
+                  results_ref: str = "") -> dict:
+    """Interpreta un DataFrame CANÓNICO detallado → dict del playbook persistible: rango
+    evaluado, tickers, veredicto por día (escenario, WR, ROI cartera, Sharpe, n, condiciones)
+    y el desglose día×ticker. Las CONDICIONES salen de la COMBINACIÓN (combinations.db).
+    Mismo motor que «Interpretar resultados»; `results_ref` es solo trazabilidad (antes era el
+    path del xlsx; con ingesta directa es 'almacén:<run_id>')."""
     import pandas as pd
 
     import combinations as _comb
-    from bt_analysis import engine, loader
+    from bt_analysis import engine
     from trade_plan import scenario_config_summary
 
     combination = combination or _comb.active_combination() or _comb.LEGACY_ID
     _c = _comb.get_combination(combination) or {}
-    rdf, gran = loader.load_results(str(results_path))
     sc = _comb.scenarios_df(combination)
     _seed_info = dict(_c.get("seed") or {})
     _seed_info["Tickers"] = ", ".join(_seed_info.get("tickers") or [])
@@ -109,7 +118,7 @@ def build_from_results(results_path, combination: str | None = None) -> dict:
         "evaluado_hasta": str(_f.max().date()) if len(_f) else None,
         "tickers": _seed_info.get("Tickers") or "",
         "generado_en": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "results_file": str(results_path),
+        "results_file": results_ref,
         "combination": combination, "combination_nombre": _c.get("nombre") or combination,
         "n_dias": rep.get("n_days"), "n_posiciones": rep.get("n_positions"),
         "per_day": per_day, "por_ticker": por_ticker,
@@ -610,7 +619,7 @@ def launch_reevaluation(fecha_ini: str, fecha_fin: str, tickers: list[str],
     rango/tickers dados. Persiste el job en data/playbook_job.json para sobrevivir
     refresh/reinicio. Devuelve el dict del job."""
     import combinations as _comb
-    from ucbatch import report as _ucrep, runner as _ucrun
+    from ucbatch import runner as _ucrun
 
     combination = combination or _comb.active_combination()
     if not combination:
@@ -621,54 +630,77 @@ def launch_reevaluation(fecha_ini: str, fecha_fin: str, tickers: list[str],
         raise ValueError(f"La combinación «{(c or {}).get('nombre') or combination}» no tiene "
                          "escenarios generados — tocá «Generar escenarios» primero.")
 
+    import bt_store
+
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     seed = _comb.seed_for(combination, fecha_inicial=str(fecha_ini), fecha_final=str(fecha_fin),
                           tickers=list(tickers))
-    out_xlsx = RESULTS_DIR / _ucrep.output_filename(seed, tag=combination)
     n_days = len(_ucrun.trading_days(seed.fecha_inicial, seed.fecha_final))
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # PERSISTENCIA DIRECTA: el batch ingesta al almacén (sin results xlsx — sin techo de 1M de
+    # filas) y la ejecución queda registrada en reeval_runs. La fila se crea ACÁ ('corriendo')
+    # para que la UI la vea al instante, antes de que el subproceso termine de bootear.
+    bt_store.record_run_start(job_id, combination=combination,
+                              combination_nombre=c.get("nombre") or combination,
+                              tipo="reevaluacion", fecha_desde=str(fecha_ini),
+                              fecha_hasta=str(fecha_fin), tickers=",".join(tickers),
+                              n_escenarios=int(c.get("n_escenarios") or 0), n_dias=n_days)
     cmd = [sys.executable, str(HERE / "run_ucbatch.py"),
            "--combination", combination, "--desde", str(fecha_ini), "--hasta", str(fecha_fin),
-           "--tickers", ",".join(tickers), "--out", str(RESULTS_DIR), "--notify"]
+           "--tickers", ",".join(tickers), "--ingest", "--run-id", job_id,
+           "--run-tipo", "reevaluacion"]
     subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                      cwd=str(HERE))
-    job = {"id": job_id, "started": datetime.now().strftime("%Y-%m-%d %H:%M"),
-           "out": str(out_xlsx), "combination": combination,
-           "combination_nombre": c.get("nombre") or combination,
-           "rango": [str(fecha_ini), str(fecha_fin)], "tickers": list(tickers),
-           "n_dias": n_days, "n_escenarios": int(c.get("n_escenarios") or 0)}
-    JOB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    JOB_PATH.write_text(json.dumps(job, indent=2, ensure_ascii=False), encoding="utf-8")
-    return job
+    JOB_PATH.unlink(missing_ok=True)           # legacy: el json transitorio ya no se usa
+    return {"id": job_id, "started": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "combination": combination, "combination_nombre": c.get("nombre") or combination,
+            "rango": [str(fecha_ini), str(fecha_fin)], "tickers": list(tickers),
+            "n_dias": n_days, "n_escenarios": int(c.get("n_escenarios") or 0)}
 
 
 def check_job():
-    """(estado, job): estado ∈ {None (sin job), "running", "done"}. «done» = el results del job ya
-    existe en resultados/ (el batch lo escribe al FINAL de la corrida)."""
-    job = load_playbook(JOB_PATH)          # mismo formato json
-    if not job:
+    """(estado, job) desde la tabla reeval_runs: 'running' si la ÚLTIMA reevaluación está
+    corriendo, 'done' si terminó exitosa y falta finalizar (reconstruir el veredicto),
+    'failed' si terminó fallida/abortada sin descartar. None = nada pendiente.
+    El dict conserva las claves que usa la UI (rango, n_dias, n_escenarios, nombre…)."""
+    import bt_store
+
+    bt_store.mark_stale_running()              # corridas huérfanas (proceso muerto) → abortada
+    r = bt_store.latest_run(tipo="reevaluacion")
+    if not r or r.get("finalizado"):
         return None, None
-    return ("done" if Path(job.get("out", "")).exists() else "running"), job
+    job = {"id": r["run_id"], "started": (r.get("started_at") or "")[:16],
+           "combination": r["combination"],
+           "combination_nombre": r.get("combination_nombre") or r["combination"],
+           "rango": [r.get("fecha_desde"), r.get("fecha_hasta")],
+           "tickers": (r.get("tickers") or "").split(","),
+           "n_dias": r.get("n_dias"), "n_escenarios": r.get("n_escenarios"),
+           "estado": r["estado"], "error": r.get("error_msg"),
+           "n_filas_nuevas": r.get("n_filas_nuevas")}
+    if r["estado"] == "corriendo":
+        return "running", job
+    if r["estado"] == "exitosa":
+        return "done", job
+    return "failed", job                       # fallida | abortada, pendiente de descartar
 
 
 def finalize_job() -> dict:
-    """El batch terminó: interpreta el results del job, guarda el playbook y limpia el job.
-    Además INGESTA las filas al almacén incremental (bt_store) BAJO la combinación del job —
-    así las reevaluaciones manuales también suman historia. Devuelve el playbook nuevo."""
+    """La reevaluación terminó y sus filas YA están en el almacén (ingesta directa): reconstruye
+    el veredicto desde el almacén SOBRE EL RANGO del run (misma semántica que interpretar el
+    results de ese rango), guarda playbook + history y marca el run finalizado. Milisegundos —
+    ya no se parsea ningún Excel."""
     import bt_store
 
     status, job = check_job()
     if status != "done":
-        raise RuntimeError("El job de reevaluación todavía no terminó.")
+        raise RuntimeError("No hay reevaluación exitosa pendiente de finalizar.")
     _combo = job.get("combination") or bt_store.LEGACY_COMBINATION
-    pb = build_from_results(job["out"], combination=_combo)
+    rdf = bt_store.load_range(job["rango"][0], job["rango"][1], combination=_combo)
+    pb = build_from_df(rdf, "detailed", combination=_combo,
+                       results_ref=f"almacén:{job['id']}")
     save_playbook(pb)
     append_history(pb)
-    try:
-        pb["_ingestado_al_almacen"] = bt_store.ingest_results_file(job["out"],
-                                                                   combination=_combo)
-    except Exception:  # noqa: BLE001 — la ingesta no debe romper el finalize
-        pb["_ingestado_al_almacen"] = None
-    JOB_PATH.unlink(missing_ok=True)
+    pb["_ingestado_al_almacen"] = job.get("n_filas_nuevas")
+    bt_store.mark_run_finalized(job["id"])
+    JOB_PATH.unlink(missing_ok=True)           # legacy: limpiar json viejo si quedó
     return pb

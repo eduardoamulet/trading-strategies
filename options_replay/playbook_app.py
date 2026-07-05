@@ -35,21 +35,31 @@ st.caption("El **playbook** dice qué días operar y con qué **escenario/condic
            "configuración»: según el día de la semana de las fechas cargadas. Fuente de las "
            "condiciones: el template del batch (hoja «Backtesting scenarios»).")
 
-# ── Job de reevaluación en curso / terminado ──
+# ── Job de reevaluación en curso / terminado (estado en reeval_runs, no en archivos) ──
 _st, _job = _pbs.check_job()
 if _st == "done":
-    with st.spinner("La reevaluación terminó — interpretando resultados y actualizando…"):
+    with st.spinner("La reevaluación terminó — actualizando el veredicto desde el almacén…"):
         try:
             _pbs.finalize_job()
-            st.success("✅ Playbook actualizado con la reevaluación.")
+            st.success(f"✅ Playbook actualizado con la reevaluación "
+                       f"(+{(_job or {}).get('n_filas_nuevas') or 0:,} filas nuevas en el "
+                       "almacén — ingesta directa, sin Excel intermedio).")
         except Exception as _fe:  # noqa: BLE001
-            st.error(f"El batch terminó pero no pude interpretar el results: {_fe}")
+            st.error(f"La reevaluación terminó pero no pude reconstruir el veredicto: {_fe}")
 elif _st == "running":
     st.info(f"⏳ **Reevaluación corriendo** en una consola aparte (iniciada {_job.get('started')}) "
             f"· rango {_job.get('rango', ['?', '?'])[0]} → {_job.get('rango', ['?', '?'])[1]} · "
-            f"{_job.get('n_dias', '?')} días × {_job.get('n_escenarios', '?')} escenarios "
-            f"(~20 s/día). La tabla se actualiza sola al terminar.")
+            f"{_job.get('n_dias', '?')} días × {_job.get('n_escenarios', '?')} escenarios · "
+            "ingesta directa al almacén. La tabla se actualiza sola al terminar.")
     if st.button("🔄 Chequear estado ahora", key="pb_check"):
+        st.rerun()
+elif _st == "failed":
+    st.error(f"❌ La reevaluación **{_job.get('id')}** de «{_job.get('combination_nombre')}» "
+             f"terminó **{_job.get('estado')}**: {_job.get('error') or 'sin detalle'} — "
+             "el detalle queda en el historial de ejecuciones (abajo).")
+    if st.button("Descartar aviso", key="pb_fail_ack"):
+        import bt_store as _bts_ack
+        _bts_ack.mark_run_finalized(_job["id"])
         st.rerun()
 
 # ── Tabla del playbook vigente ──
@@ -316,3 +326,25 @@ if st.button("🔁 Reevaluar Playbook", type="primary", key="pb_reeval",
 st.caption("⚠️ Regla de oro (validada con feb–mar vs abr–jun): un día es confiable recién "
            "cuando el MISMO escenario pasa el gate en **dos ventanas consecutivas** — un "
            "veredicto de una sola ventana es in-sample.")
+
+# ── Historial de ejecuciones (reeval_runs): cada corrida registrada en la base ──
+with st.expander("📜 Historial de ejecuciones (reevaluaciones · incrementales · verify)",
+                 expanded=False):
+    import bt_store as _bts_hist
+    _runs_hist = _bts_hist.runs_for(limit=40)
+    if not _runs_hist:
+        st.caption("Sin ejecuciones registradas todavía — la primera reevaluación o el próximo "
+                   "job de las 05:00 estrenan la tabla.")
+    else:
+        _EST_RUN = {"exitosa": "✅ exitosa", "fallida": "❌ fallida",
+                    "corriendo": "⏳ corriendo", "abortada": "⚠️ abortada"}
+        _hrows = [{"Inicio": r.get("started_at"), "Tipo": r.get("tipo"),
+                   "Combinación": r.get("combination_nombre") or r.get("combination"),
+                   "Estado": _EST_RUN.get(r.get("estado"), r.get("estado")),
+                   "Duración (s)": (round(r["duration_s"]) if r.get("duration_s") else None),
+                   "Rango": f"{r.get('fecha_desde') or '—'} → {r.get('fecha_hasta') or '—'}",
+                   "Filas nuevas": r.get("n_filas_nuevas"),
+                   "Posiciones": r.get("n_filas"), "Errores": r.get("n_err"),
+                   "Detalle": (r.get("error_msg") or "")[:90]} for r in _runs_hist]
+        st.dataframe(pd.DataFrame(_hrows), hide_index=True, use_container_width=True,
+                     height=min(38 + 35 * len(_hrows), 430))

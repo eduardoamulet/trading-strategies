@@ -55,9 +55,37 @@ def _create(con: sqlite3.Connection) -> None:
     con.execute("CREATE INDEX IF NOT EXISTS ix_bt_fecha ON bt_results (fecha)")
 
 
+def _create_runs(con: sqlite3.Connection) -> None:
+    """Historial de EJECUCIONES (reevaluaciones / incrementales / verify): una fila por corrida,
+    con estado, duración, error y métricas resumidas — los DETALLES viven deduplicados en
+    bt_results (hechos inmutables por PK); acá queda el registro independiente de cada corrida."""
+    con.execute("""CREATE TABLE IF NOT EXISTS reeval_runs (
+        run_id             TEXT PRIMARY KEY,
+        combination        TEXT NOT NULL,
+        combination_nombre TEXT NOT NULL DEFAULT '',
+        tipo               TEXT NOT NULL DEFAULT 'reevaluacion',
+        estado             TEXT NOT NULL DEFAULT 'corriendo',
+        started_at         TEXT NOT NULL,
+        finished_at        TEXT,
+        duration_s         REAL,
+        error_msg          TEXT,
+        fecha_desde        TEXT,
+        fecha_hasta        TEXT,
+        tickers            TEXT,
+        n_escenarios       INTEGER,
+        n_dias             INTEGER,
+        n_filas            INTEGER,
+        n_filas_nuevas     INTEGER,
+        n_err              INTEGER,
+        resumen_json       TEXT,
+        finalizado         INTEGER NOT NULL DEFAULT 0)""")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_runs_comb ON reeval_runs (combination, started_at)")
+
+
 def _connect(path: Path = DB_PATH) -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(path))
+    _create_runs(con)
     exists = con.execute("SELECT name FROM sqlite_master WHERE type='table' "
                          "AND name='bt_results'").fetchone()
     if exists:
@@ -179,4 +207,114 @@ def delete_rows(combination: str, path: Path = DB_PATH) -> int:
     antes valida que la combinación NO sea la activa (combinations.delete_combination)."""
     with _connect(path) as con, con:
         cur = con.execute("DELETE FROM bt_results WHERE combination=?", (combination,))
+        return cur.rowcount
+
+
+# ── Ejecuciones (reeval_runs): registro independiente de cada corrida ─────────
+_RUN_COLS = ["run_id", "combination", "combination_nombre", "tipo", "estado", "started_at",
+             "finished_at", "duration_s", "error_msg", "fecha_desde", "fecha_hasta", "tickers",
+             "n_escenarios", "n_dias", "n_filas", "n_filas_nuevas", "n_err", "resumen_json",
+             "finalizado"]
+
+
+def _run_to_dict(row) -> dict:
+    import json as _json
+    d = dict(zip(_RUN_COLS, row))
+    try:
+        d["resumen"] = _json.loads(d.get("resumen_json") or "null")
+    except Exception:  # noqa: BLE001
+        d["resumen"] = None
+    return d
+
+
+def record_run_start(run_id: str, *, combination: str, combination_nombre: str = "",
+                     tipo: str = "reevaluacion", fecha_desde: str = "", fecha_hasta: str = "",
+                     tickers: str = "", n_escenarios: int = 0, n_dias: int = 0,
+                     path: Path = DB_PATH) -> None:
+    """Registra la ejecución como 'corriendo'. INSERT OR IGNORE: si el LANZADOR ya creó la fila
+    (para que la UI la vea al instante), el worker no la pisa."""
+    with _connect(path) as con, con:
+        con.execute(
+            "INSERT OR IGNORE INTO reeval_runs (run_id, combination, combination_nombre, tipo,"
+            " estado, started_at, fecha_desde, fecha_hasta, tickers, n_escenarios, n_dias)"
+            " VALUES (?,?,?,?,'corriendo',?,?,?,?,?,?)",
+            (run_id, combination, combination_nombre, tipo,
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             fecha_desde, fecha_hasta, tickers, int(n_escenarios), int(n_dias)))
+
+
+def record_run_finish(run_id: str, *, estado: str, n_filas: int = 0, n_filas_nuevas: int = 0,
+                      n_err: int = 0, resumen: dict | None = None, error_msg: str | None = None,
+                      path: Path = DB_PATH) -> None:
+    """Cierra la ejecución: estado ('exitosa'/'fallida'), duración calculada desde started_at,
+    conteos y métricas resumidas (JSON). Transaccional."""
+    import json as _json
+    now = datetime.now()
+    with _connect(path) as con, con:
+        st_ = con.execute("SELECT started_at FROM reeval_runs WHERE run_id=?",
+                          (run_id,)).fetchone()
+        dur = None
+        if st_ and st_[0]:
+            try:
+                dur = (now - datetime.strptime(st_[0], "%Y-%m-%d %H:%M:%S")).total_seconds()
+            except Exception:  # noqa: BLE001
+                dur = None
+        con.execute(
+            "UPDATE reeval_runs SET estado=?, finished_at=?, duration_s=?, n_filas=?,"
+            " n_filas_nuevas=?, n_err=?, resumen_json=?, error_msg=? WHERE run_id=?",
+            (estado, now.strftime("%Y-%m-%d %H:%M:%S"), dur, int(n_filas),
+             int(n_filas_nuevas), int(n_err),
+             _json.dumps(resumen, ensure_ascii=False) if resumen else None, error_msg, run_id))
+
+
+def get_run(run_id: str, path: Path = DB_PATH) -> dict | None:
+    with _connect(path) as con:
+        r = con.execute(f"SELECT {', '.join(_RUN_COLS)} FROM reeval_runs WHERE run_id=?",
+                        (run_id,)).fetchone()
+    return _run_to_dict(r) if r else None
+
+
+def latest_run(tipo: str | None = None, path: Path = DB_PATH) -> dict | None:
+    """La ejecución MÁS RECIENTE (del tipo dado, si se pasa) — la única que importa para el
+    estado de la página; las anteriores quedan en el historial."""
+    q = f"SELECT {', '.join(_RUN_COLS)} FROM reeval_runs"
+    args: tuple = ()
+    if tipo:
+        q += " WHERE tipo=?"
+        args = (tipo,)
+    q += " ORDER BY started_at DESC, run_id DESC LIMIT 1"
+    with _connect(path) as con:
+        r = con.execute(q, args).fetchone()
+    return _run_to_dict(r) if r else None
+
+
+def runs_for(combination: str | None = None, limit: int = 50,
+             path: Path = DB_PATH) -> list[dict]:
+    """Historial de ejecuciones (todas o de UNA combinación), más recientes primero."""
+    q = f"SELECT {', '.join(_RUN_COLS)} FROM reeval_runs"
+    args: tuple = ()
+    if combination:
+        q += " WHERE combination=?"
+        args = (combination,)
+    q += " ORDER BY started_at DESC, run_id DESC LIMIT ?"
+    with _connect(path) as con:
+        rows = con.execute(q, args + (int(limit),)).fetchall()
+    return [_run_to_dict(r) for r in rows]
+
+
+def mark_run_finalized(run_id: str, path: Path = DB_PATH) -> None:
+    with _connect(path) as con, con:
+        con.execute("UPDATE reeval_runs SET finalizado=1 WHERE run_id=?", (run_id,))
+
+
+def mark_stale_running(max_hours: float = 12.0, path: Path = DB_PATH) -> int:
+    """Marca como 'abortada' toda corrida 'corriendo' más vieja que max_hours (proceso muerto
+    sin despedirse — kill, crash, apagón). Se llama lazy desde check_job."""
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(hours=max_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    with _connect(path) as con, con:
+        cur = con.execute(
+            "UPDATE reeval_runs SET estado='abortada',"
+            " error_msg='proceso sin señales de vida — marcada huérfana' "
+            "WHERE estado='corriendo' AND started_at < ?", (cutoff,))
         return cur.rowcount

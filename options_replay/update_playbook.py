@@ -33,6 +33,7 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))           # config.py (API keys) vive en la raíz Traiding
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -55,28 +56,32 @@ def _bootstrap() -> None:
             print(f"bootstrap: {f.name} → ERROR {e}")
 
 
-def _run_batch(desde: str, hasta: str, tickers: list[str], combination: str) -> Path:
-    """Corre el batch SÍNCRONO para [desde, hasta] con los escenarios de la COMBINACIÓN
-    (combinations.db). Devuelve el path del results generado."""
+def _run_batch(desde: str, hasta: str, tickers: list[str], combination: str,
+               tipo: str = "incremental") -> dict:
+    """Corre el batch SÍNCRONO para [desde, hasta] con INGESTA DIRECTA al almacén (sin Excel
+    intermedio — el techo de 1.048.576 filas por hoja no aplica). La ejecución queda registrada
+    en reeval_runs. Devuelve el registro del run (bt_store.get_run)."""
     import combinations as _comb
-    from ucbatch import report as _ucrep
 
     c = _comb.get_combination(combination)
     if not c or not c.get("n_escenarios"):
         raise RuntimeError(f"La combinación {combination!r} no tiene escenarios generados.")
-    seed = _comb.seed_for(combination, fecha_inicial=desde, fecha_final=hasta, tickers=tickers)
-    out = pbs.RESULTS_DIR / _ucrep.output_filename(seed, tag=combination)
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     print(f"batch incremental: {desde} → {hasta} · {len(tickers)} tickers × "
-          f"{c['n_escenarios']:,} escenarios · combinación «{c['nombre']}»")
+          f"{c['n_escenarios']:,} escenarios · combinación «{c['nombre']}» · ingesta directa")
     r = subprocess.run([sys.executable, str(HERE / "run_ucbatch.py"),
                         "--combination", combination, "--desde", desde, "--hasta", hasta,
-                        "--tickers", ",".join(tickers), "--out", str(pbs.RESULTS_DIR)],
+                        "--tickers", ",".join(tickers), "--ingest",
+                        "--run-id", run_id, "--run-tipo", tipo],
                        cwd=str(HERE))
     if r.returncode != 0:
         raise RuntimeError(f"run_ucbatch terminó con código {r.returncode}")
-    if not out.exists():
-        raise RuntimeError(f"el batch no produjo {out.name}")
-    return out
+    run = bt_store.get_run(run_id)
+    if not run or run.get("estado") != "exitosa":
+        raise RuntimeError(f"el run {run_id} no quedó exitoso "
+                           f"(estado: {(run or {}).get('estado')!r} · "
+                           f"error: {(run or {}).get('error_msg')!r})")
+    return run
 
 
 def verify_integrity(n_sample: int = 3, combination: str | None = None) -> bool:
@@ -87,9 +92,10 @@ def verify_integrity(n_sample: int = 3, combination: str | None = None) -> bool:
     filas viejas y nuevas dejaron de ser comparables). Devuelve True si la muestra está limpia."""
     import combinations as _comb
     import pandas as pd
-    from bt_analysis import loader as _ldr
 
-    from ucbatch import runner as _ucrun
+    import config
+    from ucbatch import runner as _ucrun, scenario as _ucsc
+    from ucbatch.canonical import rows_to_canonical_df
 
     combination = combination or _comb.active_combination() or bt_store.LEGACY_COMBINATION
     dates = bt_store.distinct_dates(combination)
@@ -107,13 +113,14 @@ def verify_integrity(n_sample: int = 3, combination: str | None = None) -> bool:
           f"{', '.join(sample)}")
 
     limpio = True
+    scens = _comb.scenarios_for_batch(combination)
     for d in sample:
-        out = _run_batch(d, d, tickers, combination)
-        rdf, gran = _ldr.load_results(str(out))
-        if gran != "detailed":
-            print(f"verify {d}: el re-run no es detallado — no comparable")
-            limpio = False
-            continue
+        # Re-run IN-PROCESS + DataFrame canónico directo (sin subprocess ni Excel efímero):
+        # mismo motor, mismos redondeos que el results (ucbatch.canonical).
+        seed = _comb.seed_for(combination, fecha_inicial=d, fecha_final=d, tickers=tickers)
+        mapped = [_ucsc.map_scenario(seed, s) for s in scens]
+        rows, _dd = _ucrun.run(seed, mapped, str(HERE / "data"), config.POLYGON_API_KEY)
+        rdf = rows_to_canonical_df(seed, rows)
         nuevo = rdf.assign(fecha=rdf["fecha"].astype(str).str[:10])
         viejo = bt_store.load_range(d, d, combination=combination)
         viejo = viejo.assign(fecha=viejo["fecha"].astype(str).str[:10])
@@ -132,7 +139,6 @@ def verify_integrity(n_sample: int = 3, combination: str | None = None) -> bool:
                   f"{len(falta)} filas sin contraparte (de {len(m):,})")
         else:
             print(f"verify {d}: ✓ {len(m):,} filas idénticas (tolerancia $0.01)")
-        out.unlink(missing_ok=True)          # el re-run es efímero: no contamina resultados/
 
     if limpio:
         print("verify: ✓ almacén consistente con el motor actual "
@@ -142,6 +148,13 @@ def verify_integrity(n_sample: int = 3, combination: str | None = None) -> bool:
               "  Acción: subir bt_store.ENGINE_VERSION, borrar data/bt_results.db y "
               "re-backtestear (o mantener versiones separadas). Las filas viejas y nuevas "
               "NO son comparables.")
+    # Registro de la ejecución (auditoría): el verify también es una corrida.
+    _vid = datetime.now().strftime("%Y%m%d_%H%M%S") + "_vf"
+    bt_store.record_run_start(_vid, combination=combination, tipo="verify",
+                              fecha_desde=sample[0], fecha_hasta=sample[-1],
+                              tickers=",".join(tickers), n_dias=len(sample))
+    bt_store.record_run_finish(_vid, estado="exitosa",
+                               resumen={"dias_muestra": sample, "limpio": bool(limpio)})
     return limpio
 
 
@@ -191,10 +204,10 @@ def main() -> None:
         pend = [d for d in _ucrun.trading_days(cov["hasta"], hoy)
                 if cov["hasta"] < d < hoy]
         if pend:
-            out = _run_batch(pend[0], pend[-1], cov["tickers"] or ["QQQ", "SPY", "IWM"],
+            run = _run_batch(pend[0], pend[-1], cov["tickers"] or ["QQQ", "SPY", "IWM"],
                              combination)
-            n = bt_store.ingest_results_file(out, combination=combination)
-            print(f"ingesta: {out.name} → +{n:,} filas nuevas")
+            print(f"ingesta directa [{run['run_id']}]: +{run['n_filas_nuevas']:,} filas nuevas "
+                  f"(de {run['n_filas']:,} · {run['duration_s']:.0f} s)")
         else:
             print("sin días faltantes — el almacén está al día.")
 
