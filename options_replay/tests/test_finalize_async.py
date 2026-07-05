@@ -91,3 +91,18 @@ def test_display_name_recorta_boilerplate():
     assert dn({"combination_nombre": "Mi Comb.xlsx"}) == "Mi Comb"
     largo = dn("x" * 80)
     assert len(largo) == 45 and largo.startswith("…")     # trunca por la CABEZA (cola distintiva)
+
+
+def test_beta_ppf_puro_contra_formas_cerradas():
+    """El fallback puro-Python del P5: Beta(a,1) y Beta(1,b) tienen CDF cerrada → cuantiles
+    exactos para verificar sin scipy. Además simetría I_x(a,b) = 1 - I_{1-x}(b,a)."""
+    pp = pbs._beta_ppf_puro
+    assert abs(pp(0.05, 1, 1) - 0.05) < 1e-9                    # uniforme
+    assert abs(pp(0.05, 2, 1) - 0.05 ** 0.5) < 1e-9             # CDF = x²
+    assert abs(pp(0.05, 3, 1) - 0.05 ** (1 / 3)) < 1e-9         # CDF = x³
+    assert abs(pp(0.05, 1, 2) - (1 - 0.95 ** 0.5)) < 1e-9       # CDF = 1-(1-x)²
+    # simetría del cuantil: Q_beta(q; a,b) = 1 − Q_beta(1−q; b,a)
+    assert abs(pp(0.05, 7.3, 2.6) - (1 - pp(0.95, 2.6, 7.3))) < 1e-9
+    # _beta_p5 nunca revienta aunque scipy esté bloqueado (usa el camino que toque)
+    v = pbs._beta_p5(10.0, 5.0)
+    assert 0.0 < v < 100.0

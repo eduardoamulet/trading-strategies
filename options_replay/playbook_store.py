@@ -129,12 +129,82 @@ def build_from_df(rdf, gran: str = "detailed", combination: str | None = None,
 HISTORY_PATH = HERE / "data" / "playbook_history.jsonl"
 
 
+def _betacf(a: float, b: float, x: float) -> float:
+    """Fracción continua de la beta incompleta (método de Lentz, Numerical Recipes §6.4)."""
+    MAXIT, EPS, FPMIN = 200, 3e-12, 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < FPMIN:
+        d = FPMIN
+    d = 1.0 / d
+    h = d
+    for m in range(1, MAXIT + 1):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < FPMIN:
+            d = FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < FPMIN:
+            c = FPMIN
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < FPMIN:
+            d = FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < FPMIN:
+            c = FPMIN
+        d = 1.0 / d
+        de = d * c
+        h *= de
+        if abs(de - 1.0) < EPS:
+            break
+    return h
+
+
+def _betainc(a: float, b: float, x: float) -> float:
+    """I_x(a,b) regularizada (CDF de la Beta) en puro Python — sin scipy."""
+    import math
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    bt = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+                  + a * math.log(x) + b * math.log1p(-x))
+    if x < (a + 1.0) / (a + b + 2.0):
+        return bt * _betacf(a, b, x) / a
+    return 1.0 - bt * _betacf(b, a, 1.0 - x) / b
+
+
+def _beta_ppf_puro(q: float, a: float, b: float) -> float:
+    """Cuantil de la Beta por bisección sobre _betainc (80 iteraciones — sobra precisión)."""
+    lo, hi = 0.0, 1.0
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if _betainc(a, b, mid) < q:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
 def _beta_p5(wins_w: float, losses_w: float) -> float:
     """Límite INFERIOR creíble (percentil 5) del win-rate: posterior Beta(1+wins, 1+losses)
     con pseudo-conteos PONDERADOS (el decaimiento reduce la evidencia efectiva → intervalos
-    más anchos con muestras viejas/chicas — la lección del Lun C061). En %."""
-    from scipy.stats import beta
-    return float(beta.ppf(0.05, 1.0 + max(wins_w, 0.0), 1.0 + max(losses_w, 0.0)) * 100.0)
+    más anchos con muestras viejas/chicas — la lección del Lun C061). En %.
+
+    scipy con FALLBACK puro-Python: Windows Application Control puede bloquear las DLL
+    compiladas de scipy (visto 2026-07-05 con _linalg_pythran.pyd) — el gate del playbook
+    no puede depender de eso. La bisección da el mismo número (≈1e-10 de diferencia)."""
+    a, b = 1.0 + max(wins_w, 0.0), 1.0 + max(losses_w, 0.0)
+    try:
+        from scipy.stats import beta
+        return float(beta.ppf(0.05, a, b) * 100.0)
+    except Exception:  # noqa: BLE001 — ImportError / DLL bloqueada / scipy roto
+        return _beta_ppf_puro(0.05, a, b) * 100.0
 
 
 def _wmetrics(rois, w) -> dict:

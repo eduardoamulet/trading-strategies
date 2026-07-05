@@ -11,7 +11,13 @@ import pandas as pd
 
 def tests(df: pd.DataFrame) -> dict:
     out: dict = {"caveats": []}
-    from scipy import stats
+    try:
+        from scipy import stats
+    except Exception:  # noqa: BLE001 — DLL bloqueada por Application Control / scipy roto:
+        # los tests de significancia son ENRIQUECIMIENTO, nunca deben tumbar el análisis.
+        out["caveats"].append("scipy no disponible (¿Application Control bloqueó sus DLL?) — "
+                              "tests de significancia omitidos; el resto del análisis no cambia.")
+        return out
 
     roi = pd.to_numeric(df.get("roi"), errors="coerce").dropna()
     if len(roi) >= 8:
