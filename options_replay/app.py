@@ -1881,13 +1881,16 @@ def _render_iters_panel(_iters_seed):
                 except Exception:  # noqa: BLE001 — config ilegible: ese día se saltea
                     pass
         # Solo 0DTE: salteamos las señales SIN 0DTE ese día (no se intentan → no ensucian
-        # los resultados con avisos "No 0 DTE option").
+        # los resultados con avisos "No 0 DTE option"). Los salteos POR PLAYBOOK (días
+        # NO OPERAR / sin config operable) son OTRA categoría: se reportan aparte — antes
+        # caían en la misma lista y el panel los mostraba como «sin 0DTE» (falso para
+        # tickers con vencimiento diario) con un hint de Auto-DTE que no aplicaba.
         _skipped = []
+        _pb_skip = []
         _keep = []
         if _ov_by_wd:
             _pb_skip = [s for s in _specs if _wd_of_fecha(s.get("fecha")) not in _ov_by_wd]
             if _pb_skip:
-                _skipped.extend(_pb_skip)
                 st.warning(f"🗓 Config por día: **{len(_pb_skip)}** fila(s) caen en días sin "
                            "config operable del playbook y se **saltean**: "
                            + ", ".join(sorted({f"{s.get('ticker')} {s.get('fecha')}"
@@ -1999,6 +2002,7 @@ def _render_iters_panel(_iters_seed):
         # igual que un backtest manual (Totales + detalle por iteración con render_iteration).
         st.session_state["replay"] = {
             "mode": "signals", "sig_results": _res, "sig_skipped": _skipped,
+            "sig_skipped_playbook": _pb_skip,
             "sig_elapsed": time.perf_counter() - _t0, "sig_workers": _wk,
         }
         st.rerun()
@@ -4442,6 +4446,15 @@ def _render_signals_session(rs):
 
             render_grouped_totals(oks, _grp_of, "Grupo")
 
+    _pb_skipped = rs.get("sig_skipped_playbook") or []
+    if _pb_skipped:
+        _skpb = ", ".join(sorted({f"{s.get('ticker')} {s.get('fecha')}"
+                                  for s in _pb_skipped})[:12])
+        if len(_pb_skipped) > 12:
+            _skpb += f" … (+{len(_pb_skipped) - 12})"
+        st.caption(f"🗓 Se saltaron **{len(_pb_skipped)}** fila(s) **por el playbook** — caen en "
+                   f"días NO OPERAR / sin config operable (decisión del veredicto, no un "
+                   f"problema de datos). No cuentan como error ni en los totales: {_skpb}")
     _skipped = rs.get("sig_skipped") or []
     if _skipped:
         _sk = ", ".join(f"{s.get('ticker')} {s.get('fecha')}" for s in _skipped[:12])
