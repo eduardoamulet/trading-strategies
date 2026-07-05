@@ -122,6 +122,23 @@ else:
                    "🟡 candidato = pasa solo en la reciente (edge sin confirmar) · ⏸ suspendido = "
                    "edge decaído, kill-switch (3 sesiones seguidas perdedoras / ROI acumulado "
                    "≤ −15%), calibración rota o churn · — sin ventaja.")
+    # Desglose día × ticker ANTES del detalle de estados (pedido UX: la matriz operativa
+    # primero, los porqués después). Fuera del if: playbooks sin estados también lo muestran.
+    _pt = _pb.get("por_ticker") or []
+    if _pt:
+        try:
+            _dtpb = pd.DataFrame(_pt)
+            _pivpb = _dtpb.pivot(index="Ticker", columns="Día", values="Recomendación")
+            _pivpb = _pivpb.reindex(columns=[c for c in ("Lun", "Mar", "Mié", "Jue", "Vie")
+                                             if c in _pivpb.columns])
+            st.caption("Desglose día × ticker (verde = OPERAR):")
+            st.dataframe(_pivpb.style.map(
+                lambda v: (f"background-color:{_REC_COLOR.get(v, '')}22;"
+                           f"color:{_REC_COLOR.get(v, '')};font-weight:700")
+                if v in _REC_COLOR else ""), use_container_width=True)
+        except Exception:  # noqa: BLE001
+            pass
+    if _tiene_estado:
         with st.expander("ℹ️ Motivo del estado por día"):
             for _d, _i in (_pb.get("per_day") or {}).items():
                 if _i.get("estado_motivo"):
@@ -164,20 +181,6 @@ else:
                        "Direction Engine (promedio del día). **No condiciona el gate** — con "
                        "pocos meses el n por bucket es chico: leer como tendencia.")
             st.dataframe(pd.DataFrame(_reg), use_container_width=True, hide_index=True)
-    _pt = _pb.get("por_ticker") or []
-    if _pt:
-        try:
-            _dtpb = pd.DataFrame(_pt)
-            _pivpb = _dtpb.pivot(index="Ticker", columns="Día", values="Recomendación")
-            _pivpb = _pivpb.reindex(columns=[c for c in ("Lun", "Mar", "Mié", "Jue", "Vie")
-                                             if c in _pivpb.columns])
-            st.caption("Desglose día × ticker (verde = OPERAR):")
-            st.dataframe(_pivpb.style.map(
-                lambda v: (f"background-color:{_REC_COLOR.get(v, '')}22;"
-                           f"color:{_REC_COLOR.get(v, '')};font-weight:700")
-                if v in _REC_COLOR else ""), use_container_width=True)
-        except Exception:  # noqa: BLE001
-            pass
 
 # ── Combinaciones de Backtesting ──
 st.divider()
