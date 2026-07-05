@@ -222,6 +222,33 @@ _activa = _cmb.active_combination()
 _combos = _cmb.list_combinations()
 if not _combos:
     st.info("No hay combinaciones todavía — importá un Excel de variables arriba.")
+
+# ⭐ Selector de la ACTIVA fuera de las tarjetas (pedido UX: sin expandir ni buscar el botón).
+# Equivale a «⭐ Usar en el playbook»; solo lista combinaciones con escenarios generados.
+_elegibles = [c for c in _combos if c.get("estado") == "generada" and c.get("n_escenarios")]
+if _elegibles:
+    _nom_el = {}
+    for _c_el in _elegibles:                      # nombres duplicados → sufijo con el id corto
+        _n_el = _pbs.display_name(_c_el.get("nombre") or _c_el["id"])
+        if sum(1 for x in _elegibles
+               if _pbs.display_name(x.get("nombre") or x["id"]) == _n_el) > 1:
+            _n_el += f" · {_c_el['id'][-6:]}"
+        _nom_el[_c_el["id"]] = _n_el
+    _ids_el = list(_nom_el)
+    _sel_act = st.selectbox(
+        "⭐ Combinación ACTIVA — la usan el job diario de las 05:00, la Reevaluación y el "
+        "veredicto del playbook",
+        _ids_el, index=(_ids_el.index(_activa) if _activa in _ids_el else 0),
+        format_func=lambda cid: _nom_el.get(cid, cid), key="comb_activa_sel",
+        help="Cambiarla acá equivale al botón «⭐ Usar en el playbook» de cada tarjeta. El "
+             "almacén y el veredicto están segregados por combinación — no se mezcla nada.")
+    if _sel_act != _activa:
+        try:
+            _cmb.set_active(_sel_act)
+            st.rerun()
+        except ValueError as _ae:
+            st.error(str(_ae))
+
 _EST_COMB = {"importada": "📥 importada", "generada": "✅ generada"}
 for _co in _combos:
     _es_activa = _co["id"] == _activa
