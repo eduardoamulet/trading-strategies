@@ -70,40 +70,28 @@ elif _st == "failed":
         _bts_ack.mark_run_finalized(_job["id"])
         st.rerun()
 
-# ── Tabla del playbook vigente ──
+# ── Playbook vigente: SÍNTESIS + monitores (las TABLAS viven en la tarjeta de cada
+#    combinación, abajo — pedido UX 2026-07-05: no duplicarlas acá) ──
 _pb = _pbs.load_playbook()
 if not _pb:
     st.warning("Todavía no hay playbook guardado — corré una **Reevaluación** abajo (o generá "
                "un results detallado y cargalo en Backtesting → «Interpretar resultados»).")
 else:
-    st.markdown(f"**Evaluado del {_pb.get('evaluado_desde')} al {_pb.get('evaluado_hasta')}** · "
-                f"{_pb.get('tickers')} · {_pb.get('n_dias', '?')} días hábiles · "
-                f"{_pb.get('n_posiciones', 0):,} posiciones · generado {_pb.get('generado_en')}"
-                + (f" · 🧩 combinación **{_pb['combination_nombre']}**"
-                   if _pb.get("combination_nombre") else ""))
-    if _pb.get("modo"):
-        _cob = _pb.get("cobertura") or {}
-        st.caption(f"🔁 Modo **{_pb['modo']}** · almacén acumulado: "
-                   f"{_cob.get('desde')} → {_cob.get('hasta')} ({_cob.get('dias')} días en "
-                   "data/bt_results.db) — se actualiza solo cada mañana con la Tarea Programada "
-                   "(backtestea únicamente los días nuevos).")
-    _REC_COLOR = {"OPERAR": "#16a34a", "NO OPERAR": "#dc2626"}
+    st.markdown(f"**Vigente** (lo aplica «(playbook automático)» en Backtesting): "
+                f"🧩 **{_pbs.display_name(_pb)}** · evaluado "
+                f"{_pb.get('evaluado_desde')} → {_pb.get('evaluado_hasta')} · "
+                f"{_pb.get('n_posiciones', 0):,} posiciones · generado {_pb.get('generado_en')}")
+    _op_vig = [d for d, i in (_pb.get("per_day") or {}).items()
+               if str(i.get("recommendation", "")).upper() == "OPERAR"
+               and i.get("estado") in (None, "operable")]
+    st.caption(("🟢 Días que el automático aplicaría hoy: **" + ", ".join(_op_vig) + "**"
+                if _op_vig else "🔴 Hoy el automático no aplicaría ningún día (ninguno OPERAR "
+                                "+ operable).")
+               + " · Las tablas completas del veredicto están en la **tarjeta de cada "
+                 "combinación** (más abajo).")
     _EST_ICON = {"operable": "🟢 operable", "candidato": "🟡 candidato",
                  "suspendido": "⏸ suspendido", "sin ventaja": "— sin ventaja"}
     _tiene_estado = any(i.get("estado") for i in (_pb.get("per_day") or {}).values())
-    _rows_pb = [{"Día": d, "Escenario": i.get("scenario"),
-                 "WR %": i.get("win_rate"),
-                 **({"WR P5 %": i.get("wr_p5")} if _tiene_estado else {}),
-                 "ROI cartera %": i.get("avg_roi"),
-                 "Sharpe": i.get("sharpe"), "n": i.get("n"),
-                 "Veredicto": i.get("recommendation"),
-                 **({"Estado": _EST_ICON.get(i.get("estado"), i.get("estado") or "—")}
-                    if _tiene_estado else {}),
-                 "Condiciones (del template)": i.get("config_txt", "—")}
-                for d, i in (_pb.get("per_day") or {}).items()]
-    st.dataframe(pd.DataFrame(_rows_pb).style.map(
-        lambda v: f"color:{_REC_COLOR.get(v, '')};font-weight:700" if v in _REC_COLOR else "",
-        subset=["Veredicto"]), use_container_width=True, hide_index=True)
     _rv = _pb.get("regimen_vol")
     if _rv and _rv.get("alerta"):
         st.warning(f"🌊 **Régimen de volatilidad alterado** ({_rv.get('ticker')}): la vol "
@@ -115,31 +103,14 @@ else:
                    "por debajo del prometido — corresponde una revisión anticipada de parámetros "
                    "(`python window_sweep.py`).")
     if _tiene_estado:
-        st.caption("**WR P5 %** = límite inferior creíble (percentil 5 de la posterior Beta) del "
-                   "win-rate — el gate exige P5>55%, no el WR puntual (inmune a muestras chicas). "
-                   "**Estado** (máquina de supervivencia sobre las dos mitades de la ventana): "
-                   "🟢 operable = pasa el gate en ambas mitades (el automático SOLO aplica estos) · "
-                   "🟡 candidato = pasa solo en la reciente (edge sin confirmar) · ⏸ suspendido = "
-                   "edge decaído, kill-switch (3 sesiones seguidas perdedoras / ROI acumulado "
-                   "≤ −15%), calibración rota o churn · — sin ventaja.")
-    # Desglose día × ticker ANTES del detalle de estados (pedido UX: la matriz operativa
-    # primero, los porqués después). Fuera del if: playbooks sin estados también lo muestran.
-    _pt = _pb.get("por_ticker") or []
-    if _pt:
-        try:
-            _dtpb = pd.DataFrame(_pt)
-            _pivpb = _dtpb.pivot(index="Ticker", columns="Día", values="Recomendación")
-            _pivpb = _pivpb.reindex(columns=[c for c in ("Lun", "Mar", "Mié", "Jue", "Vie")
-                                             if c in _pivpb.columns])
-            st.caption("Desglose día × ticker (verde = OPERAR):")
-            st.dataframe(_pivpb.style.map(
-                lambda v: (f"background-color:{_REC_COLOR.get(v, '')}22;"
-                           f"color:{_REC_COLOR.get(v, '')};font-weight:700")
-                if v in _REC_COLOR else ""), use_container_width=True)
-        except Exception:  # noqa: BLE001
-            pass
-    if _tiene_estado:
-        with st.expander("ℹ️ Motivo del estado por día"):
+        with st.expander("ℹ️ Motivo del estado por día (y cómo leer P5/estados)"):
+            st.caption("**WR P5 %** = límite inferior creíble (percentil 5 de la posterior Beta) "
+                       "del win-rate — el gate exige P5>55%, no el WR puntual (inmune a muestras "
+                       "chicas). **Estado**: 🟢 operable = pasa el gate en las DOS mitades de la "
+                       "ventana (el automático SOLO aplica estos) · 🟡 candidato = pasa solo en "
+                       "la reciente · ⏸ suspendido = edge decaído, kill-switch (3 sesiones "
+                       "seguidas perdedoras / ROI acumulado ≤ −15%), calibración rota o churn · "
+                       "— sin ventaja.")
             for _d, _i in (_pb.get("per_day") or {}).items():
                 if _i.get("estado_motivo"):
                     st.markdown(f"- **{_d}** ({_EST_ICON.get(_i.get('estado'), '?')}): "
