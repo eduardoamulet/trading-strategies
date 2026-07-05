@@ -38,14 +38,22 @@ st.caption("El **playbook** dice qué días operar y con qué **escenario/condic
 # ── Job de reevaluación en curso / terminado (estado en reeval_runs, no en archivos) ──
 _st, _job = _pbs.check_job()
 if _st == "done":
-    with st.spinner("La reevaluación terminó — actualizando el veredicto desde el almacén…"):
-        try:
-            _pbs.finalize_job()
-            st.success(f"✅ Playbook actualizado con la reevaluación "
-                       f"(+{(_job or {}).get('n_filas_nuevas') or 0:,} filas nuevas en el "
-                       "almacén — ingesta directa, sin Excel intermedio).")
-        except Exception as _fe:  # noqa: BLE001
-            st.error(f"La reevaluación terminó pero no pude reconstruir el veredicto: {_fe}")
+    # ASÍNCRONO: el veredicto de una combinación gigante tarda minutos en interpretarse —
+    # se delega a un proceso aparte (claim atómico: N sesiones → 1 solo finalizador) y la
+    # página queda libre al instante.
+    _pbs.spawn_finalize(_job["id"])
+    st.info(f"⏳ Reevaluación **{_job.get('id')}** terminada "
+            f"(+{(_job or {}).get('n_filas_nuevas') or 0:,} filas ya en el almacén) — "
+            "**interpretando el veredicto en segundo plano**. La página queda libre; "
+            "refrescá en unos minutos y la tabla aparece actualizada.")
+    if st.button("🔄 Chequear estado ahora", key="pb_fin_check"):
+        st.rerun()
+elif _st == "finalizing":
+    st.info(f"⏳ **Interpretando el veredicto** de la reevaluación {_job.get('id')} en segundo "
+            f"plano ({(_job.get('n_filas_nuevas') or 0):,} filas) — la página queda libre. "
+            "Con combinaciones gigantes puede tardar unos minutos.")
+    if st.button("🔄 Chequear estado ahora", key="pb_fin_check2"):
+        st.rerun()
 elif _st == "running":
     st.info(f"⏳ **Reevaluación corriendo** en una consola aparte (iniciada {_job.get('started')}) "
             f"· rango {_job.get('rango', ['?', '?'])[0]} → {_job.get('rango', ['?', '?'])[1]} · "

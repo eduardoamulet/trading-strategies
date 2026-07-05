@@ -661,11 +661,13 @@ def launch_reevaluation(fecha_ini: str, fecha_fin: str, tickers: list[str],
 def check_job():
     """(estado, job) desde la tabla reeval_runs: 'running' si la ÚLTIMA reevaluación está
     corriendo, 'done' si terminó exitosa y falta finalizar (reconstruir el veredicto),
-    'failed' si terminó fallida/abortada sin descartar. None = nada pendiente.
+    'finalizing' si el finalizador asíncrono está interpretando, 'failed' si terminó
+    fallida/abortada (o el finalize falló) sin descartar. None = nada pendiente.
     El dict conserva las claves que usa la UI (rango, n_dias, n_escenarios, nombre…)."""
     import bt_store
 
     bt_store.mark_stale_running()              # corridas huérfanas (proceso muerto) → abortada
+    bt_store.revive_stale_finalizing()         # finalizadores muertos → vuelven a 'exitosa' (retry)
     r = bt_store.latest_run(tipo="reevaluacion")
     if not r or r.get("finalizado"):
         return None, None
@@ -679,21 +681,22 @@ def check_job():
            "n_filas_nuevas": r.get("n_filas_nuevas")}
     if r["estado"] == "corriendo":
         return "running", job
+    if r["estado"] == "finalizando":
+        return "finalizing", job
     if r["estado"] == "exitosa":
+        if str(r.get("error_msg") or "").startswith("finalize:"):
+            return "failed", job               # el finalize falló → mostrar y poder descartar
         return "done", job
     return "failed", job                       # fallida | abortada, pendiente de descartar
 
 
-def finalize_job() -> dict:
-    """La reevaluación terminó y sus filas YA están en el almacén (ingesta directa): reconstruye
-    el veredicto desde el almacén SOBRE EL RANGO del run (misma semántica que interpretar el
-    results de ese rango), guarda playbook + history y marca el run finalizado. Milisegundos —
-    ya no se parsea ningún Excel."""
+def _do_finalize(job: dict) -> dict:
+    """El trabajo real de finalizar: reconstruye el veredicto desde el almacén sobre el RANGO
+    del run (misma semántica que interpretar el results de ese rango) y persiste playbook +
+    history. Con combinaciones gigantes tarda MINUTOS (millones de filas) → por eso la página
+    lo delega a spawn_finalize y nunca se bloquea. No toca estados de reeval_runs."""
     import bt_store
 
-    status, job = check_job()
-    if status != "done":
-        raise RuntimeError("No hay reevaluación exitosa pendiente de finalizar.")
     _combo = job.get("combination") or bt_store.LEGACY_COMBINATION
     rdf = bt_store.load_range(job["rango"][0], job["rango"][1], combination=_combo)
     pb = build_from_df(rdf, "detailed", combination=_combo,
@@ -701,6 +704,60 @@ def finalize_job() -> dict:
     save_playbook(pb)
     append_history(pb)
     pb["_ingestado_al_almacen"] = job.get("n_filas_nuevas")
-    bt_store.mark_run_finalized(job["id"])
+    pb["_filas_interpretadas"] = int(len(rdf))
+    return pb
+
+
+def finalize_job() -> dict:
+    """Camino SÍNCRONO (scripts/headless — la página usa spawn_finalize): finaliza la
+    reevaluación pendiente y marca el run."""
+    import bt_store
+
+    status, job = check_job()
+    if status != "done":
+        raise RuntimeError("No hay reevaluación exitosa pendiente de finalizar.")
+    pb = _do_finalize(job)
+    bt_store.finish_run_finalized(job["id"])
     JOB_PATH.unlink(missing_ok=True)           # legacy: limpiar json viejo si quedó
     return pb
+
+
+def finalize_run_by_id(run_id: str) -> dict:
+    """Worker del finalizador ASÍNCRONO (`update_playbook.py --finalize-run <id>`): hace el
+    trabajo y deja el estado final en reeval_runs — finalizado=1 si OK, o error con prefijo
+    'finalize:' (la página lo muestra y permite descartar; un finalizador muerto sin excepción
+    lo revive revive_stale_finalizing → retry automático)."""
+    import bt_store
+
+    r = bt_store.get_run(run_id)
+    if not r:
+        raise ValueError(f"run {run_id!r} inexistente")
+    job = {"id": r["run_id"], "combination": r["combination"],
+           "rango": [r.get("fecha_desde"), r.get("fecha_hasta")],
+           "n_filas_nuevas": r.get("n_filas_nuevas")}
+    try:
+        pb = _do_finalize(job)
+    except Exception as e:  # noqa: BLE001 — dejar el error visible en la página
+        bt_store.record_finalize_error(run_id, f"{type(e).__name__}: {e}")
+        raise
+    bt_store.finish_run_finalized(run_id)
+    return pb
+
+
+def spawn_finalize(run_id: str) -> bool:
+    """Lanza el finalizador en un PROCESO APARTE y devuelve al instante (la página nunca se
+    bloquea — interpretar millones de filas tarda minutos). Claim atómico en reeval_runs:
+    aunque N sesiones de la página vean el 'done' a la vez, UNA sola lanza el proceso.
+    Devuelve True si esta llamada fue la que lo lanzó."""
+    import bt_store
+
+    if not bt_store.claim_run_finalizing(run_id):
+        return False
+    logs = HERE / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    with open(logs / "finalize.log", "ab") as out:
+        subprocess.Popen([sys.executable, str(HERE / "update_playbook.py"),
+                          "--finalize-run", run_id],
+                         cwd=str(HERE), stdout=out, stderr=out,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return True

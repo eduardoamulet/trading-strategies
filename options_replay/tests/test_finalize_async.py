@@ -1,0 +1,81 @@
+"""Unit tests de la finalización ASÍNCRONA del playbook (claim atómico + estados + spawn).
+
+Corré:  pytest tests/test_finalize_async.py -q
+"""
+import sqlite3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # options_replay/ en el path
+import bt_store  # noqa: E402
+import playbook_store as pbs  # noqa: E402
+
+
+def _run_exitoso(db, run_id="r1"):
+    bt_store.record_run_start(run_id, combination="comb_x", tipo="reevaluacion",
+                              fecha_desde="2026-01-02", fecha_hasta="2026-03-31", path=db)
+    bt_store.record_run_finish(run_id, estado="exitosa", n_filas=100, n_filas_nuevas=100,
+                               path=db)
+
+
+def test_claim_atomico_una_sola_vez(tmp_path):
+    db = tmp_path / "bt.db"
+    _run_exitoso(db)
+    assert bt_store.claim_run_finalizing("r1", path=db) is True     # 1º reclamante gana
+    assert bt_store.claim_run_finalizing("r1", path=db) is False    # 2º pierde (ya finalizando)
+    assert bt_store.get_run("r1", path=db)["estado"] == "finalizando"
+    bt_store.finish_run_finalized("r1", path=db)
+    r = bt_store.get_run("r1", path=db)
+    assert r["estado"] == "exitosa" and r["finalizado"] == 1        # historial limpio
+    assert bt_store.claim_run_finalizing("r1", path=db) is False    # finalizado → no re-claim
+
+
+def test_error_de_finalize_permite_retry(tmp_path):
+    db = tmp_path / "bt.db"
+    _run_exitoso(db)
+    assert bt_store.claim_run_finalizing("r1", path=db)
+    bt_store.record_finalize_error("r1", "KeyError: boom", path=db)
+    r = bt_store.get_run("r1", path=db)
+    assert r["estado"] == "exitosa" and r["error_msg"].startswith("finalize:")
+    assert r["finalizado"] == 0
+    # retry: se puede reclamar de nuevo; al lograrlo, el error se limpia al finalizar
+    assert bt_store.claim_run_finalizing("r1", path=db) is True
+    bt_store.finish_run_finalized("r1", path=db)
+    assert bt_store.get_run("r1", path=db)["error_msg"] is None
+
+
+def test_finalizador_huerfano_revive(tmp_path):
+    db = tmp_path / "bt.db"
+    _run_exitoso(db)
+    bt_store.claim_run_finalizing("r1", path=db)
+    con = sqlite3.connect(db)
+    con.execute("UPDATE reeval_runs SET finished_at='2026-01-01 00:00:00'")
+    con.commit()
+    con.close()
+    assert bt_store.revive_stale_finalizing(max_hours=1, path=db) == 1
+    assert bt_store.get_run("r1", path=db)["estado"] == "exitosa"   # la página lo relanza sola
+    # uno RECIENTE no se toca
+    _run_exitoso(db, "r2")
+    bt_store.claim_run_finalizing("r2", path=db)
+    assert bt_store.revive_stale_finalizing(max_hours=1, path=db) == 0
+
+
+def test_spawn_finalize_claim_y_comando(monkeypatch, tmp_path):
+    lanzados = []
+
+    def _fake_popen(cmd, **kw):
+        lanzados.append(cmd)
+
+        class _P:
+            pid = 12345
+        return _P()
+
+    claims = iter([True, False])
+    monkeypatch.setattr(bt_store, "claim_run_finalizing", lambda rid: next(claims))
+    monkeypatch.setattr(pbs.subprocess, "Popen", _fake_popen)
+    assert pbs.spawn_finalize("20260704_231116") is True            # 1ª llamada: lanza
+    assert pbs.spawn_finalize("20260704_231116") is False           # 2ª: claim perdido → no lanza
+    assert len(lanzados) == 1
+    cmd = lanzados[0]
+    assert "--finalize-run" in cmd and "20260704_231116" in cmd
+    assert any(str(c).endswith("update_playbook.py") for c in cmd)

@@ -173,7 +173,18 @@ def main() -> None:
                          "el almacén. (Corre sola el día 1 de cada mes.)")
     ap.add_argument("--combination", default="",
                     help="ID de la Combinación de Backtesting a actualizar (default: la ACTIVA).")
+    ap.add_argument("--finalize-run", default="",
+                    help="(interno) Finaliza el run dado: reconstruye el veredicto desde el "
+                         "almacén. Lo lanza la página del Playbook en un proceso aparte "
+                         "(spawn_finalize) para no bloquearse con combinaciones gigantes.")
     args = ap.parse_args()
+
+    if args.finalize_run:
+        pb = pbs.finalize_run_by_id(args.finalize_run)
+        print(f"finalize {args.finalize_run}: playbook {pb.get('evaluado_desde')} -> "
+              f"{pb.get('evaluado_hasta')} · {pb.get('_filas_interpretadas', 0):,} filas "
+              "interpretadas")
+        return
 
     import combinations as _comb
     _comb.ensure_legacy()                      # migración única del template 480 → combinations.db

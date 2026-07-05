@@ -318,3 +318,40 @@ def mark_stale_running(max_hours: float = 12.0, path: Path = DB_PATH) -> int:
             " error_msg='proceso sin señales de vida — marcada huérfana' "
             "WHERE estado='corriendo' AND started_at < ?", (cutoff,))
         return cur.rowcount
+
+
+def claim_run_finalizing(run_id: str, path: Path = DB_PATH) -> bool:
+    """Reclama ATÓMICAMENTE la finalización de un run exitoso (exitosa → finalizando).
+    Devuelve True solo para el PRIMER reclamante — evita que dos sesiones de la página
+    lancen dos finalizadores para el mismo run."""
+    with _connect(path) as con, con:
+        cur = con.execute("UPDATE reeval_runs SET estado='finalizando' "
+                          "WHERE run_id=? AND estado='exitosa' AND finalizado=0", (run_id,))
+        return cur.rowcount == 1
+
+
+def record_finalize_error(run_id: str, msg: str, path: Path = DB_PATH) -> None:
+    """El finalizador falló: vuelve el run a 'exitosa' (las filas SÍ están en el almacén) y
+    deja el error con prefijo 'finalize:' — check_job lo muestra como fallo descartable."""
+    with _connect(path) as con, con:
+        con.execute("UPDATE reeval_runs SET estado='exitosa', error_msg=? WHERE run_id=?",
+                    (f"finalize: {msg}"[:500], run_id))
+
+
+def finish_run_finalized(run_id: str, path: Path = DB_PATH) -> None:
+    """Finalización OK: el run vuelve a 'exitosa' (para el historial) y queda finalizado=1."""
+    with _connect(path) as con, con:
+        con.execute("UPDATE reeval_runs SET estado='exitosa', finalizado=1, error_msg=NULL "
+                    "WHERE run_id=?", (run_id,))
+
+
+def revive_stale_finalizing(max_hours: float = 2.0, path: Path = DB_PATH) -> int:
+    """Finalizador muerto sin despedirse (kill/crash): 'finalizando' más viejo que max_hours
+    (desde finished_at del batch) vuelve a 'exitosa' → la página lo re-lanza sola (retry)."""
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(hours=max_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    with _connect(path) as con, con:
+        cur = con.execute("UPDATE reeval_runs SET estado='exitosa' "
+                          "WHERE estado='finalizando' AND COALESCE(finished_at, started_at) < ?",
+                          (cutoff,))
+        return cur.rowcount
