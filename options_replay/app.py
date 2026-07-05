@@ -1414,6 +1414,11 @@ def _render_iters_panel(_iters_seed):
                             and _e_a.get("estado") in (None, "operable") and _e_a.get("config")):
                         _auto_map[_wd_a] = {"scenario": str(_e_a.get("scenario") or ""),
                                             "cfg": _e_a["config"]}
+                if _auto_map:
+                    # Trazabilidad (clave reservada, NO es un día): de QUÉ combinación salió la
+                    # config — viaja con el mapa y se estampa en los resultados de cada corrida.
+                    _auto_map["_combo"] = {"combination": _pb_auto.get("combination"),
+                                           "nombre": _pbs.display_name(_pb_auto)}
                 if not _auto_map:
                     _cfg_c2.warning(f"Las filas mezclan **{len(_wds)} días de semana** "
                                     f"({', '.join(sorted(_wds))}) y NINGUNO está operable en el "
@@ -1875,6 +1880,8 @@ def _render_iters_panel(_iters_seed):
         if _cfg_dia_run:
             import trade_plan as _tplr
             for _wd_r, _e_r in _cfg_dia_run.items():
+                if _wd_r == "_combo":
+                    continue                       # clave reservada de trazabilidad, no es un día
                 try:
                     _ov_by_wd[_wd_r] = {"scenario": str(_e_r.get("scenario") or ""),
                                         **_tplr.scenario_run_overrides(_e_r.get("cfg") or {})}
@@ -2000,9 +2007,16 @@ def _render_iters_panel(_iters_seed):
                     st.warning(f"Salida colectiva no aplicada: {_ce}")
         # Guardar como el "replay" actual (modo señales) → se renderiza RICO más abajo,
         # igual que un backtest manual (Totales + detalle por iteración con render_iteration).
+        _combo_run = (_cfg_dia_run or {}).get("_combo") or {}
         st.session_state["replay"] = {
             "mode": "signals", "sig_results": _res, "sig_skipped": _skipped,
             "sig_skipped_playbook": _pb_skip,
+            # Trazabilidad: combinación + escenario por día con los que corrió ESTA corrida.
+            "sig_pb_combo": ({**_combo_run,
+                              "escenarios": {d: (e or {}).get("scenario")
+                                             for d, e in _cfg_dia_run.items()
+                                             if d != "_combo"}}
+                             if _combo_run else None),
             "sig_elapsed": time.perf_counter() - _t0, "sig_workers": _wk,
         }
         st.rerun()
@@ -4385,6 +4399,14 @@ def _render_signals_session(rs):
     if rs.get("sig_elapsed") is not None:
         st.caption(f"⏱️ Completado en {rs['sig_elapsed']:0.1f}s · "
                    f"{rs.get('sig_workers', 1)} en paralelo")
+    _combo_rs = rs.get("sig_pb_combo") or {}
+    if _combo_rs:
+        _escs_rs = _combo_rs.get("escenarios") or {}
+        st.caption("⚙️ **Config por día del playbook** · 🧩 combinación "
+                   f"**«{_combo_rs.get('nombre') or _combo_rs.get('combination') or '?'}»** · "
+                   + " · ".join(f"{_d}→{_escs_rs[_d]}"
+                                for _d in ("Lun", "Mar", "Mié", "Jue", "Vie")
+                                if _escs_rs.get(_d)))
 
     # Totales RICOS — el MISMO helper que el backtest por rango (vista idéntica:
     # días procesados, inversión, ganancia, capital final, ganadores/perdedores,
@@ -4486,12 +4508,23 @@ def _render_signals_session(rs):
             _e["n"] += 1
             _e["win"] += 1 if _it.gain_total > 0 else 0
             _e["tks"].add(r.get("ticker", ""))
+        # Trazabilidad: escenario del playbook con el que corrió cada fecha (por día de semana).
+        _escs_day = ((rs.get("sig_pb_combo") or {}).get("escenarios")) or {}
+        _WD_DAY = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+
+        def _esc_de(_f):
+            try:
+                return _escs_day.get(_WD_DAY[pd.Timestamp(str(_f)).weekday()], "—")
+            except Exception:  # noqa: BLE001
+                return "—"
         _drows, _cum = [], 0.0
         for _d in sorted(_by_day):
             _e = _by_day[_d]
             _cum += _e["gain"]
             _drows.append({
-                "Fecha": _d, "Ops": _e["n"], "Ganancia": _e["gain"],
+                "Fecha": _d,
+                **({"Escenario": _esc_de(_d)} if _escs_day else {}),
+                "Ops": _e["n"], "Ganancia": _e["gain"],
                 "ROI %": (_e["gain"] / _e["invest"] * 100.0) if _e["invest"] else 0.0,
                 "Ganadores": f"{_e['win']}/{_e['n']}",
                 "Ganancia acumulada": _cum,
