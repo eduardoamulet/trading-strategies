@@ -263,3 +263,34 @@ class PolygonAdapter:
         if "volume" not in df.columns:
             df["volume"] = 0
         return df[["timestamp", "open", "high", "low", "close", "volume"]].reset_index(drop=True)
+
+
+# ── Snapshot de la CADENA (greeks/IV/OI actuales) ─────────────────────────────
+def _snapshot_underlying(ticker: str) -> str:
+    """El endpoint de snapshot usa I: para índices (igual que los aggregates)."""
+    t = ticker.upper().strip()
+    return f"I:{t}" if t in INDEX_TICKERS else t
+
+
+def option_chain_snapshot(self, underlying: str, *, expiration_gte: str | None = None,
+                          expiration_lte: str | None = None, limit: int = 250) -> list:
+    """Snapshot v3 de la cadena completa del subyacente: por contrato trae greeks, IV,
+    open_interest, day (volumen/OHLC), last_quote (bid/ask) y details (strike/expiración/tipo).
+    Pagina automáticamente (next_url). Es el estado ACTUAL — la serie histórica se construye
+    capturándolo a diario (chain_snapshots.py)."""
+    params = {"limit": int(limit), "order": "asc", "sort": "strike_price"}
+    if expiration_gte:
+        params["expiration_date.gte"] = expiration_gte
+    if expiration_lte:
+        params["expiration_date.lte"] = expiration_lte
+    out: list = []
+    url = f"/v3/snapshot/options/{_snapshot_underlying(underlying)}"
+    while url:
+        data = self._get(url, params)
+        out.extend(data.get("results") or [])
+        url = data.get("next_url")
+        params = None                      # next_url ya trae el query completo
+    return out
+
+
+PolygonAdapter.option_chain_snapshot = option_chain_snapshot
