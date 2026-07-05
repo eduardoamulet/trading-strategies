@@ -53,7 +53,7 @@ def auto_processes() -> int:
     return max(2, (os.cpu_count() or 4) - 1)
 
 
-def _init(data_dir, api_key, seed, resolution, mapped, corr) -> None:
+def _init(data_dir, api_key, seed, resolution, mapped, corr, rate_limit=600) -> None:
     import sys
     from pathlib import Path
     _root = Path(__file__).resolve().parent.parent      # options_replay
@@ -63,7 +63,9 @@ def _init(data_dir, api_key, seed, resolution, mapped, corr) -> None:
     obs_log.set_correlation_id(corr)      # el worker hereda el correlation-id de la corrida (trazable)
     from adapter_polygon import PolygonAdapter
     from downloader import Downloader
-    dl = Downloader(PolygonAdapter(api_key, rate_limit_per_min=600), Path(data_dir))
+    # Rate limit COMPARTIDO conceptualmente entre workers: cada worker recibe su cuota
+    # (limit/n_workers la maneja Polygon del otro lado — Advanced es ilimitado; ver config).
+    dl = Downloader(PolygonAdapter(api_key, rate_limit_per_min=int(rate_limit)), Path(data_dir))
     dl.resolution = resolution
     _G["dl"], _G["seed"], _G["mapped"] = dl, seed, mapped
     # Provider del Market Direction Engine (para enriquecer cada posición con la señal a la entrada).
@@ -152,7 +154,8 @@ def _direction_fields(ticker: str, day: str, hora: str) -> dict:
         return {"md_action": None, "md_score": None, "md_confidence": None, "md_trend": None}
 
 
-def run(seed, mapped_scenarios, data_dir, api_key, processes=None, progress_cb=None) -> tuple:
+def run(seed, mapped_scenarios, data_dir, api_key, processes=None, progress_cb=None,
+        rate_limit=600) -> tuple:
     """Ejecuta TODO el batch, paralelizando por DÍA × TRAMO-DE-ESCENARIOS. Con más días que
     cores, cada tarea es un día entero (comportamiento previo); con POCOS días (el incremental
     diario = 1), el día se parte en tramos contiguos de escenarios (_chunk_ranges) para usar
@@ -181,7 +184,8 @@ def run(seed, mapped_scenarios, data_dir, api_key, processes=None, progress_cb=N
     rows: list = []
     n_fail = 0
     with mp.Pool(procs, initializer=_init,
-                 initargs=(str(data_dir), api_key, seed, resolution, mapped_scenarios, corr)) as pool:
+                 initargs=(str(data_dir), api_key, seed, resolution, mapped_scenarios, corr,
+                           int(rate_limit))) as pool:
         it = pool.imap(_run_day_chunk, tasks, chunksize=1)   # preserva el orden → i-ésimo result = tasks[i]
         for i in range(len(tasks)):
             day, lo, hi = tasks[i]

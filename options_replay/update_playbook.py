@@ -119,7 +119,8 @@ def verify_integrity(n_sample: int = 3, combination: str | None = None) -> bool:
         # mismo motor, mismos redondeos que el results (ucbatch.canonical).
         seed = _comb.seed_for(combination, fecha_inicial=d, fecha_final=d, tickers=tickers)
         mapped = [_ucsc.map_scenario(seed, s) for s in scens]
-        rows, _dd = _ucrun.run(seed, mapped, str(HERE / "data"), config.POLYGON_API_KEY)
+        rows, _dd = _ucrun.run(seed, mapped, str(HERE / "data"), config.POLYGON_API_KEY,
+                               rate_limit=int(getattr(config, "POLYGON_RATE_LIMIT_PER_MIN", 600)))
         rdf = rows_to_canonical_df(seed, rows)
         nuevo = rdf.assign(fecha=rdf["fecha"].astype(str).str[:10])
         viejo = bt_store.load_range(d, d, combination=combination)

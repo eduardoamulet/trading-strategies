@@ -124,9 +124,10 @@ def main() -> None:
             if d == 1 or d % 20 == 0 or d == t:   # tendencia de RAM cada ~20 días → caza el OOM
                 resource_snapshot(log, f"dia {d}/{t}")
 
+        _rate = int(getattr(config, "POLYGON_RATE_LIMIT_PER_MIN", 600))
         with timed(log, "batch-run", escenarios=len(mapped), dias=len(days), backtests=total):
             rows, days = runner.run(seed, mapped, str(HERE / "data"), config.POLYGON_API_KEY,
-                                    processes=procs, progress_cb=_cb)
+                                    processes=procs, progress_cb=_cb, rate_limit=_rate)
         print()
         n_err = sum(1 for r in rows if r.get("n_err"))
         if a.ingest:
