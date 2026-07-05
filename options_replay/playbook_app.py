@@ -249,6 +249,42 @@ if _elegibles:
         except ValueError as _ae:
             st.error(str(_ae))
 
+def _render_tablas_playbook(pb_c: dict) -> None:
+    """Las DOS tablas del veredicto (por día de la semana + desglose día×ticker) — mismo
+    formato que la sección principal, en versión compacta para las tarjetas de combinación."""
+    _RC = {"OPERAR": "#16a34a", "NO OPERAR": "#dc2626"}
+    _EI = {"operable": "🟢 operable", "candidato": "🟡 candidato",
+           "suspendido": "⏸ suspendido", "sin ventaja": "— sin ventaja"}
+    _te = any(i.get("estado") for i in (pb_c.get("per_day") or {}).values())
+    _rows = [{"Día": d, "Escenario": i.get("scenario"), "WR %": i.get("win_rate"),
+              **({"WR P5 %": i.get("wr_p5")} if _te else {}),
+              "ROI cartera %": i.get("avg_roi"), "Sharpe": i.get("sharpe"), "n": i.get("n"),
+              "Veredicto": i.get("recommendation"),
+              **({"Estado": _EI.get(i.get("estado"), i.get("estado") or "—")} if _te else {}),
+              "Condiciones (del template)": i.get("config_txt", "—")}
+             for d, i in (pb_c.get("per_day") or {}).items()]
+    if not _rows:
+        st.caption("El veredicto no tiene días evaluados.")
+        return
+    st.dataframe(pd.DataFrame(_rows).style.map(
+        lambda v: f"color:{_RC.get(v, '')};font-weight:700" if v in _RC else "",
+        subset=["Veredicto"]), use_container_width=True, hide_index=True)
+    _ptc = pb_c.get("por_ticker") or []
+    if _ptc:
+        try:
+            _dtc = pd.DataFrame(_ptc)
+            _pvc = _dtc.pivot(index="Ticker", columns="Día", values="Recomendación")
+            _pvc = _pvc.reindex(columns=[c for c in ("Lun", "Mar", "Mié", "Jue", "Vie")
+                                         if c in _pvc.columns])
+            st.caption("Desglose día × ticker (verde = OPERAR):")
+            st.dataframe(_pvc.style.map(
+                lambda v: (f"background-color:{_RC.get(v, '')}22;"
+                           f"color:{_RC.get(v, '')};font-weight:700") if v in _RC else ""),
+                use_container_width=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 _EST_COMB = {"importada": "📥 importada", "generada": "✅ generada"}
 for _co in _combos:
     _es_activa = _co["id"] == _activa
@@ -333,6 +369,39 @@ for _co in _combos:
             if _cd2.button("Cancelar", key=f"comb_del_no_{_co['id']}"):
                 st.session_state.pop(f"comb_del_arm_{_co['id']}", None)
                 st.rerun()
+
+        # ── 📊 El veredicto de ESTA combinación (sus dos tablas), persistido en su json ──
+        st.markdown("---")
+        st.markdown("**📊 Veredicto de esta combinación** · ventana oficial 120 días hábiles · "
+                    "half-life 35 · min_n 16")
+        import bt_store as _bts_pb
+        _cov_c = _bts_pb.coverage(_co["id"])
+        if not _cov_c["filas"]:
+            st.caption("Sin historia en el almacén todavía — activala y lanzá una Reevaluación "
+                       "para poblarla; después el veredicto se calcula acá.")
+        else:
+            _pb_c = _pbs.load_playbook_for(_co["id"])
+            if _pb_c:
+                st.caption(f"Generado {_pb_c.get('generado_en')} · evaluado "
+                           f"{_pb_c.get('evaluado_desde')} → {_pb_c.get('evaluado_hasta')} · "
+                           f"almacén hasta {_cov_c.get('hasta')} ({_cov_c['dias']} días)")
+                _render_tablas_playbook(_pb_c)
+            else:
+                st.caption(f"Historia disponible ({_cov_c['filas']:,} filas · {_cov_c['dias']} "
+                           "días) — veredicto todavía sin calcular.")
+            if st.button(("🔄 Recalcular veredicto" if _pb_c else "📊 Calcular veredicto"),
+                         key=f"comb_pb_{_co['id']}",
+                         help="Ventana oficial sobre el almacén de ESTA combinación → se guarda "
+                              "en data/playbook_<id>.json (no toca el playbook vigente). Con "
+                              "combinaciones gigantes tarda varios minutos."):
+                with st.spinner(f"Calculando veredicto de "
+                                f"«{_pbs.display_name(_co.get('nombre'))}» — con millones de "
+                                "filas son varios minutos…"):
+                    try:
+                        _pbs.build_and_save_for(_co["id"])
+                        st.rerun()
+                    except Exception as _pe:  # noqa: BLE001
+                        st.error(f"No pude calcular el veredicto: {_pe}")
 
 # ── Reevaluar ──
 st.divider()

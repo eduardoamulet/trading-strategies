@@ -106,3 +106,15 @@ def test_beta_ppf_puro_contra_formas_cerradas():
     # _beta_p5 nunca revienta aunque scipy esté bloqueado (usa el camino que toque)
     v = pbs._beta_p5(10.0, 5.0)
     assert 0.0 < v < 100.0
+
+
+def test_playbook_por_combinacion_roundtrip(tmp_path, monkeypatch):
+    """El veredicto por combinación persiste en su json propio y se relee — sin tocar el
+    playbook.json vigente."""
+    monkeypatch.setattr(pbs, "playbook_path_for",
+                        lambda cid: tmp_path / f"playbook_{cid}.json")
+    fake = {"combination": "comb_x", "per_day": {"Jue": {"scenario": "C1"}}}
+    pbs.save_playbook(fake, path=pbs.playbook_path_for("comb_x"))
+    out = pbs.load_playbook_for("comb_x")
+    assert out["combination"] == "comb_x"
+    assert pbs.load_playbook_for("comb_inexistente") is None

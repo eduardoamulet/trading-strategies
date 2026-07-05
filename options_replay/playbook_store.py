@@ -850,3 +850,26 @@ def display_name(nombre, max_len: int = 45) -> str:
     if len(s) > max_len:
         s = "…" + s[-(max_len - 1):]
     return s
+
+
+# ── Veredicto PERSISTIDO POR COMBINACIÓN (tarjetas de la página + futuro comparador) ─────
+def playbook_path_for(combination_id: str) -> Path:
+    """data/playbook_<id>.json — el veredicto oficial de UNA combinación, persistido aparte
+    del vigente (playbook.json, que es el de la ACTIVA)."""
+    return HERE / "data" / f"playbook_{combination_id}.json"
+
+
+def load_playbook_for(combination_id: str):
+    return load_playbook(playbook_path_for(combination_id))
+
+
+def build_and_save_for(combination_id: str, *, window_days: int = 120, half_life: int = 35,
+                       min_n: int = 16) -> dict:
+    """Calcula el veredicto OFICIAL (ventana + decaimiento + gates + estados) de UNA combinación
+    sobre SU almacén y lo persiste en su json propio. NO toca playbook.json ni la activa.
+    Con combinaciones gigantes tarda minutos (millones de filas) — llamarlo desde un botón
+    con spinner o desde el job diario, nunca en el page-load."""
+    pb = build_from_store(window_days=window_days, half_life=half_life, min_n=min_n,
+                          combination=combination_id)
+    save_playbook(pb, path=playbook_path_for(combination_id))
+    return pb
