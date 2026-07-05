@@ -1441,10 +1441,15 @@ def _render_iters_panel(_iters_seed):
             else:
                 _auto_entry = _pbs.scenario_for_date(_pb_auto, _seed_dates[0])
                 _dia_auto = next(iter(_wds), "?")
+                # De QUÉ playbook sale la config: con varias combinaciones conviviendo, el
+                # nombre es el desambiguador (el «alcance» de la config puede parecérsele).
+                _pb_org = str(_pb_auto.get("combination_nombre")
+                              or _pb_auto.get("combination") or "Template 480 (legacy)")
+                _pb_org = ("🧩 «" + (_pb_org[:42] + "…" if len(_pb_org) > 43 else _pb_org) + "»")
                 if not _auto_entry:
-                    _cfg_c2.caption(f"El playbook no cubre el día **{_dia_auto}**.")
+                    _cfg_c2.caption(f"El playbook de {_pb_org} no cubre el día **{_dia_auto}**.")
                 elif str(_auto_entry.get("recommendation", "")).upper() != "OPERAR":
-                    _cfg_c2.warning(f"📕 Playbook ({_pb_auto.get('evaluado_desde')} → "
+                    _cfg_c2.warning(f"📕 Playbook de {_pb_org} ({_pb_auto.get('evaluado_desde')} → "
                                     f"{_pb_auto.get('evaluado_hasta')}): los **{_dia_auto}** son "
                                     f"**NO OPERAR** — no se aplicó ninguna config. "
                                     f"{_auto_entry.get('reason', '')}")
@@ -1454,15 +1459,16 @@ def _render_iters_panel(_iters_seed):
                     # (candidato = 1 sola ventana; suspendido = kill-switch/edge decaído) →
                     # el automático NO aplica. Playbooks viejos sin estado siguen aplicando.
                     _est_auto = _auto_entry.get("estado")
-                    _cfg_c2.warning(f"📙 Playbook: los **{_dia_auto}** pasan el gate pero el "
-                                    f"escenario **{_auto_entry.get('scenario')}** está "
+                    _cfg_c2.warning(f"📙 Playbook de {_pb_org}: los **{_dia_auto}** pasan el gate "
+                                    f"pero el escenario **{_auto_entry.get('scenario')}** está "
                                     f"**{_est_auto}** ({_auto_entry.get('estado_motivo', '')}) — "
                                     "el automático solo aplica estados 🟢 **operable** (gate en "
                                     "las DOS mitades de la ventana). Aplicalo a mano si querés "
                                     "probarlo igual.")
                     _auto_entry = None
                 else:
-                    _cfg_c2.caption(f"📗 **{_dia_auto} → {_auto_entry.get('scenario')}** (evaluado "
+                    _cfg_c2.caption(f"📗 **{_dia_auto} → {_auto_entry.get('scenario')}** · "
+                                    f"{_pb_org} (evaluado "
                                     f"{_pb_auto.get('evaluado_desde')} → "
                                     f"{_pb_auto.get('evaluado_hasta')}) · "
                                     f"{_auto_entry.get('config_txt', '')}")
@@ -2090,7 +2096,12 @@ def _render_range_plan_generator() -> None:
                 _n_oper = sum(1 for _v in _pj.values()
                               if isinstance(_v, dict)
                               and str(_v.get("recommendation")).upper() == "OPERAR")
-                st.caption(f"📘 **Playbook guardado** · {_pb_sv.get('modo', 'manual')} · evaluado "
+                _pb_sv_org = str(_pb_sv.get("combination_nombre")
+                                 or _pb_sv.get("combination") or "Template 480 (legacy)")
+                if len(_pb_sv_org) > 43:
+                    _pb_sv_org = _pb_sv_org[:42] + "…"
+                st.caption(f"📘 **Playbook guardado** · 🧩 «{_pb_sv_org}» · "
+                           f"{_pb_sv.get('modo', 'manual')} · evaluado "
                            f"{_pb_sv.get('evaluado_desde')} → {_pb_sv.get('evaluado_hasta')} · "
                            f"generado {_pb_sv.get('generado_en')} · **{_n_oper}** día(s) operable(s) "
                            "— el gate exige estado 🟢 **operable** (candidato/suspendido quedan "
