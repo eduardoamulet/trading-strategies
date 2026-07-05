@@ -84,7 +84,17 @@ def _create_runs(con: sqlite3.Connection) -> None:
 
 def _connect(path: Path = DB_PATH) -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(path))
+    # WAL + timeouts: la página (housekeeping de reeval_runs), los batches (ingesta), los
+    # veredictos (lecturas de minutos) y el backup conviven en procesos DISTINTOS — sin WAL,
+    # una lectura larga bloqueaba cualquier escritura y la página moría con «database is
+    # locked» (visto 2026-07-05). Con WAL los lectores nunca bloquean y el busy_timeout
+    # absorbe la contención de escritores.
+    con = sqlite3.connect(str(path), timeout=60)
+    con.execute("PRAGMA busy_timeout=60000")
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass                      # db ocupadísima justo ahora: queda journal clásico este uso
     _create_runs(con)
     exists = con.execute("SELECT name FROM sqlite_master WHERE type='table' "
                          "AND name='bt_results'").fetchone()
@@ -309,15 +319,20 @@ def mark_run_finalized(run_id: str, path: Path = DB_PATH) -> None:
 
 def mark_stale_running(max_hours: float = 12.0, path: Path = DB_PATH) -> int:
     """Marca como 'abortada' toda corrida 'corriendo' más vieja que max_hours (proceso muerto
-    sin despedirse — kill, crash, apagón). Se llama lazy desde check_job."""
+    sin despedirse — kill, crash, apagón). Se llama lazy desde check_job. BEST-EFFORT: si la
+    base está tomada por un escritor largo, NO tumba a quien la llamó (la página) — reintenta
+    en la próxima carga."""
     from datetime import timedelta
     cutoff = (datetime.now() - timedelta(hours=max_hours)).strftime("%Y-%m-%d %H:%M:%S")
-    with _connect(path) as con, con:
-        cur = con.execute(
-            "UPDATE reeval_runs SET estado='abortada',"
-            " error_msg='proceso sin señales de vida — marcada huérfana' "
-            "WHERE estado='corriendo' AND started_at < ?", (cutoff,))
-        return cur.rowcount
+    try:
+        with _connect(path) as con, con:
+            cur = con.execute(
+                "UPDATE reeval_runs SET estado='abortada',"
+                " error_msg='proceso sin señales de vida — marcada huérfana' "
+                "WHERE estado='corriendo' AND started_at < ?", (cutoff,))
+            return cur.rowcount
+    except sqlite3.OperationalError:
+        return 0
 
 
 def claim_run_finalizing(run_id: str, path: Path = DB_PATH) -> bool:
@@ -347,11 +362,15 @@ def finish_run_finalized(run_id: str, path: Path = DB_PATH) -> None:
 
 def revive_stale_finalizing(max_hours: float = 2.0, path: Path = DB_PATH) -> int:
     """Finalizador muerto sin despedirse (kill/crash): 'finalizando' más viejo que max_hours
-    (desde finished_at del batch) vuelve a 'exitosa' → la página lo re-lanza sola (retry)."""
+    (desde finished_at del batch) vuelve a 'exitosa' → la página lo re-lanza sola (retry).
+    BEST-EFFORT como mark_stale_running: nunca tumba a la página por un lock."""
     from datetime import timedelta
     cutoff = (datetime.now() - timedelta(hours=max_hours)).strftime("%Y-%m-%d %H:%M:%S")
-    with _connect(path) as con, con:
-        cur = con.execute("UPDATE reeval_runs SET estado='exitosa' "
-                          "WHERE estado='finalizando' AND COALESCE(finished_at, started_at) < ?",
-                          (cutoff,))
-        return cur.rowcount
+    try:
+        with _connect(path) as con, con:
+            cur = con.execute("UPDATE reeval_runs SET estado='exitosa' "
+                              "WHERE estado='finalizando' AND COALESCE(finished_at, started_at) < ?",
+                              (cutoff,))
+            return cur.rowcount
+    except sqlite3.OperationalError:
+        return 0

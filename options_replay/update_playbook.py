@@ -188,69 +188,88 @@ def main() -> None:
 
     import combinations as _comb
     _comb.ensure_legacy()                      # migración única del template 480 → combinations.db
-    combination = args.combination or _comb.active_combination()
-    if not combination:
-        print("No hay combinación ACTIVA — importá/generá una en la página Playbook "
-              "(«Combinaciones de Backtesting») o pasá --combination.")
-        return
-    _c = _comb.get_combination(combination) or {}
-    print(f"combinación activa: «{_c.get('nombre') or combination}» "
-          f"({_c.get('n_escenarios', 0):,} escenarios)")
+    _activa = _comb.active_combination()
+
+    # Universo a actualizar (pedido 2026-07-05): TODAS las combinaciones con historia — no solo
+    # la activa. Cada una backtestea SUS días faltantes y refresca su data/playbook_<id>.json;
+    # la ⭐ ACTIVA además publica su veredicto como playbook.json (el vigente de la página) y
+    # alimenta el history. Con --combination explícito se actualiza SOLO esa (compat).
+    if args.combination:
+        _objetivo = [args.combination]
+    else:
+        _objetivo = [c["combination"] for c in bt_store.combinations_summary() if c["filas"]]
+        if not _objetivo:
+            print("Sin combinaciones con historia en el almacén — lanzá una Reevaluación "
+                  "desde la página Playbook (o --bootstrap para la legacy tpl480).")
+            return
+    if not args.combination and not _activa:
+        print("Aviso: no hay combinación ACTIVA — se actualizan los almacenes igual, pero "
+              "ningún veredicto se publica como playbook.json vigente.")
 
     if args.bootstrap:
         _bootstrap()
 
-    cov = bt_store.coverage(combination)
-    print(f"almacén [{combination}]: {cov['filas']:,} filas · {cov['dias']} días "
-          f"({cov['desde']} → {cov['hasta']}) · tickers: {', '.join(cov['tickers'])}")
-    if not cov["filas"]:
-        print("Sin historia para esta combinación: lanzá una Reevaluación desde la página "
-              "Playbook para poblarla (o --bootstrap si es la legacy tpl480).")
-        return
+    for combination in _objetivo:
+        _c = _comb.get_combination(combination) or {}
+        _es_activa = combination == _activa
+        print(f"\n═══ «{pbs.display_name(_c.get('nombre') or combination)}» "
+              f"({_c.get('n_escenarios', 0):,} escenarios)"
+              + (" · ⭐ ACTIVA" if _es_activa else "") + " ═══")
 
-    # Días hábiles faltantes: (último almacenado, ayer]. Hoy se excluye (la sesión puede estar
-    # abierta y el update de datos de las 05:00 cubre hasta ayer).
-    if not args.skip_batch:
-        from ucbatch import runner as _ucrun
-        hoy = date.today().isoformat()
-        pend = [d for d in _ucrun.trading_days(cov["hasta"], hoy)
-                if cov["hasta"] < d < hoy]
-        if pend:
-            run = _run_batch(pend[0], pend[-1], cov["tickers"] or ["QQQ", "SPY", "IWM"],
-                             combination)
-            print(f"ingesta directa [{run['run_id']}]: +{run['n_filas_nuevas']:,} filas nuevas "
-                  f"(de {run['n_filas']:,} · {run['duration_s']:.0f} s)")
-        else:
-            print("sin días faltantes — el almacén está al día.")
+        cov = bt_store.coverage(combination)
+        print(f"almacén [{combination}]: {cov['filas']:,} filas · {cov['dias']} días "
+              f"({cov['desde']} → {cov['hasta']}) · tickers: {', '.join(cov['tickers'])}")
+        if not cov["filas"]:
+            print("sin historia — se salta (lanzá una Reevaluación para poblarla).")
+            continue
 
-    pb = pbs.build_from_store(window_days=args.window, half_life=args.half_life,
-                              min_n=args.min_n, combination=combination)
-    pbs.save_playbook(pb)
-    pbs.append_history(pb)
-    print(f"playbook: {pb['evaluado_desde']} → {pb['evaluado_hasta']} · {pb['modo']}")
-    for d, i in pb["per_day"].items():
-        rt = i.get("retador")
-        flags = "".join([
-            " · ⚠calibración" if i.get("calib_alerta") else "",
-            " · ⚠CUSUM" if i.get("cusum_alerta") else "",
-            (f" · churn {int(i['churn']['tasa'] * 100)}%"
-             if (i.get("churn") or {}).get("alerta") else ""),
-            (f" · retador {rt['scenario']} ({rt['racha']}/5)" if rt else ""),
-        ])
-        print(f"  {d}: {i.get('scenario')} · {i.get('recommendation')} · "
-              f"WR {i.get('win_rate')}% (P5 {i.get('wr_p5')}%) · Sharpe {i.get('sharpe')} · "
-              f"n={i.get('n')} · estado: {i.get('estado')}{flags}")
-    rv = pb.get("regimen_vol")
-    if rv:
-        print(f"régimen vol {rv['ticker']}: 5d/mediana60d = {rv['ratio']}× "
-              + ("⚠ ALERTA (>2×)" if rv.get("alerta") else "(normal)"))
-    if pb.get("revision_anticipada"):
-        print("⚠ CUSUM fuera de banda en ≥1 día → revisión anticipada de parámetros "
-              "(correr window_sweep.py)")
+        # Días hábiles faltantes: (último almacenado, ayer]. Hoy se excluye (la sesión puede
+        # estar abierta y el update de datos de las 05:00 cubre hasta ayer).
+        if not args.skip_batch:
+            from ucbatch import runner as _ucrun
+            hoy = date.today().isoformat()
+            pend = [d for d in _ucrun.trading_days(cov["hasta"], hoy)
+                    if cov["hasta"] < d < hoy]
+            if pend:
+                run = _run_batch(pend[0], pend[-1], cov["tickers"] or ["QQQ", "SPY", "IWM"],
+                                 combination)
+                print(f"ingesta directa [{run['run_id']}]: +{run['n_filas_nuevas']:,} filas "
+                      f"nuevas (de {run['n_filas']:,} · {run['duration_s']:.0f} s)")
+            else:
+                print("sin días faltantes — el almacén está al día.")
+
+        pb = pbs.build_from_store(window_days=args.window, half_life=args.half_life,
+                                  min_n=args.min_n, combination=combination)
+        pbs.save_playbook(pb, path=pbs.playbook_path_for(combination))   # json por combinación
+        if _es_activa:
+            pbs.save_playbook(pb)              # el vigente de la página
+            pbs.append_history(pb)
+        print(f"playbook: {pb['evaluado_desde']} → {pb['evaluado_hasta']} · {pb['modo']}"
+              + ("" if _es_activa else " · (json propio; el vigente es el de la activa)"))
+        for d, i in pb["per_day"].items():
+            rt = i.get("retador")
+            flags = "".join([
+                " · ⚠calibración" if i.get("calib_alerta") else "",
+                " · ⚠CUSUM" if i.get("cusum_alerta") else "",
+                (f" · churn {int(i['churn']['tasa'] * 100)}%"
+                 if (i.get("churn") or {}).get("alerta") else ""),
+                (f" · retador {rt['scenario']} ({rt['racha']}/5)" if rt else ""),
+            ])
+            print(f"  {d}: {i.get('scenario')} · {i.get('recommendation')} · "
+                  f"WR {i.get('win_rate')}% (P5 {i.get('wr_p5')}%) · Sharpe {i.get('sharpe')} · "
+                  f"n={i.get('n')} · estado: {i.get('estado')}{flags}")
+        rv = pb.get("regimen_vol")
+        if rv:
+            print(f"régimen vol {rv['ticker']}: 5d/mediana60d = {rv['ratio']}× "
+                  + ("⚠ ALERTA (>2×)" if rv.get("alerta") else "(normal)"))
+        if pb.get("revision_anticipada"):
+            print("⚠ CUSUM fuera de banda en ≥1 día → revisión anticipada de parámetros "
+                  "(correr window_sweep.py)")
 
     # Revalidación de integridad: a pedido (--verify) o automática el día 1 de cada mes.
+    # Corre sobre la combinación pedida o la activa (una sola: re-corre días de muestra).
     if args.verify or (date.today().day == 1 and not args.skip_batch):
-        verify_integrity(combination=combination)
+        verify_integrity(combination=args.combination or _activa)
 
 
 if __name__ == "__main__":
