@@ -347,7 +347,8 @@ with st.expander("📜 Historial de ejecuciones (reevaluaciones · incrementales
         _EST_RUN = {"exitosa": "✅ exitosa", "fallida": "❌ fallida",
                     "corriendo": "⏳ corriendo", "abortada": "⚠️ abortada"}
         _hrows = [{"Inicio": r.get("started_at"), "Tipo": r.get("tipo"),
-                   "Combinación": r.get("combination_nombre") or r.get("combination"),
+                   "Combinación": _pbs.display_name(r.get("combination_nombre")
+                                                    or r.get("combination")),
                    "Estado": _EST_RUN.get(r.get("estado"), r.get("estado")),
                    "Duración (s)": (round(r["duration_s"]) if r.get("duration_s") else None),
                    "Rango": f"{r.get('fecha_desde') or '—'} → {r.get('fecha_hasta') or '—'}",

@@ -1443,9 +1443,7 @@ def _render_iters_panel(_iters_seed):
                 _dia_auto = next(iter(_wds), "?")
                 # De QUÉ playbook sale la config: con varias combinaciones conviviendo, el
                 # nombre es el desambiguador (el «alcance» de la config puede parecérsele).
-                _pb_org = str(_pb_auto.get("combination_nombre")
-                              or _pb_auto.get("combination") or "Template 480 (legacy)")
-                _pb_org = ("🧩 «" + (_pb_org[:42] + "…" if len(_pb_org) > 43 else _pb_org) + "»")
+                _pb_org = f"🧩 «{_pbs.display_name(_pb_auto)}»"
                 if not _auto_entry:
                     _cfg_c2.caption(f"El playbook de {_pb_org} no cubre el día **{_dia_auto}**.")
                 elif str(_auto_entry.get("recommendation", "")).upper() != "OPERAR":
@@ -2096,10 +2094,7 @@ def _render_range_plan_generator() -> None:
                 _n_oper = sum(1 for _v in _pj.values()
                               if isinstance(_v, dict)
                               and str(_v.get("recommendation")).upper() == "OPERAR")
-                _pb_sv_org = str(_pb_sv.get("combination_nombre")
-                                 or _pb_sv.get("combination") or "Template 480 (legacy)")
-                if len(_pb_sv_org) > 43:
-                    _pb_sv_org = _pb_sv_org[:42] + "…"
+                _pb_sv_org = _pbs.display_name(_pb_sv)
                 st.caption(f"📘 **Playbook guardado** · 🧩 «{_pb_sv_org}» · "
                            f"{_pb_sv.get('modo', 'manual')} · evaluado "
                            f"{_pb_sv.get('evaluado_desde')} → {_pb_sv.get('evaluado_hasta')} · "

@@ -79,3 +79,15 @@ def test_spawn_finalize_claim_y_comando(monkeypatch, tmp_path):
     cmd = lanzados[0]
     assert "--finalize-run" in cmd and "20260704_231116" in cmd
     assert any(str(c).endswith("update_playbook.py") for c in cmd)
+
+
+def test_display_name_recorta_boilerplate():
+    dn = pbs.display_name
+    assert dn("Backtesting_variables_template QQQ SPY IWM - tickers y colectivo.xlsx") == \
+        "QQQ SPY IWM - tickers y colectivo"
+    assert dn("Backtesting_variables_template QQQ SPY IWM - solo tickers.xlsx") == \
+        "QQQ SPY IWM - solo tickers"
+    assert dn(None) == "Template 480 (legacy)"
+    assert dn({"combination_nombre": "Mi Comb.xlsx"}) == "Mi Comb"
+    largo = dn("x" * 80)
+    assert len(largo) == 45 and largo.startswith("…")     # trunca por la CABEZA (cola distintiva)

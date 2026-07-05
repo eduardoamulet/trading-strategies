@@ -761,3 +761,22 @@ def spawn_finalize(run_id: str) -> bool:
                          cwd=str(HERE), stdout=out, stderr=out,
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return True
+
+
+def display_name(nombre, max_len: int = 45) -> str:
+    """Nombre CORTO y distintivo de una combinación para la UI: sin extensión ni el boilerplate
+    «Backtesting_variables_template», y truncado POR LA CABEZA si hace falta — lo distintivo de
+    los nombres largos vive al FINAL («… - tickers y colectivo»). Acepta el dict del playbook
+    (usa combination_nombre) o el string directo."""
+    if isinstance(nombre, dict):
+        nombre = nombre.get("combination_nombre") or nombre.get("combination") or ""
+    s = str(nombre or "").strip() or "Template 480 (legacy)"
+    for suf in (".xlsx", ".xlsm"):
+        if s.lower().endswith(suf):
+            s = s[: -len(suf)]
+    pref = "Backtesting_variables_template"
+    if s.startswith(pref):
+        s = s[len(pref):].lstrip(" -_")
+    if len(s) > max_len:
+        s = "…" + s[-(max_len - 1):]
+    return s
