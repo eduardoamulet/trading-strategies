@@ -4254,9 +4254,6 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
         # Si el multiselect quedó vacío (transición al cambiar de fecha, o deselección total),
         # caemos a TODOS los tickers del día → la tabla nunca se "esconde" por un filtro vacío.
         _oks_date = [r for r in _oks_date if r.get("ticker") in (_sel_tks or _all_tks)]
-        _tkc: dict = {}
-        for _r in _oks_date:
-            _tkc[_r.get("ticker")] = _tkc.get(_r.get("ticker"), 0) + 1
 
         def _hfloor(_t):
             return ((_t.hour * 3600 + _t.minute * 60 + _t.second) // _hsec) * _hsec
@@ -4281,169 +4278,205 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                     continue
             return (min(_es), max(_xs)) if _es else (None, None)
 
-        _hits = []
-        for r in sorted(_oks_date, key=lambda x: (x.get("ticker") or "", x.get("hora") or "")):
-            it = r["iteration"]
-            try:
-                _disp = _build_display_df(it)
-                _ts = pd.to_datetime(it.df["timestamp"])
-                _pc = _disp["ROI (%)"].to_numpy()
-                _dl = _disp["ROI ($)"].to_numpy()
-            except Exception:
-                continue
-            if len(_ts) == 0:
-                continue
-            _cells = {}
-            for _t, _p, _d in zip(_ts, _pc, _dl):
-                _cells[_hfloor(_t)] = (float(_p), float(_d))
-            _tk = r.get("ticker") or "?"
-            if _hdate == "(todas)":
-                _lab = f"{_tk} · {r.get('fecha')} {r.get('hora')}"
-            else:
-                _lab = _tk if _tkc.get(_tk, 0) == 1 else f"{_tk} · {r.get('hora')}"
-            _inv = float(getattr(it, "invest_total", 0.0) or 0.0)
-            _hits.append((_lab, _hfloor(_ts.iloc[0]), _hfloor(_ts.iloc[-1]), _cells, _inv))
-        if not _hits:
+        def _build_hits(_recs, _day_labels: bool) -> list:
+            """(label, entrada_s, salida_s, celdas, invertido) por señal. Con `_day_labels`
+            (heatmap SECCIONADO por fecha) el label es local al día (ticker, o ticker·hora si
+            el ticker repite); si no, lleva la fecha (vista de una fecha única con su grilla)."""
+            _cnt: dict = {}
+            for _r in _recs:
+                _cnt[_r.get("ticker")] = _cnt.get(_r.get("ticker"), 0) + 1
+            _hs = []
+            for r in sorted(_recs, key=lambda x: (x.get("ticker") or "", x.get("hora") or "")):
+                it = r["iteration"]
+                try:
+                    _disp = _build_display_df(it)
+                    _ts = pd.to_datetime(it.df["timestamp"])
+                    _pc = _disp["ROI (%)"].to_numpy()
+                    _dl = _disp["ROI ($)"].to_numpy()
+                except Exception:  # noqa: BLE001 — una señal sin timeline no rompe el heatmap
+                    continue
+                if len(_ts) == 0:
+                    continue
+                _cells = {}
+                for _t, _p, _d in zip(_ts, _pc, _dl):
+                    _cells[_hfloor(_t)] = (float(_p), float(_d))
+                _tk = r.get("ticker") or "?"
+                _lab = (_tk if _cnt.get(_tk, 0) == 1 else f"{_tk} · {r.get('hora')}") \
+                    if _day_labels else f"{_tk} · {r.get('hora')}"
+                _inv = float(getattr(it, "invest_total", 0.0) or 0.0)
+                _hs.append((_lab, _hfloor(_ts.iloc[0]), _hfloor(_ts.iloc[-1]), _cells, _inv))
+            return _hs
+
+        # SECCIONADO POR DÍA (pedido UX 2026-07-05): en «(todas)», una tabla por FECHA — cada
+        # día con su propia fila TOTAL (que es exactamente la base del corte colectivo de ESE
+        # día). La grilla horaria y el slider son GLOBALES para que las secciones alineen.
+        _seccionado = (_hdate == "(todas)")
+        if _seccionado:
+            _grupos = [(_f, [r for r in _oks_date if r.get("fecha") == _f])
+                       for _f in sorted({str(r.get("fecha")) for r in _oks_date})]
+        else:
+            _grupos = [(None, _oks_date)]
+        _hits_grp = [(_f, _build_hits(_recs, _day_labels=_seccionado)) for _f, _recs in _grupos]
+        _hits_grp = [(_f, _hs) for _f, _hs in _hits_grp if _hs]
+        if not _hits_grp:
             st.caption("Sin timeline para esa fecha.")
             return
-        _gmin = min(e for _l, e, _xe, _c, _iv in _hits)
-        _gmax = max(_xe for _l, e, _xe, _c, _iv in _hits)
-        if _full_range and _hdate != "(todas)":
+        _all_hits = [h for _f, _hs in _hits_grp for h in _hs]
+        _gmin = min(e for _l, e, _xe, _c, _iv in _all_hits)
+        _gmax = max(_xe for _l, e, _xe, _c, _iv in _all_hits)
+        if _full_range and not _seccionado:
             _ga, _gb = _grange(_oks)   # rango GLOBAL (todas las fechas) → columnas como en «(todas)»
             if _ga is not None:
                 _gmin, _gmax = min(_gmin, _ga), max(_gmax, _gb)
         _grid = list(range(_gmin, _gmax + _hsec, _hsec))
-        if len(_hits) * len(_grid) > 25000:
-            st.warning(f"⚠️ {len(_hits)} tickers × {len(_grid)} intervalos — muy pesado. Usá **1 minuto**.")
+        if len(_all_hits) * len(_grid) > 25000:
+            st.warning(f"⚠️ {len(_all_hits)} tickers × {len(_grid)} intervalos — muy pesado. "
+                       "Usá **1 minuto**.")
             return
-        _cols = [_hlbl(_s) for _s in _grid]
-        _tot_dol = {c: 0.0 for c in _cols}   # Σ ROI$ por columna (solo celdas válidas)
-        _tot_inv = {c: 0.0 for c in _cols}   # Σ invertido por columna (tickers abiertos)
-        _tot_n = {c: 0 for c in _cols}
-        _hdata = []
-        for _label, _e, _xe, _cells, _inv in _hits:
-            _row = {"Ticket": _label}
-            _last = None
-            for _s in _grid:
-                _c = _hlbl(_s)
-                if _s < _e or _s > _xe:                # fuera de la operación → CLOSED (no suma)
-                    _row[_c] = "CLOSED"
-                    _last = None
-                else:                                  # abierta → forward-fill
-                    if _s in _cells:
-                        _last = _cells[_s]
-                    if _last is not None:
-                        _p, _d = _last
-                        _row[_c] = f"{_p*100:.1f}% / ${_d:,.2f}"
-                        _tot_dol[_c] += _d
-                        _tot_inv[_c] += _inv
-                        _tot_n[_c] += 1
-                    else:
-                        _row[_c] = "CLOSED"
-            _hdata.append(_row)
-        # Fila TOTAL: ROI% agregado = Σ ROI$ / Σ invertido (excluye CLOSED) · ROI$ = Σ ROI$.
-        _total = {"Ticket": "TOTAL"}
-        for _c in _cols:
-            if _tot_n[_c] > 0 and _tot_inv[_c] > 0:
-                _agg = _tot_dol[_c] / _tot_inv[_c] * 100.0
-                _total[_c] = f"{_agg:.1f}% / ${_tot_dol[_c]:,.2f}"
-            else:
-                _total[_c] = "CLOSED"
-        # Filtro de columnas — RANGO DE HORAS:
-        if len(_cols) > 1:
-            # Reset del rango a COMPLETO cuando cambia la grilla o los filtros (fecha, resolución,
-            # tickers o cualquiera de los checkboxes). Evita que el slider quede "pegado" en un
-            # rango viejo (p. ej. 09:45–09:45) y no muestre todos los minutos al deseleccionar.
-            _hr_sig = (str(_hdate), _hres, tuple(_sel_tks), _cols[0], _cols[-1], len(_cols),
-                       bool(_only_pos), bool(_only_thr))
+        _cols_full = [_hlbl(_s) for _s in _grid]
+        # Slider de horas ÚNICO (rango global): aplica a TODAS las secciones por igual.
+        _cols = list(_cols_full)
+        if len(_cols_full) > 1:
+            _hr_sig = (str(_hdate), _hres, tuple(_sel_tks), _cols_full[0], _cols_full[-1],
+                       len(_cols_full), bool(_only_pos), bool(_only_thr))
             if st.session_state.get(f"{key_prefix}_hrange_sig") != _hr_sig:
                 st.session_state[f"{key_prefix}_hrange_sig"] = _hr_sig
                 st.session_state.pop(f"{key_prefix}_hrange", None)
-            _tr = st.select_slider("Rango de horas (columnas)", options=_cols,
-                                   value=(_cols[0], _cols[-1]), key=f"{key_prefix}_hrange")
-            _cols = _cols[_cols.index(_tr[0]):_cols.index(_tr[1]) + 1]
-        # Filtro — solo columnas con ROI% > 0 en alguna fila de ticker:
-        if _only_pos:
-            def _col_pos(_c):
-                for _row in _hdata:
-                    _v = _row.get(_c, "")
-                    if isinstance(_v, str) and "%" in _v:
-                        try:
-                            if float(_v.split("%")[0]) > 0:
-                                return True
-                        except Exception:
-                            pass
-                return False
-            _cols = [_c for _c in _cols if _col_pos(_c)]
-        # Filtro — solo columnas cuyo TOTAL colectivo (%) supera el Umbral de ROI colectivo:
-        if _only_thr:
-            def _col_over_thr(_c):
-                return (_tot_n.get(_c, 0) > 0 and _tot_inv.get(_c, 0) > 0
-                        and (_tot_dol[_c] / _tot_inv[_c] * 100.0) > _thr)
-            _cols = [_c for _c in _cols if _col_over_thr(_c)]
-        if not _cols:
-            st.caption("Ninguna columna cumple los filtros seleccionados.")
-            return
-        _full = pd.DataFrame([_total] + _hdata)[["Ticket"] + _cols]
-        def _style(df):
-            sty = pd.DataFrame("", index=df.index, columns=df.columns)
-            # 🟡 Corte por ROI colectivo: PRIMER intervalo donde el TOTAL (%) ALCANZA el Umbral de
-            # ROI colectivo de las CONDICIONES DE SALIDA (coll_exit_thr) → ahí dispara el corte.
-            # (Es el umbral REAL del backtest, NO el filtro visual de arriba.)
-            _trig_col = None
-            if coll_exit_thr is not None:
-                _tot_ix = [_i for _i in df.index if df.at[_i, "Ticket"] == "TOTAL"]
-                if _tot_ix:
-                    for _c in _cols:
-                        _tv = df.at[_tot_ix[0], _c]
-                        if isinstance(_tv, str) and "%" in _tv:
+            _tr = st.select_slider("Rango de horas (columnas)", options=_cols_full,
+                                   value=(_cols_full[0], _cols_full[-1]),
+                                   key=f"{key_prefix}_hrange")
+            _cols = _cols_full[_cols_full.index(_tr[0]):_cols_full.index(_tr[1]) + 1]
+        def _render_grid(_hits, _cols_vista) -> None:
+            """UNA sección del heatmap (un día, o la fecha única): filas + su fila TOTAL,
+            filtros de columnas locales, estilo y tabla."""
+            _tot_dol = {c: 0.0 for c in _cols_full}   # Σ ROI$ por columna (solo celdas válidas)
+            _tot_inv = {c: 0.0 for c in _cols_full}   # Σ invertido por columna (tickers abiertos)
+            _tot_n = {c: 0 for c in _cols_full}
+            _hdata = []
+            for _label, _e, _xe, _cells, _inv in _hits:
+                _row = {"Ticket": _label}
+                _last = None
+                for _s in _grid:
+                    _c = _hlbl(_s)
+                    if _s < _e or _s > _xe:            # fuera de la operación → CLOSED (no suma)
+                        _row[_c] = "CLOSED"
+                        _last = None
+                    else:                              # abierta → forward-fill
+                        if _s in _cells:
+                            _last = _cells[_s]
+                        if _last is not None:
+                            _p, _d = _last
+                            _row[_c] = f"{_p*100:.1f}% / ${_d:,.2f}"
+                            _tot_dol[_c] += _d
+                            _tot_inv[_c] += _inv
+                            _tot_n[_c] += 1
+                        else:
+                            _row[_c] = "CLOSED"
+                _hdata.append(_row)
+            # Fila TOTAL: ROI% agregado = Σ ROI$ / Σ invertido (excluye CLOSED) · ROI$ = Σ ROI$.
+            # En el modo seccionado es el TOTAL de ESE día = la base del corte colectivo del día.
+            _total = {"Ticket": "TOTAL"}
+            for _c in _cols_full:
+                if _tot_n[_c] > 0 and _tot_inv[_c] > 0:
+                    _agg = _tot_dol[_c] / _tot_inv[_c] * 100.0
+                    _total[_c] = f"{_agg:.1f}% / ${_tot_dol[_c]:,.2f}"
+                else:
+                    _total[_c] = "CLOSED"
+            _cg = list(_cols_vista)
+            # Filtro — solo columnas con ROI% > 0 en alguna fila de ticker (de ESTA sección):
+            if _only_pos:
+                def _col_pos(_c):
+                    for _row in _hdata:
+                        _v = _row.get(_c, "")
+                        if isinstance(_v, str) and "%" in _v:
                             try:
-                                if float(_tv.split("%")[0]) >= coll_exit_thr:
-                                    _trig_col = _c
-                                    break
+                                if float(_v.split("%")[0]) > 0:
+                                    return True
                             except Exception:
                                 pass
-            # Por CADA fila (TOTAL y tickers): el MÁXIMO de sus positivos → verde OSCURO; el
-            # MÍNIMO de sus negativos → rojo OSCURO; el resto, verde/rojo claro según signo.
-            for _i in df.index:
-                _is_tot = (df.at[_i, "Ticket"] == "TOTAL")
-                _bold = "; font-weight:bold" if _is_tot else ""
-                sty.at[_i, "Ticket"] = ("background-color:#37474f; color:white; font-weight:bold"
-                                        if _is_tot else "")
-                _vals = []
-                for _c in _cols:
-                    _v = df.at[_i, _c]
-                    if isinstance(_v, str) and "%" in _v:
-                        try:
-                            _vals.append(float(_v.split("%")[0]))
-                        except Exception:
-                            pass
-                _rmax = max([v for v in _vals if v > 0], default=None)
-                _rmin = min([v for v in _vals if v < 0], default=None)
-                for _c in _cols:
-                    _v = df.at[_i, _c]
-                    if not isinstance(_v, str) or "%" not in _v:
-                        sty.at[_i, _c] = "color:#9aa0a6"          # CLOSED → gris tenue
-                        continue
-                    try:
-                        _p = float(_v.split("%")[0])
-                    except Exception:
-                        continue
-                    if _rmax is not None and _p == _rmax:           # máx (+) de la fila → verde OSCURO
-                        sty.at[_i, _c] = "background-color:#1b5e20; color:white; font-weight:bold"
-                    elif _rmin is not None and _p == _rmin:         # mín (−) de la fila → rojo OSCURO
-                        sty.at[_i, _c] = "background-color:#b71c1c; color:white; font-weight:bold"
-                    elif _p > 0:
-                        sty.at[_i, _c] = "background-color:#c8e6c9" + _bold   # verde claro
-                    elif _p < 0:
-                        sty.at[_i, _c] = "background-color:#ffcdd2" + _bold   # rojo claro
-                    # 🟡 la celda del corte por ROI colectivo (fila TOTAL) manda sobre el color de signo
-                    if _is_tot and _trig_col is not None and _c == _trig_col:
-                        sty.at[_i, _c] = "background-color:#ffeb3b; color:#000; font-weight:bold"
-            return sty
+                    return False
+                _cg = [_c for _c in _cg if _col_pos(_c)]
+            # Filtro — solo columnas cuyo TOTAL (de ESTA sección) supera el filtro visual:
+            if _only_thr:
+                _cg = [_c for _c in _cg
+                       if (_tot_n.get(_c, 0) > 0 and _tot_inv.get(_c, 0) > 0
+                           and (_tot_dol[_c] / _tot_inv[_c] * 100.0) > _thr)]
+            if not _cg:
+                st.caption("Ninguna columna cumple los filtros en esta sección.")
+                return
+            _full = pd.DataFrame([_total] + _hdata)[["Ticket"] + _cg]
 
-        st.dataframe(_full.style.apply(_style, axis=None), use_container_width=True,
-                     hide_index=True, height=min(560, 60 + 35 * (len(_hdata) + 1)))
+            def _style(df):
+                sty = pd.DataFrame("", index=df.index, columns=df.columns)
+                # 🟡 Corte por ROI colectivo: PRIMER intervalo donde el TOTAL (%) ALCANZA el
+                # Umbral de ROI colectivo de las CONDICIONES DE SALIDA (coll_exit_thr) → ahí
+                # dispara el corte. (Es el umbral REAL del backtest, NO el filtro visual.)
+                _trig_col = None
+                if coll_exit_thr is not None:
+                    _tot_ix = [_i for _i in df.index if df.at[_i, "Ticket"] == "TOTAL"]
+                    if _tot_ix:
+                        for _c in _cg:
+                            _tv = df.at[_tot_ix[0], _c]
+                            if isinstance(_tv, str) and "%" in _tv:
+                                try:
+                                    if float(_tv.split("%")[0]) >= coll_exit_thr:
+                                        _trig_col = _c
+                                        break
+                                except Exception:
+                                    pass
+                # Por CADA fila (TOTAL y tickers): el MÁXIMO de sus positivos → verde OSCURO;
+                # el MÍNIMO de sus negativos → rojo OSCURO; el resto, claro según signo.
+                for _i in df.index:
+                    _is_tot = (df.at[_i, "Ticket"] == "TOTAL")
+                    _bold = "; font-weight:bold" if _is_tot else ""
+                    sty.at[_i, "Ticket"] = ("background-color:#37474f; color:white; "
+                                            "font-weight:bold" if _is_tot else "")
+                    _vals = []
+                    for _c in _cg:
+                        _v = df.at[_i, _c]
+                        if isinstance(_v, str) and "%" in _v:
+                            try:
+                                _vals.append(float(_v.split("%")[0]))
+                            except Exception:
+                                pass
+                    _rmax = max([v for v in _vals if v > 0], default=None)
+                    _rmin = min([v for v in _vals if v < 0], default=None)
+                    for _c in _cg:
+                        _v = df.at[_i, _c]
+                        if not isinstance(_v, str) or "%" not in _v:
+                            sty.at[_i, _c] = "color:#9aa0a6"      # CLOSED → gris tenue
+                            continue
+                        try:
+                            _p = float(_v.split("%")[0])
+                        except Exception:
+                            continue
+                        if _rmax is not None and _p == _rmax:       # máx (+) fila → verde OSCURO
+                            sty.at[_i, _c] = ("background-color:#1b5e20; color:white; "
+                                              "font-weight:bold")
+                        elif _rmin is not None and _p == _rmin:     # mín (−) fila → rojo OSCURO
+                            sty.at[_i, _c] = ("background-color:#b71c1c; color:white; "
+                                              "font-weight:bold")
+                        elif _p > 0:
+                            sty.at[_i, _c] = "background-color:#c8e6c9" + _bold   # verde claro
+                        elif _p < 0:
+                            sty.at[_i, _c] = "background-color:#ffcdd2" + _bold   # rojo claro
+                        # 🟡 la celda del corte colectivo (fila TOTAL) manda sobre el signo
+                        if _is_tot and _trig_col is not None and _c == _trig_col:
+                            sty.at[_i, _c] = "background-color:#ffeb3b; color:#000; font-weight:bold"
+                return sty
+
+            st.dataframe(_full.style.apply(_style, axis=None), use_container_width=True,
+                         hide_index=True, height=min(560, 60 + 35 * (len(_hdata) + 1)))
+
+        _WD_HM = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+        for _f_hm, _hs_hm in _hits_grp:
+            if _seccionado:
+                try:
+                    _wd_hm = " · " + _WD_HM[pd.Timestamp(str(_f_hm)).weekday()]
+                except Exception:  # noqa: BLE001
+                    _wd_hm = ""
+                st.markdown(f"##### 📅 {_f_hm}{_wd_hm}")
+            _render_grid(_hs_hm, _cols)
 
 
 def _render_signals_session(rs):
