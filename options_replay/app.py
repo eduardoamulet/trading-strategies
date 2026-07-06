@@ -4361,8 +4361,10 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
             st.caption("Sin timeline para esa fecha.")
             return
         _all_hits = [h for _f, _recs, _hs in _hits_grp for h in _hs]
-        _gmin = min(e for _l, e, _xe, _c, _iv, _pl in _all_hits)
-        _gmax = max(_xe for _l, e, _xe, _c, _iv, _pl in _all_hits)
+        # Índices posicionales (h[1]=entrada, h[2]=salida) — robusto a que la tupla del hit
+        # crezca (ya pasó: el 7º campo de refuerzos rompió el unpack fijo de 6).
+        _gmin = min(h[1] for h in _all_hits)
+        _gmax = max(h[2] for h in _all_hits)
         if _full_range and not _seccionado:
             _ga, _gb = _grange(_oks)   # rango GLOBAL (todas las fechas) → columnas como en «(todas)»
             if _ga is not None:
