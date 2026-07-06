@@ -2890,19 +2890,26 @@ with st.sidebar.container():
         "Sólo PUT": "🎯 **Sólo PUT** — una sola pierna (100% PUT). Sale por su **Umbral de "
                     "ROI** o su **Stop loss**. Termina al umbral, al stop o al cierre del día.",
         "Sólo CALL (End of Day)": "🎯 **Sólo CALL (End of Day)** — una sola pierna (100% CALL) que se "
-                                  "vende **al cierre del día**. No depende de Umbral de ROI ni Stop loss.",
+                                  "vende **al cierre del día**. No depende de Umbral de ROI ni Stop "
+                                  "loss del ticker — el **colectivo** (si el alcance de salida lo "
+                                  "incluye) sí puede cerrarla antes.",
         "Sólo PUT (End of Day)": "🎯 **Sólo PUT (End of Day)** — una sola pierna (100% PUT) que se "
-                                 "vende **al cierre del día**. No depende de Umbral de ROI ni Stop loss.",
+                                 "vende **al cierre del día**. No depende de Umbral de ROI ni Stop "
+                                 "loss del ticker — el **colectivo** (si el alcance de salida lo "
+                                 "incluye) sí puede cerrarla antes.",
         "CALL o PUT": "🎯 **CALL o PUT** — se compran ambas piernas y se venden las dos en cuanto "
                       "**cualquiera alcanza +100%** (se duplica). No depende de Umbral de ROI ni "
-                      "Stop loss. Termina al +100% o al cierre del día.",
+                      "Stop loss del ticker (el **colectivo**, si está activado, sí aplica). "
+                      "Termina al +100%, por colectivo o al cierre del día.",
         "CALL o PUT (plus)": "🎯 **CALL o PUT (plus)** — se compran ambas piernas. La **1ª pierna "
                              "que alcanza el Umbral de salida (%)** se vende; la otra se vende "
                              "cuando, entre lo bancado y su valor, se **recupera la inversión "
                              "total**. Termina ahí o al cierre del día.",
         "CALL o PUT (End of Day)": "🎯 **CALL o PUT (End of Day)** — se compran ambas piernas (50/50) "
                                    "y se venden las dos **al cierre del día**. No depende de Umbral de "
-                                   "ROI ni Stop loss.",
+                                   "ROI ni Stop loss del ticker — ⚠ el **umbral/stop COLECTIVO** (si "
+                                   "el alcance de salida lo incluye) **sí puede cerrarlas antes**; "
+                                   "para un EOD puro elegí «Aplicar solo a tickers».",
     }
     # La descripción de la estrategia se muestra DIRECTAMENTE debajo del dropdown (caption, no
     # expander) → al elegir una estrategia, su info aparece enseguida.

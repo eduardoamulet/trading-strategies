@@ -57,11 +57,14 @@ ESTRATEGIAS_SF = [
      "cierre del día."),
     ("CALL o PUT (End of Day)",
      "Se compran ambas piernas (50/50) y se venden las dos al cierre del día. No depende de Umbral de "
-     "ROI ni Stop loss."),
+     "ROI ni Stop loss del ticker — el umbral/stop COLECTIVO (si el alcance lo incluye) sí puede "
+     "cerrarlas antes; para un EOD puro elegí «Aplicar solo a tickers»."),
     ("Sólo CALL (End of Day)",
-     "Una sola pierna (100% CALL) que se vende al cierre del día. No depende de Umbral de ROI ni Stop loss."),
+     "Una sola pierna (100% CALL) que se vende al cierre del día. No depende de Umbral de ROI ni Stop "
+     "loss del ticker — el colectivo (si el alcance lo incluye) sí puede cerrarla antes."),
     ("Sólo PUT (End of Day)",
-     "Una sola pierna (100% PUT) que se vende al cierre del día. No depende de Umbral de ROI ni Stop loss."),
+     "Una sola pierna (100% PUT) que se vende al cierre del día. No depende de Umbral de ROI ni Stop "
+     "loss del ticker — el colectivo (si el alcance lo incluye) sí puede cerrarla antes."),
 ]
 CRITERIOS = {
     "trend-reversal": ["Tendencia Previa (+2 días)", "Ruptura Línea de Tendencia y MM20H",
