@@ -206,19 +206,32 @@ if _elegibles:
             _n_el += f" · {_c_el['id'][-6:]}"
         _nom_el[_c_el["id"]] = _n_el
     _ids_el = list(_nom_el)
-    _sel_act = st.selectbox(
+    # SINCRONIZAR el widget con la activa REAL antes de instanciarlo: si la activa cambió por
+    # OTRA vía (botón «⭐ Usar en el playbook» de una tarjeta, CLI), el valor viejo guardado en
+    # session_state la revertía en el próximo rerun (el selectbox «ganaba» siempre). Con la
+    # siembra previa + on_change, el selectbox solo actúa cuando el USUARIO lo toca.
+    if _activa in _ids_el and st.session_state.get("comb_activa_sel") != _activa:
+        st.session_state["comb_activa_sel"] = _activa
+
+    def _cambiar_activa_cb():
+        _nv = st.session_state.get("comb_activa_sel")
+        if _nv and _nv != _cmb.active_combination():
+            try:
+                _cmb.set_active(_nv)
+                _pbs.promote_active_playbook(_nv)   # la síntesis refleja a la nueva activa YA
+            except ValueError as _ae:  # noqa: BLE001
+                st.session_state["_comb_act_err"] = str(_ae)
+
+    st.selectbox(
         "⭐ Combinación ACTIVA — la usan el job diario de las 05:00, la Reevaluación y el "
         "veredicto del playbook",
         _ids_el, index=(_ids_el.index(_activa) if _activa in _ids_el else 0),
         format_func=lambda cid: _nom_el.get(cid, cid), key="comb_activa_sel",
+        on_change=_cambiar_activa_cb,
         help="Cambiarla acá equivale al botón «⭐ Usar en el playbook» de cada tarjeta. El "
              "almacén y el veredicto están segregados por combinación — no se mezcla nada.")
-    if _sel_act != _activa:
-        try:
-            _cmb.set_active(_sel_act)
-            st.rerun()
-        except ValueError as _ae:
-            st.error(str(_ae))
+    if st.session_state.pop("_comb_act_err", None):
+        st.error(st.session_state.get("_comb_act_err") or "No se pudo activar esa combinación.")
 
 def _render_tablas_playbook(pb_c: dict) -> None:
     """Las DOS tablas del veredicto (por día de la semana + desglose día×ticker) — mismo
@@ -313,6 +326,7 @@ for _co in _combos:
                      "veredicto del playbook pasan a usar SUS escenarios (el almacén y el "
                      "veredicto están segregados por combinación)."):
             _cmb.set_active(_co["id"])
+            _pbs.promote_active_playbook(_co["id"])   # síntesis coherente con la nueva activa
             st.success(f"⭐ «{_co['nombre']}» es ahora la combinación activa.")
             st.rerun()
         if not _es_activa and _ac3.button("🗑 Eliminar", key=f"comb_del_{_co['id']}",

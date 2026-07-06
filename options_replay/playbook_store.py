@@ -863,6 +863,23 @@ def load_playbook_for(combination_id: str):
     return load_playbook(playbook_path_for(combination_id))
 
 
+def promote_active_playbook(combination_id: str) -> bool:
+    """Copia el veredicto segregado (playbook_<id>.json) a playbook.json al ACTIVAR una
+    combinación: la síntesis vigente y el «(playbook automático)» pasan a reflejar a la nueva
+    activa AL INSTANTE, sin esperar al job de las 05:00. NO escribe historia (activar no es
+    reevaluar). Si la combinación aún no tiene veredicto calculado, BORRA playbook.json (mostrar
+    el veredicto de la combinación anterior bajo la nueva activa sería mentir) y devuelve False."""
+    pb = load_playbook_for(combination_id)
+    if pb:
+        save_playbook(pb)
+        return True
+    try:
+        Path(PB_PATH).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return False
+
+
 def build_and_save_for(combination_id: str, *, window_days: int = 120, half_life: int = 35,
                        min_n: int = 16) -> dict:
     """Calcula el veredicto OFICIAL (ventana + decaimiento + gates + estados) de UNA combinación
