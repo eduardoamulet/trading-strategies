@@ -4279,11 +4279,13 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
             return (min(_es), max(_xs)) if _es else (None, None)
 
         def _build_hits(_recs, _day_labels: bool) -> list:
-            """(label, entrada_s, salida_s, celdas, invertido, es_pierna) por FILA del heatmap:
-            la fila combinada de cada señal + una fila por PIERNA (· CALL / · PUT) con su ROI
-            propio minuto a minuto. Las filas de pierna NO suman al TOTAL (la combinada ya
-            representa a la señal en la cartera — sumarlas duplicaría). Con `_day_labels`
-            (seccionado por fecha) el label es local al día."""
+            """(label, entrada_s, salida_s, celdas, invertido, es_pierna, refuerzos) por FILA
+            del heatmap: la fila combinada de cada señal + una fila por PIERNA (· CALL / · PUT)
+            con su ROI propio minuto a minuto. Las filas de pierna NO suman al TOTAL (la
+            combinada ya representa a la señal en la cartera — sumarlas duplicaría).
+            `refuerzos` = [(segundo, pierna), …] de la martingala: marca ⟳n en las celdas del
+            combinado (donde viven los lotes extra) y el label de la pierna reforzada. Con
+            `_day_labels` (seccionado por fecha) el label es local al día."""
             _cnt: dict = {}
             for _r in _recs:
                 _cnt[_r.get("ticker")] = _cnt.get(_r.get("ticker"), 0) + 1
@@ -4304,6 +4306,18 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                     if _day_labels else f"{_tk} · {r.get('hora')}"
                 _inv = float(getattr(it, "invest_total", 0.0) or 0.0)
                 _e_s, _x_s = _hfloor(_ts.iloc[0]), _hfloor(_ts.iloc[-1])
+                # Eventos de REFUERZO (martingala por pierna) → (segundo, pierna) ordenados.
+                # El motor los registra en it.refuerzo["events"] con el índice del minuto.
+                _ref_ev = []
+                try:
+                    for _ev in ((getattr(it, "refuerzo", None) or {}).get("events") or []):
+                        _ei = int(_ev.get("idx", -1))
+                        if 0 <= _ei < len(_ts):
+                            _ref_ev.append((_hfloor(_ts.iloc[_ei]),
+                                            str(_ev.get("leg") or "?")))
+                except Exception:  # noqa: BLE001 — sin refuerzos legibles no se marca nada
+                    _ref_ev = []
+                _ref_ev.sort()
 
                 def _celdas(_pcs, _dls):
                     _cs = {}
@@ -4311,18 +4325,22 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                         _cs[_hfloor(_t)] = (float(_p), float(_d))
                     return _cs
 
-                _hs.append((_lab, _e_s, _x_s, _celdas(_pc, _dl), _inv, False))
-                # Filas por PIERNA (si la señal la tiene y el display trae sus columnas):
+                _hs.append((_lab, _e_s, _x_s, _celdas(_pc, _dl), _inv, False, _ref_ev))
+                # Filas por PIERNA (si la señal la tiene y el display trae sus columnas). La
+                # pierna REFORZADA lleva ⟳n en su nombre: su fila muestra SOLO el contrato
+                # original (los lotes de refuerzo viven en la fila combinada del ticker).
                 for _leg, _sufx in (("CALL", "CALL"), ("PUT", "PUT")):
                     if not getattr(it, f"{_leg.lower()}_entry_premium", None):
                         continue
                     _cp, _cd = f"ROI (%) {_sufx}", f"ROI ($) {_sufx}"
                     if _cp not in _disp.columns or _cd not in _disp.columns:
                         continue
+                    _n_rl = sum(1 for _, _lg in _ref_ev if _lg == _leg)
                     try:
-                        _hs.append((f"{_lab} · {_leg}", _e_s, _x_s,
+                        _hs.append((f"{_lab} · {_leg}" + (f" ⟳{_n_rl}" if _n_rl else ""),
+                                    _e_s, _x_s,
                                     _celdas(_disp[_cp].to_numpy(), _disp[_cd].to_numpy()),
-                                    _inv, True))
+                                    _inv, True, []))
                     except Exception:  # noqa: BLE001
                         continue
             return _hs
@@ -4373,8 +4391,9 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
             _tot_dol = {c: 0.0 for c in _cols_full}   # Σ ROI$ por columna (solo celdas válidas)
             _tot_inv = {c: 0.0 for c in _cols_full}   # Σ invertido por columna (tickers abiertos)
             _tot_n = {c: 0 for c in _cols_full}
+            _hay_ref = any(_h[6] for _h in _hits)     # ¿algún refuerzo en la sección? → leyenda
             _hdata = []
-            for _label, _e, _xe, _cells, _inv, _es_pierna in _hits:
+            for _label, _e, _xe, _cells, _inv, _es_pierna, _ref_ev in _hits:
                 _row = {"Ticket": _label}
                 _last = None
                 for _s in _grid:
@@ -4387,7 +4406,14 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                             _last = _cells[_s]
                         if _last is not None:
                             _p, _d = _last
-                            _row[_c] = f"{_p*100:.1f}% / ${_d:,.2f}"
+                            _txt = f"{_p*100:.1f}% / ${_d:,.2f}"
+                            # ⟳n = refuerzos YA disparados a este minuto — solo en la fila
+                            # combinada, que es donde entran los lotes extra (base que crece).
+                            if not _es_pierna and _ref_ev:
+                                _nr = sum(1 for _rs, _ in _ref_ev if _rs <= _s)
+                                if _nr:
+                                    _txt += f" ⟳{_nr}"
+                            _row[_c] = _txt
                             if not _es_pierna:         # las piernas NO suman al TOTAL (duplicarían)
                                 _tot_dol[_c] += _d
                                 _tot_inv[_c] += _inv
@@ -4489,6 +4515,15 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
 
             st.dataframe(_full.style.apply(_style, axis=None), use_container_width=True,
                          hide_index=True, height=min(560, 60 + 35 * (len(_hdata) + 1)))
+            if _hay_ref:
+                st.caption(
+                    "⟳n = **refuerzos** acumulados hasta ese minuto (martingala por pierna: al "
+                    "caer una pierna al umbral de refuerzo se compran MÁS contratos de esa "
+                    "misma pierna, al ask). La fila del ticker incluye esos lotes extra — su "
+                    "base invertida crece en cada ⟳ — mientras que las filas · CALL / · PUT "
+                    "(la reforzada lleva ⟳n en su nombre) muestran SOLO el contrato original. "
+                    "Por eso los $ de las piernas no suman exactamente el combinado, y los % "
+                    "del ticker usan una base mayor tras cada refuerzo.")
 
         _WD_HM = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
         for _f_hm, _recs_hm, _hs_hm in _hits_grp:
