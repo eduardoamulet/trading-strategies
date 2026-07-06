@@ -1538,6 +1538,16 @@ def _render_iters_panel(_iters_seed):
                     _n_ap = _apply_scenario_config(_cfg_ap, _n_tk_seed)
                     st.toast(f"🎛 {_sel_cfg}: {_n_ap} condición(es) aplicadas a "
                              "«CONDICIONES DE SALIDA»")
+        # El mapa por día NACIDO DEL PLAYBOOK (marca «_combo») solo tiene sentido mientras el
+        # selector siga en «(playbook automático)»: al elegir CUALQUIER otra configuración —
+        # incluida «(manual)» — las CONDICIONES DE ENTRADA/SALIDA del panel vuelven a mandar.
+        # Antes el guard de firma no tenía rama para «(manual)» y el override quedaba pegado
+        # (secuestrando los paneles). Chequeo FUERA del guard: también sana sesiones ya
+        # atascadas. El mapa del generador de plan NO lleva «_combo» y se respeta (lo sembró
+        # una carga explícita de filas, no este selector).
+        if (_sel_cfg != "(playbook automático)"
+                and (st.session_state.get("_iters_cfg_por_dia") or {}).get("_combo")):
+            st.session_state.pop("_iters_cfg_por_dia", None)
         _cfg_show = (_cfgs_plan.get(_sel_cfg)
                      if _sel_cfg not in ("(manual)", "(playbook automático)") else None)
         if _cfg_show:
