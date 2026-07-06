@@ -4622,8 +4622,11 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                 _mx_txt = " · máx " + " / ".join(
                     ([f"CALL {max(_mxc):+.1f}%"] if _mxc else [])
                     + ([f"PUT {max(_mxp):+.1f}%"] if _mxp else [])) if (_mxc or _mxp) else ""
-                st.markdown(f"##### 📅 {_f_hm}{_wd_hm} · ROI: {_roi_d:+.1f}% / "
-                            f"${_g_d:+,.2f}{_mx_txt}")
+                # ROI del día coloreado: verde si ganó (>0), rojo si perdió o quedó en cero.
+                _roi_txt_d = f"ROI: {_roi_d:+.1f}% / ${_g_d:+,.2f}"
+                _roi_col_d = (f":green[**{_roi_txt_d}**]" if _roi_d > 0
+                              else f":red[**{_roi_txt_d}**]")
+                st.markdown(f"##### 📅 {_f_hm}{_wd_hm} · {_roi_col_d}{_mx_txt}")
             # Resumen de cierres SIEMPRE visible; la grilla minuto a minuto, a demanda (botón).
             _df_rc = _resumen_cierres(_hs_hm)
             if not _df_rc.empty:
