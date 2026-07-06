@@ -4423,7 +4423,12 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                 _last = None
                 for _s in _grid:
                     _c = _hlbl(_s)
-                    if _s < _e or _s > _xe:            # fuera de la operación → CLOSED (no suma)
+                    # Fuera de la operación → CLOSED (no suma). Una PIERNA ya vendida, ídem:
+                    # desde el minuto SIGUIENTE a su venta muestra CLOSED — su resultado final
+                    # queda visible (con ✔) solo en el minuto de la venta (pedido UX 2026-07-06;
+                    # antes el valor congelado se repetía hasta el final y parecía viva).
+                    if (_s < _e or _s > _xe
+                            or (_es_pierna and _vend_s is not None and _s > _vend_s)):
                         _row[_c] = "CLOSED"
                         _last = None
                     else:                              # abierta → forward-fill
@@ -4555,10 +4560,11 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                     "del ticker usan una base mayor tras cada refuerzo.")
             if _hay_vta:
                 st.caption(
-                    "✔ = la pierna se **vendió sola** en ese minuto (por su propio umbral/stop "
-                    "— el nombre de la fila lleva ✔HH:MM). Desde ahí su valor queda "
-                    "**congelado**: es resultado ya bancado, no sigue al mercado; la pierna "
-                    "hermana continúa viva hasta su propia salida o el cierre.")
+                    "✔ = la pierna se **vendió sola** en ese minuto (por su propio umbral/stop) "
+                    "— el nombre de la fila lleva ✔HH:MM y la celda del minuto de venta muestra "
+                    "su **resultado final bancado**; desde el minuto siguiente la fila pasa a "
+                    "CLOSED. La pierna hermana sigue viva hasta su propia salida o el cierre, y "
+                    "la fila combinada del ticker sigue incluyendo lo ya bancado.")
 
         _WD_HM = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
         for _f_hm, _recs_hm, _hs_hm in _hits_grp:
