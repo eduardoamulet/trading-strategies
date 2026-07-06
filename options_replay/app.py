@@ -4407,21 +4407,16 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                                    value=(_cols_full[0], _cols_full[-1]),
                                    key=f"{key_prefix}_hrange")
             _cols = _cols_full[_cols_full.index(_tr[0]):_cols_full.index(_tr[1]) + 1]
-        # Guardián de tamaño DESPUÉS del slider (antes cortaba ANTES de mostrarlo — sin salida
-        # para el usuario — y contaba todas las columnas aunque se mirara una ventana chica).
-        # La carga real de dibujo: filas de la PEOR sección × columnas VISIBLES (cada sección
-        # es una tabla aparte), más un tope global para el conjunto. El tope viejo de 25k se
-        # disparaba solo porque las filas · CALL/· PUT triplicaron el conteo global.
-        _max_sec = max((len(_hs) for _f, _recs, _hs in _hits_grp), default=0)
-        if _max_sec * len(_cols) > 25000 or len(_all_hits) * len(_cols) > 300000:
-            st.warning(f"⚠️ {len(_all_hits)} filas × {len(_cols)} intervalos visibles — muy "
-                       "pesado para dibujar. Achicá el **rango de horas** con el slider de "
-                       "arriba, filtrá **tickers**, o mirá una fecha específica.")
-            return
-
         def _render_grid(_hits, _cols_vista) -> None:
             """UNA sección del heatmap (un día, o la fecha única): filas + su fila TOTAL,
             filtros de columnas locales, estilo y tabla."""
+            # Guardián de tamaño POR SECCIÓN: con las grillas a demanda (botón por día) ya no
+            # tiene sentido un tope global — solo importa lo que se va a dibujar AHORA.
+            if len(_hits) * len(_cols_vista) > 25000:
+                st.warning(f"⚠️ {len(_hits)} filas × {len(_cols_vista)} intervalos visibles en "
+                           "esta sección — muy pesado para dibujar. Achicá el **rango de "
+                           "horas** con el slider de arriba o filtrá **tickers**.")
+                return
             _tot_dol = {c: 0.0 for c in _cols_full}   # Σ ROI$ por columna (solo celdas válidas)
             _tot_inv = {c: 0.0 for c in _cols_full}   # Σ invertido por columna (tickers abiertos)
             _tot_n = {c: 0 for c in _cols_full}
@@ -4576,6 +4571,25 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                     "CLOSED. La pierna hermana sigue viva hasta su propia salida o el cierre, y "
                     "la fila combinada del ticker sigue incluyendo lo ya bancado.")
 
+        def _resumen_cierres(_hs) -> pd.DataFrame:
+            """Mini-tabla EJECUTIVA de la sección (pedido UX 2026-07-06): una fila por PIERNA
+            con su minuto de cierre y el ROI %/$ al cierre — la foto de qué pasó, sin abrir la
+            grilla. `Operación` reusa el label de la fila (trae ⟳n de refuerzos y ✔HH:MM si la
+            pierna se vendió sola). El cierre de una pierna sin trigger propio = el fin de la
+            posición (cierre de sesión o corte colectivo)."""
+            _rows = []
+            for _lab, _e, _xe, _cells, _inv, _pl, _rev, _vs in _hs:
+                if not _pl:
+                    continue
+                _cs = _vs if _vs is not None else _xe
+                _ks = [k for k in _cells if k <= _cs]
+                if not _ks:
+                    continue
+                _p, _d = _cells[max(_ks)]
+                _rows.append({"Operación": _lab, "Cierre": _hlbl(_cs),
+                              "ROI al cierre": f"{_p*100:+.1f}% / ${_d:,.2f}"})
+            return pd.DataFrame(_rows)
+
         _WD_HM = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
         for _f_hm, _recs_hm, _hs_hm in _hits_grp:
             if _seccionado:
@@ -4598,7 +4612,23 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                     + ([f"PUT {max(_mxp):+.1f}%"] if _mxp else [])) if (_mxc or _mxp) else ""
                 st.markdown(f"##### 📅 {_f_hm}{_wd_hm} · ROI: {_roi_d:+.1f}% / "
                             f"${_g_d:+,.2f}{_mx_txt}")
-            _render_grid(_hs_hm, _cols)
+            # Resumen de cierres SIEMPRE visible; la grilla minuto a minuto, a demanda (botón).
+            _df_rc = _resumen_cierres(_hs_hm)
+            if not _df_rc.empty:
+                st.dataframe(
+                    _df_rc.style.map(
+                        lambda v: ("color:#16a34a;font-weight:700" if str(v).startswith("+")
+                                   else "color:#dc2626;font-weight:700"),
+                        subset=["ROI al cierre"]),
+                    hide_index=True, use_container_width=True,
+                    height=min(38 + 35 * len(_df_rc), 360))
+            _k_g = f"{key_prefix}_hmshow_{_f_hm or 'unica'}"
+            if st.button(("➖ Ocultar minuto a minuto" if st.session_state.get(_k_g)
+                          else "🕐 Ver minuto a minuto"), key=f"{_k_g}_btn"):
+                st.session_state[_k_g] = not st.session_state.get(_k_g, False)
+                st.rerun()
+            if st.session_state.get(_k_g):
+                _render_grid(_hs_hm, _cols)
 
 
 def _render_signals_session(rs):
