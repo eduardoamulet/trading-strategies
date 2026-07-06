@@ -55,6 +55,13 @@ COND_COLS = ["Alcance de salida", "Aplicar refuerzo", "Umbral pérdida refuerzo 
              "Umbral ROI colectivo (%)", "Cerrar si Stop loss colectivo",
              "Stop loss (%) colectivo"]
 
+# Columnas de condiciones OPCIONALES: entran al producto cartesiano SOLO si el Excel las trae
+# (los archivos viejos sin ellas siguen siendo válidos — no rompen la validación).
+# «Tipo de operación (escenario)»: permite comparar POLÍTICAS DE SALIDA (CALL y PUT / CALL o
+# PUT / plus / End of Day / Until reach ROI(%)) como una variable más; vacía o ausente → se
+# usa el «Tipo de operacion» global del seed, como siempre.
+COND_COLS_OPT = ["Tipo de operación (escenario)"]
+
 
 # ── Infraestructura ───────────────────────────────────────────────────────────
 def _connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -136,7 +143,7 @@ def import_file(src, *, nombre: str | None = None, path: Path = DB_PATH) -> dict
     fecha_idxs = [j for j, h in enumerate(hdr) if h == "Fecha inicial"]
     seed: dict = {}
     for j, h in enumerate(hdr):
-        if h in ("", "Fecha inicial") or h in COND_COLS:
+        if h in ("", "Fecha inicial") or h in COND_COLS or h in COND_COLS_OPT:
             continue
         vals = _col_values(j)
         if h == "Tickers":
@@ -156,6 +163,9 @@ def import_file(src, *, nombre: str | None = None, path: Path = DB_PATH) -> dict
     variables: dict = {}
     for c in COND_COLS:
         variables[c] = _col_values(hdr.index(c)) or [""]
+    for c in COND_COLS_OPT:                      # opcionales: solo si el Excel trae la columna
+        if c in hdr:
+            variables[c] = _col_values(hdr.index(c)) or [""]
 
     cid = "comb_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:22]
     reg = {"id": cid, "nombre": (nombre or archivo).strip(), "archivo": archivo,

@@ -140,3 +140,50 @@ def test_activa_y_eliminar(tmp_path):
         cmb.delete_combination(r1["id"], path=db)            # la activa no se borra
     cmb.delete_combination(r2["id"], path=db)
     assert [c["id"] for c in cmb.list_combinations(path=db)] == [r1["id"]]
+
+
+def test_tipo_de_operacion_como_variable_opcional(tmp_path):
+    """La columna OPCIONAL «Tipo de operación (escenario)» multiplica el producto cartesiano
+    solo si el Excel la trae; los archivos sin ella siguen siendo válidos (variables sin la
+    clave). map_scenario expone el override en .tipo (None si no está o vacía)."""
+    from openpyxl import load_workbook
+    from ucbatch import scenario as _sc
+
+    # 1) Excel SIN la columna → import válido, variables sin la clave (comportamiento viejo).
+    db = tmp_path / "c.db"
+    reg = cmb.import_file(_make_xlsx(tmp_path), path=db)
+    assert "Tipo de operación (escenario)" not in reg["variables"]
+    _n_base = cmb.expected_scenarios(reg)
+
+    # 2) Excel CON la columna (2 tipos) → el producto se duplica.
+    p = _make_xlsx(tmp_path)
+    wb = load_workbook(p)
+    ws = wb[cmb.VARS_SHEET]
+    _col = ws.max_column + 1
+    ws.cell(1, _col, "Tipo de operación (escenario)")
+    ws.cell(2, _col, "CALL y PUT")
+    ws.cell(3, _col, "CALL o PUT (Until reach ROI(%))")
+    p2 = tmp_path / "combo_tipos.xlsx"
+    wb.save(p2)
+    reg2 = cmb.import_file(p2, path=db)
+    assert reg2["variables"]["Tipo de operación (escenario)"] == \
+        ["CALL y PUT", "CALL o PUT (Until reach ROI(%))"]
+    assert cmb.expected_scenarios(reg2) == _n_base * 2
+
+    # 3) map_scenario: el override viaja en .tipo; sin columna/vacía → None (usa el seed).
+    class _FakeSc:
+        def __init__(self, cond):
+            self.id = "C001"
+            self.cond = cond
+    class _FakeSeed:
+        tickers = ["QQQ"]
+        fills = ""
+        dte = "0"
+        inversion, call_pct = 1000.0, 50.0
+        criterio, ventana_min, salida, entrada, tipo = "", 4.0, "13:55", "09:30", "CALL y PUT"
+    _base_cond = {c: "" for c in cmb.COND_COLS}
+    m0 = _sc.map_scenario(_FakeSeed(), _FakeSc(dict(_base_cond)))
+    assert m0.tipo is None
+    m1 = _sc.map_scenario(_FakeSeed(), _FakeSc(
+        {**_base_cond, "Tipo de operación (escenario)": "CALL o PUT (Until reach ROI(%))"}))
+    assert m1.tipo == "CALL o PUT (Until reach ROI(%))"

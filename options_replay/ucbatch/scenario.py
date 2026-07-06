@@ -72,6 +72,8 @@ class MappedScenario:
     run_kwargs: dict           # **kwargs para run_one (ticker/fecha/hora/tipo van en el spec)
     collective: dict | None    # {profit_frac, stop_frac} o None
     alcance: str
+    tipo: str | None = None    # «Tipo de operación (escenario)»: override del tipo del seed
+                               # (permite comparar políticas de salida como variable); None = seed
 
 
 def map_scenario(seed: Seed, sc: Scenario) -> MappedScenario:
@@ -118,4 +120,6 @@ def map_scenario(seed: Seed, sc: Scenario) -> MappedScenario:
         if profit is not None or cstop is not None:
             collective = {"profit_frac": profit, "stop_frac": cstop}
 
-    return MappedScenario(id=sc.id, run_kwargs=run_kwargs, collective=collective, alcance=alcance)
+    _tipo_esc = str(g("Tipo de operación (escenario)") or "").strip() or None
+    return MappedScenario(id=sc.id, run_kwargs=run_kwargs, collective=collective,
+                          alcance=alcance, tipo=_tipo_esc)

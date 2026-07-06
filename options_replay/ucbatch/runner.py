@@ -122,7 +122,9 @@ def _run_day_chunk(task) -> list:
     for mapped in mapped_all:
         results = []
         for ticker in seed.tickers:
-            spec = {"ticker": ticker, "fecha": day, "hora": seed.entrada, "tipo": seed.tipo}
+            # Tipo por ESCENARIO si la combinación lo define como variable; si no, el del seed.
+            spec = {"ticker": ticker, "fecha": day, "hora": seed.entrada,
+                    "tipo": (getattr(mapped, "tipo", None) or seed.tipo)}
             try:
                 results.append(run_one(memo, spec, **mapped.run_kwargs))
             except Exception as e:                               # noqa: BLE001 — aislar fallos de 1 posición
