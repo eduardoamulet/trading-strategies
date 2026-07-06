@@ -3820,10 +3820,24 @@ def render_iteration(it: IterationResult, ticker: str, date: str):
     mc[4].metric("Combined % exit", f"{it.pnl_pct_combined:+.1%}")
     mc[5].metric("Capital acumulado", f"${it.invest_total + it.gain_total:,.2f}")
 
+    # ── Detalle PESADO bajo demanda (pedido UX 2026-07-05): la info preliminar de arriba se
+    # muestra SIEMPRE; las pestañas (Operaciones · Strikes · Gráfico · Tabla minuto a minuto)
+    # — que cotizan cadenas por red y arman gráficos — solo al tocar «Ver detalles». Con
+    # decenas de iteraciones en pantalla, la lista queda liviana y se abre lo que interesa.
+    _key_suffix = f"{date}_{it.iteration}"
+    _det_key = f"iter_det_{ticker}_{_key_suffix}"
+    if not st.session_state.get(_det_key):
+        if st.button("🔍 Ver detalles de esta señal", key=f"btn_{_det_key}"):
+            st.session_state[_det_key] = True
+            st.rerun()
+        return
+    if st.button("➖ Ocultar detalles", key=f"btn_hide_{_det_key}"):
+        st.session_state.pop(_det_key, None)
+        st.rerun()
+
     # Detalle de la iteración en PESTAÑAS: el render va DENTRO del expander de la iteración
     # y Streamlit no soporta expanders ANIDADOS (daban un scroll cortado que no dejaba ver
     # la tabla minuto a minuto). Las pestañas no anidan → se ve todo bien.
-    _key_suffix = f"{date}_{it.iteration}"
     display_df = _build_display_df(it)
     _step_sec = 60
     if getattr(it, "df", None) is not None and len(it.df) > 1:
