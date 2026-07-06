@@ -4370,10 +4370,6 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
             if _ga is not None:
                 _gmin, _gmax = min(_gmin, _ga), max(_gmax, _gb)
         _grid = list(range(_gmin, _gmax + _hsec, _hsec))
-        if len(_all_hits) * len(_grid) > 25000:
-            st.warning(f"⚠️ {len(_all_hits)} tickers × {len(_grid)} intervalos — muy pesado. "
-                       "Usá **1 minuto**.")
-            return
         _cols_full = [_hlbl(_s) for _s in _grid]
         # Slider de horas ÚNICO (rango global): aplica a TODAS las secciones por igual.
         _cols = list(_cols_full)
@@ -4387,6 +4383,18 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                                    value=(_cols_full[0], _cols_full[-1]),
                                    key=f"{key_prefix}_hrange")
             _cols = _cols_full[_cols_full.index(_tr[0]):_cols_full.index(_tr[1]) + 1]
+        # Guardián de tamaño DESPUÉS del slider (antes cortaba ANTES de mostrarlo — sin salida
+        # para el usuario — y contaba todas las columnas aunque se mirara una ventana chica).
+        # La carga real de dibujo: filas de la PEOR sección × columnas VISIBLES (cada sección
+        # es una tabla aparte), más un tope global para el conjunto. El tope viejo de 25k se
+        # disparaba solo porque las filas · CALL/· PUT triplicaron el conteo global.
+        _max_sec = max((len(_hs) for _f, _recs, _hs in _hits_grp), default=0)
+        if _max_sec * len(_cols) > 25000 or len(_all_hits) * len(_cols) > 300000:
+            st.warning(f"⚠️ {len(_all_hits)} filas × {len(_cols)} intervalos visibles — muy "
+                       "pesado para dibujar. Achicá el **rango de horas** con el slider de "
+                       "arriba, filtrá **tickers**, o mirá una fecha específica.")
+            return
+
         def _render_grid(_hits, _cols_vista) -> None:
             """UNA sección del heatmap (un día, o la fecha única): filas + su fila TOTAL,
             filtros de columnas locales, estilo y tabla."""
