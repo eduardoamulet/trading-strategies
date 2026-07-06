@@ -79,6 +79,14 @@ def _max_leg_rois(it) -> str:
     return ("  ·  máx " + " / ".join(_parts)) if _parts else ""
 
 
+def _colectivo_tag(it) -> str:
+    """Ícono al FINAL del título cuando a la iteración la cerró la salida COLECTIVA (cartera):
+    🧺✅ = cruzó el Umbral de ROI colectivo · 🧺🛑 = disparó el Stop loss colectivo. El motivo
+    textual ya viaja en el título; el ícono a la derecha lo identifica de un vistazo."""
+    return {"collective_roi": "  ·  🧺✅", "collective_stop": "  ·  🧺🛑"}.get(
+        str(getattr(it, "exit_reason", "") or ""), "")
+
+
 def _op_dur(it) -> str:
     """Duración de la operación (entrada → salida): '2h 15m' / '45m' / '30s'."""
     try:
@@ -4851,7 +4859,8 @@ def _render_signals_session(rs):
                      if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
         _title = (f"{_icon} {r['ticker']} {r['tipo']}  ·  {r['fecha']} {r['hora']} → "
                   f"{it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
-                  f"{_reason}  ·  Ganancia: {_gp} ({_pct_part}){_max_leg_rois(it)}{_ref_part}")
+                  f"{_reason}  ·  Ganancia: {_gp} ({_pct_part}){_max_leg_rois(it)}{_ref_part}"
+                  f"{_colectivo_tag(it)}")
         _auto = (len(_det) == 1)                          # 1 sola señal → se abre con detalle
         if _auto:
             # misma clave que usa render_iteration para su compuerta de detalle
@@ -5364,7 +5373,7 @@ if _mode == "range":
             _exp_title = (
                 f"{_icon} {sel_fecha}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
                 f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part})"
-                f"{_max_leg_rois(it)}{_fb_tag}{_ref_tag}"
+                f"{_max_leg_rois(it)}{_fb_tag}{_ref_tag}{_colectivo_tag(it)}"
             )
             with st.expander(_exp_title, expanded=False):
                 render_iteration(it, ticker_str, sel_run["date"])
@@ -5444,7 +5453,7 @@ for it in iterations:
     _exp_title = (
         f"{_icon} Iteración {it.iteration}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
         f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part})"
-        f"{_max_leg_rois(it)}{_fb_tag}{_ref_tag}"
+        f"{_max_leg_rois(it)}{_fb_tag}{_ref_tag}{_colectivo_tag(it)}"
     )
     with st.expander(_exp_title, expanded=False):
         render_iteration(it, ticker_str, date_str)
