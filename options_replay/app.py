@@ -51,25 +51,32 @@ _REASON_LABELS = {
 }
 
 
-def _max_leg_rois(it) -> str:
-    """«· máx CALL +x% / PUT +y%» para el título de la iteración: el ROI MÁXIMO que alcanzó
-    cada pierna (precio de la pierna vs su prima de entrada) durante la vida de la posición —
-    el timeline it.df ya viene truncado al cierre real (colectivo incluido), así que el máx es
-    el alcanzado MIENTRAS se tuvo la posición. ROI de precio puro (sin tranches de refuerzo)."""
+def _max_leg_roi_vals(it) -> tuple:
+    """(máx ROI CALL, máx ROI PUT) en % — el ROI MÁXIMO que alcanzó cada pierna (precio de la
+    pierna vs su prima de entrada) durante la vida de la posición; it.df ya viene truncado al
+    cierre real (colectivo incluido), así que es el máx MIENTRAS se tuvo la posición. ROI de
+    precio puro (sin tranches de refuerzo). None si la pierna no existe."""
+    _call = _put = None
     try:
         _df = getattr(it, "df", None)
-        if _df is None or not len(_df):
-            return ""
-        _parts = []
-        _ce = getattr(it, "call_entry_premium", None)
-        if _ce and "call_px" in _df.columns:
-            _parts.append(f"CALL {float((_df['call_px'].max() - _ce) / _ce):+.1%}")
-        _pe = getattr(it, "put_entry_premium", None)
-        if _pe and "put_px" in _df.columns:
-            _parts.append(f"PUT {float((_df['put_px'].max() - _pe) / _pe):+.1%}")
-        return ("  ·  máx " + " / ".join(_parts)) if _parts else ""
-    except Exception:  # noqa: BLE001 — el título nunca debe romper el render
-        return ""
+        if _df is not None and len(_df):
+            _ce = getattr(it, "call_entry_premium", None)
+            if _ce and "call_px" in _df.columns:
+                _call = float((_df["call_px"].max() - _ce) / _ce) * 100.0
+            _pe = getattr(it, "put_entry_premium", None)
+            if _pe and "put_px" in _df.columns:
+                _put = float((_df["put_px"].max() - _pe) / _pe) * 100.0
+    except Exception:  # noqa: BLE001 — un timeline raro nunca debe romper el render
+        pass
+    return _call, _put
+
+
+def _max_leg_rois(it) -> str:
+    """«· máx CALL +x% / PUT +y%» para el título de la iteración (ver _max_leg_roi_vals)."""
+    _call, _put = _max_leg_roi_vals(it)
+    _parts = ([f"CALL {_call / 100:+.1%}"] if _call is not None else []) \
+        + ([f"PUT {_put / 100:+.1%}"] if _put is not None else [])
+    return ("  ·  máx " + " / ".join(_parts)) if _parts else ""
 
 
 def _op_dur(it) -> str:
@@ -4634,6 +4641,7 @@ def _render_signals_session(rs):
     # render_iteration (entrada, strikes, quotes, métricas) se renderiza directo dentro del
     # expander; lo PESADO (Operaciones/Strikes/Gráfico/Tabla) queda detrás del botón
     # «🔍 Ver detalles de esta señal» que gestiona render_iteration internamente.
+    _trows = []                                           # tabla ordenable post-detalle
     for _i, r in enumerate(_det):
         it = r["iteration"]
         _reason = _REASON_LABELS.get(it.exit_reason, it.exit_reason)
@@ -4657,6 +4665,37 @@ def _render_signals_session(rs):
         with st.expander(_title, expanded=_auto):
             st.markdown(f"**{r['ticker']} — {r['fecha']}  ·  0 DTE  ·  Ventana 09:30–16:00**")
             render_iteration(it, r["ticker"], r["fecha"])
+        _mx_call, _mx_put = _max_leg_roi_vals(it)
+        _trows.append({
+            "Res": "▲" if it.gain_total >= 0 else "▼",
+            "Ticker": r["ticker"], "Tipo": r["tipo"], "Fecha": r["fecha"],
+            "Entrada": r["hora"], "Salida": f"{it.end_dt:%H:%M}", "Duración": _op_dur(it),
+            "Motivo": _reason,
+            "Ganancia $": round(float(it.gain_total), 2),
+            "ROI %": round(_roi_pct * 100.0, 1),
+            "Máx CALL %": (round(_mx_call, 1) if _mx_call is not None else None),
+            "Máx PUT %": (round(_mx_put, 1) if _mx_put is not None else None),
+            "Refuerzos": int(it.refuerzo["n"]) if getattr(it, "refuerzo", None) else 0,
+        })
+
+    # ── Tabla ordenable de señales (pedido UX 2026-07-05): las columnas del header de cada
+    # resultado, en números crudos → clic en cualquier encabezado ordena de verdad. Respeta
+    # el filtro de arriba (muestra lo mismo que la lista de expanders).
+    if _trows:
+        st.markdown("### 📊 Tabla de señales (clic en una columna para ordenar)")
+        st.dataframe(
+            pd.DataFrame(_trows), use_container_width=True, hide_index=True,
+            height=min(38 + 35 * len(_trows), 500),
+            column_config={
+                "Ganancia $": st.column_config.NumberColumn(format="$%.2f"),
+                "ROI %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Máx CALL %": st.column_config.NumberColumn(
+                    format="%.1f%%", help="ROI máximo que alcanzó la pierna CALL mientras "
+                                          "la posición estuvo abierta."),
+                "Máx PUT %": st.column_config.NumberColumn(
+                    format="%.1f%%", help="ROI máximo que alcanzó la pierna PUT mientras "
+                                          "la posición estuvo abierta."),
+            })
     if errs:
         with st.expander(f"❌ Señales sin resultado ({len(errs)})", expanded=False):
             for r in errs:
