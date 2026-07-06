@@ -29,23 +29,26 @@ def _read_json(path: Path, default):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cov_ligera(_cid: str) -> dict:
+def _cov_ligera(cid: str) -> dict:
     """Cobertura LIGERA por combinación para las tarjetas (filas · días · última fecha).
     bt_store.coverage() corre 3 escaneos completos por combinación (y el de engine_version lee
     la TABLA de 4 GB, no el índice) — medido 2026-07-06: ~288 s de page-load con 5 tarjetas
     (185 s solo la de 4.6M filas). Acá: MAX(fecha) por seek de índice (instantáneo) + UN solo
     recorrido index-only para contar (~20 s la gigante, una vez), cacheado 1 h. El almacén es
     append-only: la cobertura solo cambia al ingestar o borrar — en esos eventos la página
-    llama `_cov_ligera.clear()`, así el TTL largo nunca miente."""
+    llama `_cov_ligera.clear()`, así el TTL largo nunca miente.
+    OJO: el parámetro se llama `cid` SIN guion bajo a propósito — en st.cache_data un parámetro
+    con prefijo `_` se EXCLUYE de la clave del cache (¡todas las combinaciones compartirían una
+    sola entrada!). Bug real del 2026-07-06."""
     import bt_store as _b
     with _b._connect() as _con:  # noqa: SLF001 — mismo WAL/busy_timeout que el resto del módulo
         _hasta = _con.execute("SELECT MAX(fecha) FROM bt_results WHERE combination=?",
-                              (_cid,)).fetchone()[0]
+                              (cid,)).fetchone()[0]
         if not _hasta:
             return {"filas": 0, "dias": 0, "hasta": None}
         _n, _nd = _con.execute(
             "SELECT COUNT(*), COUNT(DISTINCT fecha) FROM bt_results WHERE combination=?",
-            (_cid,)).fetchone()
+            (cid,)).fetchone()
     return {"filas": int(_n or 0), "dias": int(_nd or 0), "hasta": _hasta}
 
 

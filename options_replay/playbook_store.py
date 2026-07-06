@@ -761,20 +761,42 @@ def check_job():
 
 
 def _do_finalize(job: dict) -> dict:
-    """El trabajo real de finalizar: reconstruye el veredicto desde el almacén sobre el RANGO
-    del run (misma semántica que interpretar el results de ese rango) y persiste playbook +
-    history. Con combinaciones gigantes tarda MINUTOS (millones de filas) → por eso la página
-    lo delega a spawn_finalize y nunca se bloquea. No toca estados de reeval_runs."""
+    """El trabajo real de finalizar una reevaluación. Con combinaciones gigantes tarda MINUTOS
+    (millones de filas) → por eso la página lo delega a spawn_finalize y nunca se bloquea.
+    No toca estados de reeval_runs.
+
+    · Si el run es de la combinación ACTIVA: reconstruye el veredicto POR RANGO del run
+      (la semántica histórica de la reevaluación) → playbook.json + history, y además
+      refresca su json segregado con el veredicto OFICIAL (ventana 120).
+    · Si NO es la activa (las combinaciones pueden rotar con el run en vuelo): NO toca
+      playbook.json ni history — solo refresca el json segregado de SU combinación (su
+      tarjeta). Antes pisaba el vigente incondicionalmente (bug 2026-07-06: la finalización
+      de un run viejo de la 12.288 dejó playbook.json apuntando a una combinación no activa)."""
     import bt_store
 
     _combo = job.get("combination") or bt_store.LEGACY_COMBINATION
-    rdf = bt_store.load_range(job["rango"][0], job["rango"][1], combination=_combo)
-    pb = build_from_df(rdf, "detailed", combination=_combo,
-                       results_ref=f"almacén:{job['id']}")
-    save_playbook(pb)
-    append_history(pb)
+    _es_activa = False
+    try:
+        import combinations as _cmb_fin
+        _es_activa = (_cmb_fin.active_combination() == _combo)
+    except Exception:  # noqa: BLE001 — sin módulo de combinaciones, conducta legacy (activa)
+        _es_activa = True
+
+    if _es_activa:
+        rdf = bt_store.load_range(job["rango"][0], job["rango"][1], combination=_combo)
+        pb = build_from_df(rdf, "detailed", combination=_combo,
+                           results_ref=f"almacén:{job['id']}")
+        save_playbook(pb)
+        append_history(pb)
+        pb["_filas_interpretadas"] = int(len(rdf))
+        try:
+            build_and_save_for(_combo)      # su tarjeta también queda al día (oficial 120)
+        except Exception:  # noqa: BLE001 — el segregado nunca tumba la finalización
+            pass
+    else:
+        pb = build_and_save_for(_combo)     # solo SU json segregado, con semántica oficial
+        pb["_filas_interpretadas"] = None
     pb["_ingestado_al_almacen"] = job.get("n_filas_nuevas")
-    pb["_filas_interpretadas"] = int(len(rdf))
     return pb
 
 
