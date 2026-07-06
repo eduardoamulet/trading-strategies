@@ -18,13 +18,23 @@ import pandas as pd
 def collective_close(it, t_star, pos_idx: int, reason: str = "collective_roi") -> None:
     """Fija la salida de `it` en el minuto `t_star` (fila `pos_idx` de it.df): precios de salida =
     los de ese minuto, motivo `reason` (collective_roi / collective_stop), corta el timeline ahí,
-    recalcula final/max/min."""
+    recalcula final/max/min.
+
+    Solo estampa las piernas AÚN ABIERTAS al minuto del corte: una pierna ya vendida por su
+    PROPIO trigger (Until ROI / plus / stop de pierna) conserva su hora y motivo — el colectivo
+    cierra lo abierto, no reescribe historia. (Bug 2026-07-06: re-estampaba la pierna ya vendida
+    con la hora del corte — «✔09:48» en una PUT bancada a las 09:31; los $ no cambiaban porque su
+    serie ya estaba congelada, pero la hora/motivo mostrados quedaban mal.)"""
     _df = it.df
-    if it.call_entry_premium:
+
+    def _abierta(_xi) -> bool:
+        return _xi is None or int(_xi) > int(pos_idx)
+
+    if it.call_entry_premium and _abierta(getattr(it, "call_exit_idx", None)):
         it.call_exit_premium = float(_df.iloc[pos_idx]["call_px"])
         it.call_exit_idx = int(pos_idx)
         it.call_exit_reason = reason
-    if it.put_entry_premium:
+    if it.put_entry_premium and _abierta(getattr(it, "put_exit_idx", None)):
         it.put_exit_premium = float(_df.iloc[pos_idx]["put_px"])
         it.put_exit_idx = int(pos_idx)
         it.put_exit_reason = reason

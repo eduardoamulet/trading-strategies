@@ -4362,8 +4362,12 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                     try:
                         _xi = getattr(it, f"{_leg.lower()}_exit_idx", None)
                         _xr = str(getattr(it, f"{_leg.lower()}_exit_reason", "") or "")
+                        # ✔ = vendida por SU PROPIO trigger (umbral/stop de pierna). Los cierres
+                        # colectivos NO llevan ✔: los identifica el 🧺 del título y coinciden
+                        # con el fin de la posición (no hay «venta anticipada» que señalar).
                         if (_xi is not None and 0 <= int(_xi) < len(_ts)
-                                and _xr and _xr != "session_end"):
+                                and _xr not in ("", "session_end",
+                                                "collective_roi", "collective_stop")):
                             _vend_s = _hfloor(_ts.iloc[int(_xi)])
                     except Exception:  # noqa: BLE001 — sin dato de venta no se marca nada
                         _vend_s = None
