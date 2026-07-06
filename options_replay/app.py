@@ -51,6 +51,27 @@ _REASON_LABELS = {
 }
 
 
+def _max_leg_rois(it) -> str:
+    """«· máx CALL +x% / PUT +y%» para el título de la iteración: el ROI MÁXIMO que alcanzó
+    cada pierna (precio de la pierna vs su prima de entrada) durante la vida de la posición —
+    el timeline it.df ya viene truncado al cierre real (colectivo incluido), así que el máx es
+    el alcanzado MIENTRAS se tuvo la posición. ROI de precio puro (sin tranches de refuerzo)."""
+    try:
+        _df = getattr(it, "df", None)
+        if _df is None or not len(_df):
+            return ""
+        _parts = []
+        _ce = getattr(it, "call_entry_premium", None)
+        if _ce and "call_px" in _df.columns:
+            _parts.append(f"CALL {float((_df['call_px'].max() - _ce) / _ce):+.1%}")
+        _pe = getattr(it, "put_entry_premium", None)
+        if _pe and "put_px" in _df.columns:
+            _parts.append(f"PUT {float((_df['put_px'].max() - _pe) / _pe):+.1%}")
+        return ("  ·  máx " + " / ".join(_parts)) if _parts else ""
+    except Exception:  # noqa: BLE001 — el título nunca debe romper el render
+        return ""
+
+
 def _op_dur(it) -> str:
     """Duración de la operación (entrada → salida): '2h 15m' / '45m' / '30s'."""
     try:
@@ -4609,11 +4630,10 @@ def _render_signals_session(rs):
         _det = [r for r in _det if _reason_cell(r) == _sig_filter]
     if not _det:
         st.caption("No hay señales que cumplan el filtro seleccionado.")
-    # Render PEREZOSO con expander NATIVO (como antes): render_iteration es PESADO y el expander
-    # ejecuta su contenido SIEMPRE → con decenas de señales se recalcula todo en cada rerun. Acá el
-    # detalle se genera UNA sola vez al tocar "Ver detalle" (1 llamada al server por señal); una vez
-    # cargado, ABRIR/CERRAR el expander es del lado del CLIENTE y NO vuelve a llamar al servidor.
-    _loaded = st.session_state.setdefault("sig_det_loaded", set())
+    # Info PRELIMINAR siempre visible (pedido UX 2026-07-05): la parte liviana de
+    # render_iteration (entrada, strikes, quotes, métricas) se renderiza directo dentro del
+    # expander; lo PESADO (Operaciones/Strikes/Gráfico/Tabla) queda detrás del botón
+    # «🔍 Ver detalles de esta señal» que gestiona render_iteration internamente.
     for _i, r in enumerate(_det):
         it = r["iteration"]
         _reason = _REASON_LABELS.get(it.exit_reason, it.exit_reason)
@@ -4628,18 +4648,15 @@ def _render_signals_session(rs):
                      if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
         _title = (f"{_icon} {r['ticker']} {r['tipo']}  ·  {r['fecha']} {r['hora']} → "
                   f"{it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
-                  f"{_reason}  ·  Ganancia: {_gp} ({_pct_part}){_ref_part}")
-        _sid = f"{r['ticker']}|{r['fecha']}|{r['hora']}|{r['tipo']}"
-        _auto = (len(_det) == 1)                          # 1 sola señal → se carga y abre sola
+                  f"{_reason}  ·  Ganancia: {_gp} ({_pct_part}){_max_leg_rois(it)}{_ref_part}")
+        _auto = (len(_det) == 1)                          # 1 sola señal → se abre con detalle
+        if _auto:
+            # misma clave que usa render_iteration para su compuerta de detalle
+            st.session_state.setdefault(f"iter_det_{r['ticker']}_{r['fecha']}_{it.iteration}",
+                                        True)
         with st.expander(_title, expanded=_auto):
-            if _auto or _sid in _loaded:
-                st.markdown(f"**{r['ticker']} — {r['fecha']}  ·  0 DTE  ·  Ventana 09:30–16:00**")
-                render_iteration(it, r["ticker"], r["fecha"])
-            elif st.button("📊 Ver detalle de esta señal", key=f"sigdet_load_{_i}",
-                           help="Genera el detalle (operaciones, strikes, gráfico, tabla). Después, "
-                                "abrir/cerrar este recuadro ya NO llama al servidor."):
-                _loaded.add(_sid)
-                st.rerun()
+            st.markdown(f"**{r['ticker']} — {r['fecha']}  ·  0 DTE  ·  Ventana 09:30–16:00**")
+            render_iteration(it, r["ticker"], r["fecha"])
     if errs:
         with st.expander(f"❌ Señales sin resultado ({len(errs)})", expanded=False):
             for r in errs:
@@ -5112,7 +5129,8 @@ if _mode == "range":
                         if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
             _exp_title = (
                 f"{_icon} {sel_fecha}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
-                f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}{_ref_tag}"
+                f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part})"
+                f"{_max_leg_rois(it)}{_fb_tag}{_ref_tag}"
             )
             with st.expander(_exp_title, expanded=False):
                 render_iteration(it, ticker_str, sel_run["date"])
@@ -5191,7 +5209,8 @@ for it in iterations:
                 if getattr(it, "refuerzo", None) and it.refuerzo["n"] else "")
     _exp_title = (
         f"{_icon} Iteración {it.iteration}  ·  {it.start_dt:%H:%M} → {it.end_dt:%H:%M} ({_op_dur(it)})  ·  "
-        f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part}){_fb_tag}{_ref_tag}"
+        f"{_reason}  ·  Ganancia: {_gain_part} ({_pct_part})"
+        f"{_max_leg_rois(it)}{_fb_tag}{_ref_tag}"
     )
     with st.expander(_exp_title, expanded=False):
         render_iteration(it, ticker_str, date_str)
