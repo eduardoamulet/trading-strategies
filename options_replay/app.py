@@ -4279,9 +4279,11 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
             return (min(_es), max(_xs)) if _es else (None, None)
 
         def _build_hits(_recs, _day_labels: bool) -> list:
-            """(label, entrada_s, salida_s, celdas, invertido) por señal. Con `_day_labels`
-            (heatmap SECCIONADO por fecha) el label es local al día (ticker, o ticker·hora si
-            el ticker repite); si no, lleva la fecha (vista de una fecha única con su grilla)."""
+            """(label, entrada_s, salida_s, celdas, invertido, es_pierna) por FILA del heatmap:
+            la fila combinada de cada señal + una fila por PIERNA (· CALL / · PUT) con su ROI
+            propio minuto a minuto. Las filas de pierna NO suman al TOTAL (la combinada ya
+            representa a la señal en la cartera — sumarlas duplicaría). Con `_day_labels`
+            (seccionado por fecha) el label es local al día."""
             _cnt: dict = {}
             for _r in _recs:
                 _cnt[_r.get("ticker")] = _cnt.get(_r.get("ticker"), 0) + 1
@@ -4297,14 +4299,32 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                     continue
                 if len(_ts) == 0:
                     continue
-                _cells = {}
-                for _t, _p, _d in zip(_ts, _pc, _dl):
-                    _cells[_hfloor(_t)] = (float(_p), float(_d))
                 _tk = r.get("ticker") or "?"
                 _lab = (_tk if _cnt.get(_tk, 0) == 1 else f"{_tk} · {r.get('hora')}") \
                     if _day_labels else f"{_tk} · {r.get('hora')}"
                 _inv = float(getattr(it, "invest_total", 0.0) or 0.0)
-                _hs.append((_lab, _hfloor(_ts.iloc[0]), _hfloor(_ts.iloc[-1]), _cells, _inv))
+                _e_s, _x_s = _hfloor(_ts.iloc[0]), _hfloor(_ts.iloc[-1])
+
+                def _celdas(_pcs, _dls):
+                    _cs = {}
+                    for _t, _p, _d in zip(_ts, _pcs, _dls):
+                        _cs[_hfloor(_t)] = (float(_p), float(_d))
+                    return _cs
+
+                _hs.append((_lab, _e_s, _x_s, _celdas(_pc, _dl), _inv, False))
+                # Filas por PIERNA (si la señal la tiene y el display trae sus columnas):
+                for _leg, _sufx in (("CALL", "CALL"), ("PUT", "PUT")):
+                    if not getattr(it, f"{_leg.lower()}_entry_premium", None):
+                        continue
+                    _cp, _cd = f"ROI (%) {_sufx}", f"ROI ($) {_sufx}"
+                    if _cp not in _disp.columns or _cd not in _disp.columns:
+                        continue
+                    try:
+                        _hs.append((f"{_lab} · {_leg}", _e_s, _x_s,
+                                    _celdas(_disp[_cp].to_numpy(), _disp[_cd].to_numpy()),
+                                    _inv, True))
+                    except Exception:  # noqa: BLE001
+                        continue
             return _hs
 
         # SECCIONADO POR DÍA (pedido UX 2026-07-05): en «(todas)», una tabla por FECHA — cada
@@ -4316,14 +4336,15 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                        for _f in sorted({str(r.get("fecha")) for r in _oks_date})]
         else:
             _grupos = [(None, _oks_date)]
-        _hits_grp = [(_f, _build_hits(_recs, _day_labels=_seccionado)) for _f, _recs in _grupos]
-        _hits_grp = [(_f, _hs) for _f, _hs in _hits_grp if _hs]
+        _hits_grp = [(_f, _recs, _build_hits(_recs, _day_labels=_seccionado))
+                     for _f, _recs in _grupos]
+        _hits_grp = [(_f, _recs, _hs) for _f, _recs, _hs in _hits_grp if _hs]
         if not _hits_grp:
             st.caption("Sin timeline para esa fecha.")
             return
-        _all_hits = [h for _f, _hs in _hits_grp for h in _hs]
-        _gmin = min(e for _l, e, _xe, _c, _iv in _all_hits)
-        _gmax = max(_xe for _l, e, _xe, _c, _iv in _all_hits)
+        _all_hits = [h for _f, _recs, _hs in _hits_grp for h in _hs]
+        _gmin = min(e for _l, e, _xe, _c, _iv, _pl in _all_hits)
+        _gmax = max(_xe for _l, e, _xe, _c, _iv, _pl in _all_hits)
         if _full_range and not _seccionado:
             _ga, _gb = _grange(_oks)   # rango GLOBAL (todas las fechas) → columnas como en «(todas)»
             if _ga is not None:
@@ -4353,7 +4374,7 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
             _tot_inv = {c: 0.0 for c in _cols_full}   # Σ invertido por columna (tickers abiertos)
             _tot_n = {c: 0 for c in _cols_full}
             _hdata = []
-            for _label, _e, _xe, _cells, _inv in _hits:
+            for _label, _e, _xe, _cells, _inv, _es_pierna in _hits:
                 _row = {"Ticket": _label}
                 _last = None
                 for _s in _grid:
@@ -4367,9 +4388,10 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                         if _last is not None:
                             _p, _d = _last
                             _row[_c] = f"{_p*100:.1f}% / ${_d:,.2f}"
-                            _tot_dol[_c] += _d
-                            _tot_inv[_c] += _inv
-                            _tot_n[_c] += 1
+                            if not _es_pierna:         # las piernas NO suman al TOTAL (duplicarían)
+                                _tot_dol[_c] += _d
+                                _tot_inv[_c] += _inv
+                                _tot_n[_c] += 1
                         else:
                             _row[_c] = "CLOSED"
                 _hdata.append(_row)
@@ -4469,13 +4491,27 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                          hide_index=True, height=min(560, 60 + 35 * (len(_hdata) + 1)))
 
         _WD_HM = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-        for _f_hm, _hs_hm in _hits_grp:
+        for _f_hm, _recs_hm, _hs_hm in _hits_grp:
             if _seccionado:
                 try:
                     _wd_hm = " · " + _WD_HM[pd.Timestamp(str(_f_hm)).weekday()]
                 except Exception:  # noqa: BLE001
                     _wd_hm = ""
-                st.markdown(f"##### 📅 {_f_hm}{_wd_hm}")
+                # Stats del día para el encabezado: ROI final de la cartera del día + el máx
+                # alcanzado por cada pierna entre TODAS las señales del día.
+                _g_d = sum(float(getattr(_r["iteration"], "gain_total", 0.0) or 0.0)
+                           for _r in _recs_hm)
+                _i_d = sum(float(getattr(_r["iteration"], "invest_total", 0.0) or 0.0)
+                           for _r in _recs_hm)
+                _roi_d = (_g_d / _i_d * 100.0) if _i_d else 0.0
+                _mxs = [_max_leg_roi_vals(_r["iteration"]) for _r in _recs_hm]
+                _mxc = [c for c, p in _mxs if c is not None]
+                _mxp = [p for c, p in _mxs if p is not None]
+                _mx_txt = " · máx " + " / ".join(
+                    ([f"CALL {max(_mxc):+.1f}%"] if _mxc else [])
+                    + ([f"PUT {max(_mxp):+.1f}%"] if _mxp else [])) if (_mxc or _mxp) else ""
+                st.markdown(f"##### 📅 {_f_hm}{_wd_hm} · ROI: {_roi_d:+.1f}% / "
+                            f"${_g_d:+,.2f}{_mx_txt}")
             _render_grid(_hs_hm, _cols)
 
 
