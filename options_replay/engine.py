@@ -1376,6 +1376,35 @@ def _run_one_iteration(
         exit_reason = "session_end"
         call_exit_reason = put_exit_reason = "session_end"
         merged = merged.reset_index(drop=True)
+    elif mode == "call_or_put_until_roi":
+        # ----- CALL o PUT (Until reach ROI(%)): piernas INDEPENDIENTES -----
+        # Se compran ambas; CADA pierna se vende sola cuando SU ROI alcanza el Umbral de
+        # ROI (%) del ticker (exit_threshold_pct); la que no llega, se vende al cierre del
+        # día. Sin Stop loss y sin salida combinada: las piernas no se esperan entre sí.
+        TARGET_U = float(exit_threshold_pct)
+        _last = len(merged) - 1
+        call_hit = _first_pos(pct_call >= TARGET_U) if invest_call else None
+        put_hit = _first_pos(pct_put >= TARGET_U) if invest_put else None
+        if invest_call:
+            call_exit_idx = call_hit if call_hit is not None else _last
+            call_exit_reason = "100%_threshold" if call_hit is not None else "session_end"
+        if invest_put:
+            put_exit_idx = put_hit if put_hit is not None else _last
+            put_exit_reason = "100%_threshold" if put_hit is not None else "session_end"
+        # La iteración termina cuando sale la ÚLTIMA pierna viva.
+        _ends = [i for i in (call_exit_idx, put_exit_idx) if i is not None]
+        end_pos = max(_ends) if _ends else _last
+        merged = merged.iloc[: end_pos + 1].copy()
+        # CONGELAR cada pierna desde su venta (mismo patrón que el plus): su valor ya está
+        # bancado y no debe seguir la curva del mercado en el display/ROI total.
+        if call_hit is not None and call_hit < end_pos:
+            merged.loc[call_hit + 1:, "call_px"] = float(merged.loc[call_hit, "call_px"])
+        if put_hit is not None and put_hit < end_pos:
+            merged.loc[put_hit + 1:, "put_px"] = float(merged.loc[put_hit, "put_px"])
+        merged["total"] = merged["call_px"] + merged["put_px"]
+        merged = merged.reset_index(drop=True)
+        exit_reason = ("100%_threshold" if (call_hit is not None or put_hit is not None)
+                       else "session_end")
     elif mode == "call_or_put_plus":
         # ----- CALL o PUT (plus): umbral de salida + recuperar inversión total -----
         # 1) La PRIMERA pierna (A) que alcanza `exit_plus_threshold_pct` se vende y

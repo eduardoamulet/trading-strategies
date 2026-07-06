@@ -1104,6 +1104,7 @@ def _shift_hhmm(hhmm: str, mins: int) -> str:
 _TIPO_OPTS = ["CALL", "PUT", "CALL y PUT", "CALL y PUT (Refuerzo)",
               "CALL y PUT (Refuerzo) (End of Day)", "CALL y PUT (plus)",
               "CALL o PUT", "CALL o PUT (plus)", "CALL o PUT (End of Day)",
+              "CALL o PUT (Until reach ROI(%))",
               "Sólo CALL (End of Day)", "Sólo PUT (End of Day)"]
 
 
@@ -2847,7 +2848,8 @@ with st.sidebar.container():
     _mode_opts = sorted(
         ["CALL y PUT", "CALL y PUT (Refuerzo)", "CALL y PUT (Refuerzo) (End of Day)",
          "CALL y PUT (plus)", "Sólo CALL", "Sólo PUT", "CALL o PUT", "CALL o PUT (plus)",
-         "CALL o PUT (End of Day)", "Sólo CALL (End of Day)", "Sólo PUT (End of Day)"],
+         "CALL o PUT (End of Day)", "CALL o PUT (Until reach ROI(%))",
+         "Sólo CALL (End of Day)", "Sólo PUT (End of Day)"],
         key=lambda o: _MODE_DISPLAY.get(o, o))
     with _estrat_box:
         _straddle_mode = st.selectbox(
@@ -2865,6 +2867,7 @@ with st.sidebar.container():
     is_call_or_put = _straddle_mode == "CALL o PUT"
     is_call_or_put_plus = _straddle_mode == "CALL o PUT (plus)"
     is_call_or_put_eod = _straddle_mode == "CALL o PUT (End of Day)"
+    is_call_or_put_until = _straddle_mode == "CALL o PUT (Until reach ROI(%))"
     is_both_plus = _straddle_mode == "CALL y PUT (plus)"
     is_refuerzo_eod = _straddle_mode == "CALL y PUT (Refuerzo) (End of Day)"
     is_refuerzo = _straddle_mode in ("CALL y PUT (Refuerzo)", "CALL y PUT (Refuerzo) (End of Day)")
@@ -2882,6 +2885,8 @@ with st.sidebar.container():
         engine_mode = "call_or_put_plus"
     elif is_call_or_put_eod:
         engine_mode = "call_or_put_eod"
+    elif is_call_or_put_until:
+        engine_mode = "call_or_put_until_roi"
     elif is_both_plus:
         engine_mode = "both_plus"
     elif is_refuerzo_eod:
@@ -2938,6 +2943,11 @@ with st.sidebar.container():
                                    "ROI ni Stop loss del ticker — ⚠ el **umbral/stop COLECTIVO** (si "
                                    "el alcance de salida lo incluye) **sí puede cerrarlas antes**; "
                                    "para un EOD puro elegí «Aplicar solo a tickers».",
+        "CALL o PUT (Until reach ROI(%))": "🎯 **CALL o PUT (Until reach ROI(%))** — se compran ambas "
+                                           "piernas (50/50) y **cada una se vende SOLA** cuando alcanza "
+                                           "el **Umbral ROI (%) del ticker**; la que no llega, se vende "
+                                           "**al cierre del día**. Las piernas no se esperan entre sí. "
+                                           "Sin Stop loss (el colectivo, si está activado, sí aplica).",
     }
     # La descripción de la estrategia se muestra DIRECTAMENTE debajo del dropdown (caption, no
     # expander) → al elegir una estrategia, su info aparece enseguida.
@@ -3574,9 +3584,9 @@ def _style_display_df(display_df: pd.DataFrame, threshold: float, exit_metric: s
     total_styler = _make_total_pct_styler(threshold, stop_loss=stop_loss, is_metric=total_is_metric)
     metric_col = METRIC_COLUMN.get(exit_metric, "ROI (%)")
 
-    # Modos "CALL o PUT" / "(plus)": cada pierna marca su propia celda de venta
-    # (verde oscuro). La columna ROI combinada NO marca umbral.
-    if getattr(it, "mode", "") in ("call_or_put", "call_or_put_plus"):
+    # Modos "CALL o PUT" / "(plus)" / "(Until reach ROI(%))": cada pierna marca su propia
+    # celda de venta (verde oscuro). La columna ROI combinada NO marca umbral.
+    if getattr(it, "mode", "") in ("call_or_put", "call_or_put_plus", "call_or_put_until_roi"):
         call_styler = _make_leg_exit_styler(
             getattr(it, "call_exit_idx", None), getattr(it, "call_exit_reason", ""))
         put_styler = _make_leg_exit_styler(

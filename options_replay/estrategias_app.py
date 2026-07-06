@@ -59,6 +59,9 @@ ESTRATEGIAS_SF = [
      "Se compran ambas piernas (50/50) y se venden las dos al cierre del día. No depende de Umbral de "
      "ROI ni Stop loss del ticker — el umbral/stop COLECTIVO (si el alcance lo incluye) sí puede "
      "cerrarlas antes; para un EOD puro elegí «Aplicar solo a tickers»."),
+    ("CALL o PUT (Until reach ROI(%))",
+     "Se compran ambas piernas (50/50) y cada una se vende SOLA cuando alcanza el Umbral ROI (%) del "
+     "ticker; la que no llega, al cierre del día. Las piernas no se esperan entre sí. Sin Stop loss."),
     ("Sólo CALL (End of Day)",
      "Una sola pierna (100% CALL) que se vende al cierre del día. No depende de Umbral de ROI ni Stop "
      "loss del ticker — el colectivo (si el alcance lo incluye) sí puede cerrarla antes."),

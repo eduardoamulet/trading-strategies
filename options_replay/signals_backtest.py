@@ -78,6 +78,7 @@ _TIPO_MODE = {
     "CALL Y PUT (REFUERZO) (END OF DAY)": "both_refuerzo_eod",
     "CALL O PUT": "call_or_put", "CALL O PUT (PLUS)": "call_or_put_plus",
     "CALL O PUT (END OF DAY)": "call_or_put_eod",
+    "CALL O PUT (UNTIL REACH ROI(%))": "call_or_put_until_roi",
     "SÓLO CALL (END OF DAY)": "call_only_eod", "SOLO CALL (END OF DAY)": "call_only_eod",
     "SÓLO PUT (END OF DAY)": "put_only_eod", "SOLO PUT (END OF DAY)": "put_only_eod",
 }
