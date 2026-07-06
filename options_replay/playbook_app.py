@@ -28,6 +28,27 @@ def _read_json(path: Path, default):
         return default
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cov_ligera(_cid: str) -> dict:
+    """Cobertura LIGERA por combinación para las tarjetas (filas · días · última fecha).
+    bt_store.coverage() corre 3 escaneos completos por combinación (y el de engine_version lee
+    la TABLA de 4 GB, no el índice) — medido 2026-07-06: ~288 s de page-load con 5 tarjetas
+    (185 s solo la de 4.6M filas). Acá: MAX(fecha) por seek de índice (instantáneo) + UN solo
+    recorrido index-only para contar (~20 s la gigante, una vez), cacheado 1 h. El almacén es
+    append-only: la cobertura solo cambia al ingestar o borrar — en esos eventos la página
+    llama `_cov_ligera.clear()`, así el TTL largo nunca miente."""
+    import bt_store as _b
+    with _b._connect() as _con:  # noqa: SLF001 — mismo WAL/busy_timeout que el resto del módulo
+        _hasta = _con.execute("SELECT MAX(fecha) FROM bt_results WHERE combination=?",
+                              (_cid,)).fetchone()[0]
+        if not _hasta:
+            return {"filas": 0, "dias": 0, "hasta": None}
+        _n, _nd = _con.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT fecha) FROM bt_results WHERE combination=?",
+            (_cid,)).fetchone()
+    return {"filas": int(_n or 0), "dias": int(_nd or 0), "hasta": _hasta}
+
+
 st.title("📘 Playbook")
 st.caption("El **playbook** dice qué días operar y con qué **escenario/condiciones** (evaluado "
            "a nivel **cartera** por el motor de interpretación). El panel de Backtesting lo "
@@ -41,6 +62,7 @@ if _st == "done":
     # ASÍNCRONO: el veredicto de una combinación gigante tarda minutos en interpretarse —
     # se delega a un proceso aparte (claim atómico: N sesiones → 1 solo finalizador) y la
     # página queda libre al instante.
+    _cov_ligera.clear()          # acaba de aterrizar una ingesta → recontar la cobertura
     _pbs.spawn_finalize(_job["id"])
     st.info(f"⏳ Reevaluación **{_job.get('id')}** terminada "
             f"(+{(_job or {}).get('n_filas_nuevas') or 0:,} filas ya en el almacén) — "
@@ -347,6 +369,7 @@ for _co in _combos:
                 try:
                     _cmb.delete_combination(_co["id"])          # valida que NO sea la activa
                     _bts.delete_rows(_co["id"])                 # purga la historia del almacén
+                    _cov_ligera.clear()                         # la cobertura cacheada cambió
                     st.session_state.pop(f"comb_del_arm_{_co['id']}", None)
                     st.rerun()
                 except ValueError as _de:
@@ -359,8 +382,7 @@ for _co in _combos:
         st.markdown("---")
         st.markdown("**📊 Veredicto de esta combinación** · ventana oficial 120 días hábiles · "
                     "half-life 35 · min_n 16")
-        import bt_store as _bts_pb
-        _cov_c = _bts_pb.coverage(_co["id"])
+        _cov_c = _cov_ligera(_co["id"])
         if not _cov_c["filas"]:
             st.caption("Sin historia en el almacén todavía — activala y lanzá una Reevaluación "
                        "para poblarla; después el veredicto se calcula acá.")
