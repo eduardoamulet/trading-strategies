@@ -305,3 +305,49 @@ def live_view():
 
 
 live_view()
+
+
+# ── 🕶 Shadow trader (Fase 1): decisión diaria SIN operar ─────────────────────
+st.divider()
+with st.expander("🕶 Shadow trader — decisión diaria sin operar (Fase 1)", expanded=False):
+    import json as _json
+    import sqlite3 as _sq
+    _SH_CFG = DATA_DIR / "shadow_config.json"
+    try:
+        _sh_cfg = _json.loads(_SH_CFG.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — sin config todavía
+        _sh_cfg = {}
+    st.caption("Cada día hábil a las **09:31 ET** registra qué habría hecho el sistema — "
+               "contratos elegidos con datos EN VIVO de Alpaca y a qué ask — **sin mandar "
+               "órdenes**; a las **15:50** captura el bid de cierre (P&L hipotético). "
+               "Base: `data/shadow_trader.db` · reporte: `py shadow_trader.py --reporte`.")
+    _sh_pb = st.checkbox(
+        "Usar el playbook para decidir (desmarcado: entra TODOS los días hábiles)",
+        value=bool(_sh_cfg.get("usar_playbook", False)), key="shadow_usar_pb",
+        help="Desmarcado (default): selecciona contratos todos los días hábiles — máxima "
+             "recolección de datos de calibración. Marcado: replica la política del "
+             "«(playbook automático)»: solo días OPERAR + estado 🟢 operable del veredicto "
+             "vigente; el resto se saltea registrando el motivo.")
+    if bool(_sh_cfg.get("usar_playbook", False)) != _sh_pb:
+        _SH_CFG.parent.mkdir(parents=True, exist_ok=True)
+        _SH_CFG.write_text(_json.dumps({**_sh_cfg, "usar_playbook": _sh_pb}, indent=2,
+                                       ensure_ascii=False), encoding="utf-8")
+        st.toast("🕶 Shadow: " + ("usará el playbook vigente"
+                                  if _sh_pb else "entrará todos los días hábiles"))
+    try:
+        _con_sh = _sq.connect(str(DATA_DIR / "shadow_trader.db"))
+        _rows_sh = _con_sh.execute(
+            "SELECT fecha, weekday, ticker, decision, COALESCE(call_occ,''), "
+            "COALESCE(call_ask,''), COALESCE(put_occ,''), COALESCE(put_ask,''), "
+            "COALESCE(costo_estimado,''), COALESCE(motivo,'') FROM shadow_decisions "
+            "ORDER BY fecha DESC, ticker LIMIT 15").fetchall()
+        _con_sh.close()
+        if _rows_sh:
+            st.dataframe(pd.DataFrame(_rows_sh, columns=[
+                "Fecha", "Día", "Ticker", "Decisión", "CALL", "ask C", "PUT", "ask P",
+                "Costo $", "Motivo"]), hide_index=True, use_container_width=True)
+        else:
+            st.caption("Todavía sin decisiones registradas — la primera cae el próximo "
+                       "día hábil a las 09:31.")
+    except Exception:  # noqa: BLE001 — sin base todavía
+        st.caption("Todavía sin decisiones registradas.")

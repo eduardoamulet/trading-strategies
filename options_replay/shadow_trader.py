@@ -1,11 +1,14 @@
 """Shadow trader (Fase 1 del plan de integración con broker) — decide SIN operar.
 
-Cada día hábil a las 09:31 ET este script recorre el ciclo COMPLETO de decisión del
-sistema — playbook vigente (¿se opera hoy?) → selección de contrato con datos EN VIVO
-de Alpaca (menor spread en rango óptimo, misma `trading_core.selection` del paper) →
-tamaño de la posición — y REGISTRA la decisión en data/shadow_trader.db. No manda
-ninguna orden: valida la cadena de decisión y los precios reales de entrada con
-riesgo cero. A las 15:50 ET (--eod) captura el bid de cierre de los contratos
+Cada día hábil a las 09:31 ET este script recorre el ciclo de decisión y REGISTRA el
+resultado en data/shadow_trader.db sin mandar ninguna orden: selección de contrato con
+datos EN VIVO de Alpaca (menor spread en rango óptimo, misma `trading_core.selection`
+del paper) → tamaño de la posición → precios de entrada reales. Riesgo cero.
+
+POR DEFECTO entra TODOS los días hábiles (máxima recolección de datos de calibración).
+Con el checkbox «Usar el playbook» (Operar → 🕶, persiste en data/shadow_config.json)
+replica la política del «(playbook automático)»: solo días OPERAR + estado operable
+del veredicto vigente; el resto se saltea con su motivo. A las 15:50 ET (--eod) captura el bid de cierre de los contratos
 elegidos → P&L hipotético de aguantar al cierre.
 
 Comparación (--reporte): las decisiones registradas + el P&L hipotético. La
@@ -36,6 +39,7 @@ for _p in (str(ROOT), str(HERE)):
         sys.path.insert(0, _p)
 
 DB_PATH = HERE / "data" / "shadow_trader.db"
+CONFIG_PATH = HERE / "data" / "shadow_config.json"
 TICKERS = ["QQQ", "SPY", "IWM"]
 INVERSION = 1000.0                              # $ por ticker (50/50 CALL/PUT)
 WINDOW_MIN = 4.0                                # ventana de búsqueda de contrato (min)
@@ -67,6 +71,17 @@ def _grabar(con: sqlite3.Connection, fila: dict) -> None:
     con.execute(f"INSERT OR REPLACE INTO shadow_decisions ({cols}) VALUES "
                 f"({','.join('?' for _ in fila)})", list(fila.values()))
     con.commit()
+
+
+def _usar_playbook() -> bool:
+    """Config del shadow (data/shadow_config.json — checkbox en Operar → 🕶). Default
+    FALSE: entra TODOS los días hábiles (máxima recolección de datos de calibración).
+    True: replica la política del «(playbook automático)» (solo OPERAR + operable)."""
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return bool(cfg.get("usar_playbook", False))
+    except Exception:  # noqa: BLE001 — sin config = default
+        return False
 
 
 # ── Decisión desde el playbook vigente ────────────────────────────────────────
@@ -129,8 +144,14 @@ def correr_decision() -> int:
         print(f"[shadow] {fecha} no es día hábil NYSE — nada que decidir.")
         return 0
 
-    pb = _leer_playbook()
-    decision, motivo, esc, comb = decidir_dia(pb, wd)
+    if _usar_playbook():
+        pb = _leer_playbook()
+        decision, motivo, esc, comb = decidir_dia(pb, wd)
+    else:
+        # Default: SIN playbook — se entra todos los días hábiles (el gate estadístico se
+        # aplica después, al ANALIZAR los datos; acá se recolecta todos los días).
+        decision, motivo, esc, comb = ("entrar", "modo sin playbook: todos los días hábiles",
+                                       "", "")
     con = _connect()
     base = {"fecha": fecha, "hora": hora, "weekday": wd, "scenario": esc,
             "combination": comb, "creado_en": now.isoformat()}

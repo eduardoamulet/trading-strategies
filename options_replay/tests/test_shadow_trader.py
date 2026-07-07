@@ -72,3 +72,13 @@ def test_rango_prima_fallback(monkeypatch):
     monkeypatch.setattr(sh, "HERE", Path("Z:/no/existe"))
     lo, hi = sh._rango_prima("QQQ")
     assert (lo, hi) == (0.30, 0.50)
+
+
+def test_usar_playbook_default_false(tmp_path, monkeypatch):
+    # Sin config → False (entra todos los días hábiles); el checkbox de Operar lo persiste.
+    monkeypatch.setattr(sh, "CONFIG_PATH", tmp_path / "shadow_config.json")
+    assert sh._usar_playbook() is False
+    (tmp_path / "shadow_config.json").write_text('{"usar_playbook": true}', encoding="utf-8")
+    assert sh._usar_playbook() is True
+    (tmp_path / "shadow_config.json").write_text('{"usar_playbook": false}', encoding="utf-8")
+    assert sh._usar_playbook() is False
