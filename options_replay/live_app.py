@@ -94,6 +94,132 @@ def _params() -> dict:
     )
 
 
+def _rango_prima_live(ticker: str) -> tuple:
+    """Rango óptimo de prima del ticker (ticker_info.json, centavos → ÷100); fallback de
+    la casa $0.30–$0.50 — el MISMO criterio del backtest y del shadow trader."""
+    import json as _json
+    try:
+        info = _json.loads((_ROOT / "options_replay" / "ticker_info.json")
+                           .read_text(encoding="utf-8"))
+        t = info.get(ticker.upper()) or {}
+        return (float(t.get("rango_optimo_lo") or t.get("min") or 30.0) / 100.0,
+                float(t.get("rango_optimo_hi") or t.get("max") or 50.0) / 100.0)
+    except Exception:  # noqa: BLE001
+        return 0.30, 0.50
+
+
+class _UnTick:
+    """Clock de UN solo intento para la selección en la página (sin loop bloqueante)."""
+
+    def ticks(self, start, end):
+        yield start
+
+
+def _alerts_handoff_view() -> None:
+    """🔔 Alertas traídas de «Investep Academy IA» (botón «Operar → Live»): previsualiza el
+    contrato por alerta con la selección de la casa (menor spread en rango óptimo) contra la
+    FUENTE elegida arriba (Alpaca paper / Tradier sandbox / Replay) y compra LIMIT al ask.
+    v1: la venta/TP automático de estas posiciones llega con la Fase 2 — gestión manual."""
+    _ho = st.session_state.get("live_alerts_handoff")
+    if not _ho:
+        return
+    st.markdown("### 🔔 Operar alertas de Investep (paper)")
+    src = _build_source()
+    if src is None:
+        st.warning("Elegí/configurá una fuente arriba para previsualizar las alertas.")
+        return
+    market, broker, now, _exp0, label = src
+    st.caption(f"**{len(_ho)} alerta(s)** · fuente actual: **{label}** (cambiala arriba si "
+               "querés otra) · 1 posición por alerta — Sólo CALL/PUT según la señal — con la "
+               "selección de contrato de la casa y compra **LIMIT al ask**. ⚠ Paper, sin "
+               "dinero real. 🎯 El take-profit automático multi-posición llega en Fase 2: "
+               "por ahora la gestión post-compra es manual (dashboard del broker).")
+    import pandas as _pd
+    _seed = _pd.DataFrame([{"Señal": f"{a.get('symbol')} {a.get('tipo')}",
+                            "Inversión $": 1000.0} for a in _ho])
+    _ed = st.data_editor(_seed, key="live_ho_editor", hide_index=True,
+                         use_container_width=True, disabled=["Señal"],
+                         column_config={"Inversión $": st.column_config.NumberColumn(
+                             min_value=1.0, step=100.0, format="$%.0f")})
+    _c1, _c2 = st.columns([2, 1])
+    if _c1.button(f"🔍 Previsualizar {len(_ho)} (sin comprar)", type="primary",
+                  use_container_width=True, key="live_ho_prev"):
+        from trading_core.selection import SelectionParams, make_range_gate, select_single
+        _rows = []
+        for _i, _a in enumerate(_ho):
+            _tk = str(_a.get("symbol") or "").upper()
+            _tp = str(_a.get("tipo") or "").upper()
+            _right = Right.CALL if _tp == "CALL" else Right.PUT
+            _inv = float(_ed.iloc[_i]["Inversión $"])
+            _fila = {"Señal": f"{_tk} {_tp}", "Contrato": "—", "Strike": "—", "Bid": "—",
+                     "Ask": "—", "Spread": "—", "Cant.": 0, "Costo": "—", "Estado": "",
+                     "_occ": "", "_ask": 0.0, "_qty": 0}
+            try:
+                _exp = market.nearest_expiry(_tk, now.strftime("%Y-%m-%d")) \
+                    or now.strftime("%Y-%m-%d")
+                _lo, _hi = _rango_prima_live(_tk)
+                _leg, _ = select_single(market, _UnTick(), _tk, _exp, _right, now,
+                                        SelectionParams(premium_min=_lo, premium_max=_hi,
+                                                        window_min=0.0),
+                                        make_range_gate(_lo, _hi, 0.10))
+                if _leg is None or _leg.quote is None or not _leg.quote.ask:
+                    _fila["Estado"] = f"✗ sin contrato en rango ${_lo:.2f}–${_hi:.2f}"
+                else:
+                    _q = _leg.quote
+                    _qty = int(_inv // (_q.ask * 100.0))
+                    _fila.update({
+                        "Contrato": _leg.occ, "Strike": f"{_leg.strike:g}",
+                        "Bid": f"${_q.bid:.2f}" if _q.bid else "—",
+                        "Ask": f"${_q.ask:.2f}", "Spread": f"${_q.spread:.2f}",
+                        "Cant.": _qty, "Costo": f"${_q.ask * _qty * 100.0:,.0f}",
+                        "Estado": ("✅ lista" if _qty >= 1
+                                   else "⚠ la inversión no alcanza para 1 contrato"),
+                        "_occ": _leg.occ, "_ask": float(_q.ask), "_qty": _qty})
+            except Exception as _e:  # noqa: BLE001 — una alerta no tumba a las demás
+                _fila["Estado"] = f"✗ {type(_e).__name__}: {_e}"
+            _rows.append(_fila)
+        st.session_state["live_ho_preview"] = _rows
+        st.rerun()
+    if _c2.button("🧹 Descartar alertas", use_container_width=True, key="live_ho_drop"):
+        for _k in ("live_alerts_handoff", "live_ho_preview", "live_ho_results"):
+            st.session_state.pop(_k, None)
+        st.rerun()
+
+    _pv = st.session_state.get("live_ho_preview")
+    if _pv:
+        st.dataframe(_pd.DataFrame(_pv).drop(columns=["_occ", "_ask", "_qty"]),
+                     hide_index=True, use_container_width=True)
+        _n_ok = sum(1 for r in _pv if r["Estado"] == "✅ lista")
+        st.caption(f"{_n_ok} de {len(_pv)} lista(s). Si cambiás la inversión o la fuente, "
+                   "volvé a previsualizar (la compra usa exactamente esta vista).")
+        if st.button(f"✅ Comprar {_n_ok} (paper) — LIMIT al ask", type="primary",
+                     disabled=_n_ok == 0, key="live_ho_buy"):
+            _res = []
+            for r in _pv:
+                if r["Estado"] != "✅ lista":
+                    _res.append({"Señal": r["Señal"], "Resultado": "— salteada"})
+                    continue
+                try:
+                    _fill = broker.execute(OrderRequest(occ=r["_occ"], side=OrderSide.BUY,
+                                                        qty=int(r["_qty"]),
+                                                        limit=float(r["_ask"]), ts=now), now)
+                    _res.append({"Señal": r["Señal"],
+                                 "Resultado": (f"✅ comprada · {_fill.qty} @ ${_fill.price:.2f}"
+                                               if _fill.qty else "⚠ no se llenó / cancelada")})
+                except Exception as _e:  # noqa: BLE001
+                    _res.append({"Señal": r["Señal"], "Resultado": f"⚠ {_e}"})
+            st.session_state["live_ho_results"] = _res
+            st.session_state.pop("live_ho_preview", None)
+            st.rerun()
+    _res = st.session_state.get("live_ho_results")
+    if _res:
+        st.markdown("##### Resultado de las compras")
+        st.dataframe(_pd.DataFrame(_res), hide_index=True, use_container_width=True)
+        st.caption("Las posiciones quedan en la cuenta **paper** del broker elegido "
+                   "(en Alpaca: app.alpaca.markets → Paper → Positions).")
+    st.divider()
+
+
 # ════════════════════════════════════ Render ════════════════════════════════════
 st.title("🟢 Operar — paper trading en vivo")
 st.caption("La MISMA estrategia que el backtest (trading_core), en tiempo real. "
@@ -113,6 +239,10 @@ if st.session_state.get("live_src") == "Replay / demo":
     d1.text_input("Fecha (YYYY-MM-DD)", value="2026-06-11", key="live_date")
     if d2.button("⟲ Reiniciar reloj", use_container_width=True):
         st.session_state["sim_min"] = 0
+
+# 🔔 Alertas de Investep (si llegaste con el botón «Operar → Live»): arriba de todo.
+_alerts_handoff_view()
+
 e1, e2, e3, e4, e5 = st.columns(5)
 e1.number_input("Inversión ($)", min_value=1.0, value=1000.0, step=100.0, key="live_inv")
 e2.number_input("Inversión CALL (%)", 0.0, 100.0, value=50.0, step=5.0, key="live_callpct")

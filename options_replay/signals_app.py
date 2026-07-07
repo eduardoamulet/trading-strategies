@@ -418,12 +418,17 @@ else:
         st.session_state["bt_sidebar_collapse"] = True   # llegar a Backtesting con la sidebar contraída
         st.switch_page("options_replay/app.py")
     if _b2.button(f"🟢 Operar {len(_sel_rows)} (paper)  →  Live", use_container_width=True,
-                  help="Abre 1 posición por alerta en el sandbox (paper, NO dinero real). El "
-                       "daemon monitorea y vende al Umbral de ROI. Requiere mercado abierto."):
+                  help="Abre 1 posición por alerta en PAPER (no dinero real) desde la página "
+                       "Operar: previsualizás contrato/costo con la fuente elegida (Alpaca "
+                       "paper / Tradier sandbox / Replay) y confirmás la compra LIMIT al "
+                       "ask. Requiere mercado abierto."):
         st.session_state["live_alerts_handoff"] = [
             {"id": str(r["id"]), "symbol": str(r["symbol"]), "tipo": str(r["tipo"])}
             for _, r in _sel_df.iterrows()]
-        st.switch_page("live_trader/ui/app.py")
+        # Antes saltaba a live_trader/ui/app.py (la UI standalone vieja, NO registrada en el
+        # menú del suite → el switch fallaba). El consumidor vive ahora en la página Operar
+        # moderna (live_app._alerts_handoff_view), con el stack trading_core y sus 3 fuentes.
+        st.switch_page("options_replay/live_app.py")
     if _b3.button("🧹 Limpiar", use_container_width=True, help="Vaciar la selección actual."):
         st.session_state["_sig_ed_v"] = st.session_state.get("_sig_ed_v", 0) + 1
         st.rerun()
