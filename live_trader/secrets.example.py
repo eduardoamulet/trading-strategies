@@ -11,6 +11,18 @@ TRADIER_LIVE_TOKEN = ""
 TRADIER_LIVE_ACCOUNT_ID = ""
 
 # ---------------------------------------------------------------------------
+# Alpaca — keys del PAPER en: https://app.alpaca.markets  (Paper → API Keys).
+# El paper de Alpaca simula fills contra el NBBO real → es el broker de la fase
+# de calibración de slippage. Pedí options approved level ≥ 2 (comprar calls/puts).
+# ---------------------------------------------------------------------------
+ALPACA_PAPER_KEY_ID = ""
+ALPACA_PAPER_SECRET = ""
+
+# Solo si algún día operás en vivo con Alpaca:
+ALPACA_LIVE_KEY_ID = ""
+ALPACA_LIVE_SECRET = ""
+
+# ---------------------------------------------------------------------------
 # Schwab Trader API (Fase 2 — thinkorswim real). Sacá App Key/Secret en:
 #   https://developer.schwab.com/  → tu app → "Keys"
 # El Callback URL debe coincidir EXACTO con el registrado en la app de Schwab.

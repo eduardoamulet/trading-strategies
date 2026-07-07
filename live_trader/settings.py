@@ -60,6 +60,54 @@ def account_id() -> str:
     return TRADIER_LIVE_ACCOUNT_ID if LIVE_TRADING_ENABLED else TRADIER_SANDBOX_ACCOUNT_ID
 
 
+def _from_root_config(name: str, default: str = "") -> str:
+    """Fallback al config.py RAÍZ del proyecto (Traiding/config.py): ahí ya viven las
+    keys de Alpaca que usa trading_core (ALPACA_API_KEY/SECRET) — así no se duplican."""
+    cfg_path = _PKG_DIR.parent / "config.py"
+    if cfg_path.exists():
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_root_config", cfg_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore
+            return getattr(mod, name, default)
+        except Exception:
+            return default
+    return default
+
+
+ALPACA_PAPER_KEY_ID = (_from_secrets("ALPACA_PAPER_KEY_ID", "")
+                       or _from_root_config("ALPACA_API_KEY", ""))
+ALPACA_PAPER_SECRET = (_from_secrets("ALPACA_PAPER_SECRET", "")
+                       or _from_root_config("ALPACA_API_SECRET", ""))
+ALPACA_LIVE_KEY_ID = _from_secrets("ALPACA_LIVE_KEY_ID", "")
+ALPACA_LIVE_SECRET = _from_secrets("ALPACA_LIVE_SECRET", "")
+
+def alpaca_key_id() -> str:
+    return ALPACA_LIVE_KEY_ID if LIVE_TRADING_ENABLED else ALPACA_PAPER_KEY_ID
+
+def alpaca_secret() -> str:
+    return ALPACA_LIVE_SECRET if LIVE_TRADING_ENABLED else ALPACA_PAPER_SECRET
+
+
+# ===========================================================================
+# Alpaca (paper por defecto). Keys en https://app.alpaca.markets → API Keys.
+# El PAPER de Alpaca simula fills contra el NBBO real (a diferencia del sandbox
+# de Tradier) → es el broker de la fase de calibración de slippage.
+# Requiere options approved level ≥ 2 (comprar calls/puts).
+# ===========================================================================
+BROKER = "tradier"     # "tradier" | "alpaca" — a quién rutea brokers.make_broker()
+
+ALPACA_PAPER_BASE_URL = "https://paper-api.alpaca.markets"
+ALPACA_LIVE_BASE_URL = "https://api.alpaca.markets"
+ALPACA_DATA_BASE_URL = "https://data.alpaca.markets"
+# 'indicative' = gratis (sin acuerdo OPRA) · 'opra' = NBBO completo con suscripción.
+ALPACA_DATA_FEED = "indicative"
+
+def alpaca_base_url() -> str:
+    return ALPACA_LIVE_BASE_URL if LIVE_TRADING_ENABLED else ALPACA_PAPER_BASE_URL
+
+
 # ===========================================================================
 # Schwab Trader API (Fase 2 — thinkorswim real). OAuth2 (authorization code).
 # ⚠ Para individuos NO hay sandbox: las órdenes son SIEMPRE dinero real → por eso
