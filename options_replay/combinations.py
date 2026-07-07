@@ -60,7 +60,9 @@ COND_COLS = ["Alcance de salida", "Aplicar refuerzo", "Umbral pérdida refuerzo 
 # «Tipo de operación (escenario)»: permite comparar POLÍTICAS DE SALIDA (CALL y PUT / CALL o
 # PUT / plus / End of Day / Until reach ROI(%)) como una variable más; vacía o ausente → se
 # usa el «Tipo de operacion» global del seed, como siempre.
-COND_COLS_OPT = ["Tipo de operación (escenario)"]
+# «Stop por pierna (%) (escenario)»: stop POR PIERNA del estudio refuerzo-vs-contra (vende la
+# pierna que toca −X% de su capital y congela su valor; la posición sigue). Vacía o 0 → off.
+COND_COLS_OPT = ["Tipo de operación (escenario)", "Stop por pierna (%) (escenario)"]
 
 
 # ── Infraestructura ───────────────────────────────────────────────────────────

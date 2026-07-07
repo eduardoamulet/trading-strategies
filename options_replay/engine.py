@@ -937,6 +937,7 @@ def run_next_iteration(
     nbbo_timeline: bool = False,
     search_window_min: float = 0.0,
     option_expiry: Optional[str] = None,
+    leg_stop_loss_pct: Optional[float] = None,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -944,7 +945,13 @@ def run_next_iteration(
 
     `option_expiry`: vencimiento del contrato a usar. None = 0DTE (vence `date`). Con un
     valor (Auto-DTE intradía) usa el contrato que vence en esa fecha, PERO la reproduce
-    INTRADÍA sobre `date` (entra y sale el mismo día, no la retiene a vencimiento)."""
+    INTRADÍA sobre `date` (entra y sale el mismo día, no la retiene a vencimiento).
+
+    `leg_stop_loss_pct`: STOP POR PIERNA opcional (fracción negativa, ej. -0.50; None = off,
+    comportamiento previo). En modos de dos piernas con salida conjunta, la pierna cuyo ROI
+    toca el umbral se vende ese minuto y su valor queda congelado; el resto de la posición
+    sigue su salida normal. Mecánica del estudio refuerzo-vs-contra (2026-07): condicionado
+    a un drawdown profundo por pierna, cortar esa pierna dominó a aguantar/reforzar/contra."""
     if premium_min >= premium_max:
         raise ValueError(f"premium_min ({premium_min}) must be < premium_max ({premium_max})")
     if premium_min < 0:
@@ -1020,6 +1027,7 @@ def run_next_iteration(
         exit_at_bid=exit_at_bid,
         nbbo_timeline=nbbo_timeline,
         search_window_min=search_window_min,
+        leg_stop_loss_pct=leg_stop_loss_pct,
     )
 
 
@@ -1265,6 +1273,7 @@ def _run_one_iteration(
     exit_at_bid: bool = False,
     nbbo_timeline: bool = False,
     search_window_min: float = 0.0,
+    leg_stop_loss_pct: Optional[float] = None,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -1323,21 +1332,25 @@ def _run_one_iteration(
     # Cálculo de % por leg. Si la pierna fue "skip" (opening_premium == 0),
     # forzamos pct = 0 para evitar división por cero y para que no contamine
     # el total ni los triggers. La BASE es call_entry/put_entry (ask si entry_at_ask).
-    if call_pick.opening_premium > 0:
-        pct_call = (merged["call_px"] - call_entry) / call_entry
-    else:
-        pct_call = pd.Series(0.0, index=merged.index)
-    if put_pick.opening_premium > 0:
-        pct_put = (merged["put_px"] - put_entry) / put_entry
-    else:
-        pct_put = pd.Series(0.0, index=merged.index)
-    # pct_total = ROI real sobre el capital invertido (ponderado por inversión por leg).
-    _total_invest = invest_call + invest_put
-    if _total_invest > 0:
-        pct_total = (invest_call * pct_call + invest_put * pct_put) / _total_invest
-    else:
-        pct_total = pd.Series(0.0, index=merged.index)
-    # Defaults de metadata de salida por pierna (solo se llenan en "call_or_put").
+    # En función porque el STOP POR PIERNA congela la serie de la pierna vendida y las
+    # series de % deben RECOMPUTARSE para que los triggers vean la posición congelada.
+    def _pct_series() -> tuple:
+        if call_pick.opening_premium > 0:
+            pc = (merged["call_px"] - call_entry) / call_entry
+        else:
+            pc = pd.Series(0.0, index=merged.index)
+        if put_pick.opening_premium > 0:
+            pp = (merged["put_px"] - put_entry) / put_entry
+        else:
+            pp = pd.Series(0.0, index=merged.index)
+        # pct_total = ROI real sobre el capital invertido (ponderado por inversión por leg).
+        ti = invest_call + invest_put
+        pt = ((invest_call * pc + invest_put * pp) / ti) if ti > 0 else pd.Series(0.0, index=merged.index)
+        return pc, pp, pt
+
+    pct_call, pct_put, pct_total = _pct_series()
+    # Defaults de metadata de salida por pierna (se llenan en "call_or_put" y con el
+    # stop por pierna).
     call_exit_idx: Optional[int] = None
     put_exit_idx: Optional[int] = None
     call_exit_reason = ""
@@ -1346,6 +1359,50 @@ def _run_one_iteration(
 
     def _first_pos(mask) -> Optional[int]:
         return int(mask.values.argmax()) if bool(mask.any()) else None
+
+    # ----- STOP POR PIERNA (opcional; mecánica del estudio refuerzo-vs-contra 2026-07) -----
+    # `leg_stop_loss_pct` (fracción, ej. -0.50): en modos de DOS piernas con salida conjunta,
+    # la pierna cuyo ROI toca <= -|umbral| se VENDE en ese minuto — al bid: con nbbo_timeline
+    # (Fase 2) la serie de valuación YA es el bid; en Fase 1 (exit_at_bid) se pide el bid
+    # puntual, y sin fills queda el precio del bar — y su valor se CONGELA desde ahí (mismo
+    # patrón de pierna-vendida que «Until reach ROI(%)»). La posición sigue su salida normal
+    # (umbral/stop TOTAL/cierre) sobre la serie congelada. NO aplica en: single-leg (el Stop
+    # loss normal ya cubre ese caso), modos con gestión por pierna propia (call_or_put_plus /
+    # until_roi, tienen su propio congelamiento) ni refuerzo (semántica opuesta: la martingala
+    # COMPRA la pierna que este stop vendería).
+    _leg_stop_on = (leg_stop_loss_pct is not None and not apply_refuerzo
+                    and mode in ("both", "both_plus", "call_or_put", "call_or_put_eod")
+                    and not merged.empty)
+    if _leg_stop_on:
+        _lthr = -abs(float(leg_stop_loss_pct))   # tolerante al signo: -0.5 y 0.5 equivalen
+        _stopped = False
+        for _col, _pick, _pct in (("call_px", call_pick, pct_call),
+                                  ("put_px", put_pick, pct_put)):
+            if (_pick.opening_premium or 0) <= 0:
+                continue
+            _hit = _first_pos(_pct <= _lthr)
+            if _hit is None:
+                continue
+            _sell = float(merged.loc[_hit, _col])
+            if exit_at_bid and not nbbo_timeline and _pick.occ:
+                # Fase 1: vender al BID puntual del minuto del stop (igual que la salida).
+                try:
+                    _b = downloader.option_quote(
+                        _pick.occ, date, merged["timestamp"].iloc[_hit]).get("bid")
+                except Exception:
+                    _b = None
+                if _b is not None and _b >= 0:
+                    _sell = float(_b)
+                    merged.loc[_hit, _col] = _sell
+            merged.loc[_hit + 1:, _col] = _sell     # congelar: el valor ya está bancado
+            _stopped = True
+            if _col == "call_px":
+                call_exit_idx, call_exit_reason = _hit, "leg_stop_loss"
+            else:
+                put_exit_idx, put_exit_reason = _hit, "leg_stop_loss"
+        if _stopped:
+            merged["total"] = merged["call_px"] + merged["put_px"]
+            pct_call, pct_put, pct_total = _pct_series()
 
     if mode == "call_or_put":
         # ----- Salida COMBINADA al +100% -----
@@ -1527,14 +1584,32 @@ def _run_one_iteration(
         else:
             merged = merged.reset_index(drop=True)
 
+    # STOP POR PIERNA: si la salida GLOBAL truncó `merged` ANTES del minuto del stop de una
+    # pierna, ese stop nunca llegó a ejecutarse (la posición entera salió primero) → limpiar
+    # su marca para que la metadata no apunte fuera del df.
+    if call_exit_reason == "leg_stop_loss" and call_exit_idx >= len(merged):
+        call_exit_idx, call_exit_reason = None, ""
+    if put_exit_reason == "leg_stop_loss" and put_exit_idx >= len(merged):
+        put_exit_idx, put_exit_reason = None, ""
+
     # exit_at_bid (Fase 1): la venta se realiza al BID del NBBO al minuto de salida (lo que
     # REALMENTE cobrás), no al precio del bar. Ajusta SOLO la última fila (la salida); el resto
     # de la serie queda en precio de bar (el trigger ya se detectó arriba). Bajo nbbo_timeline
-    # (Fase 2) NO se aplica: toda la serie YA es el bid → la última fila ya es el bid.
+    # (Fase 2) NO se aplica: toda la serie YA es el bid → la última fila ya es el bid. Una
+    # pierna YA VENDIDA antes del minuto de salida global se salta: por STOP POR PIERNA, o por
+    # su propia gestión (until_roi/plus venden por umbral y CONGELAN la serie, dejando exit_idx
+    # ANTERIOR a la última fila); en ambos casos se vendió en SU minuto y su valor congelado
+    # no debe pisarse con el bid del minuto de salida global.
     if exit_at_bid and not nbbo_timeline and not merged.empty:
         _exit_ts = merged["timestamp"].iloc[-1]
         _last = merged.index[-1]
+        _leg_sold = {"call_px": (call_exit_reason == "leg_stop_loss"
+                                 or (call_exit_idx is not None and call_exit_idx < _last)),
+                     "put_px": (put_exit_reason == "leg_stop_loss"
+                                or (put_exit_idx is not None and put_exit_idx < _last))}
         for _col, _pick in (("call_px", call_pick), ("put_px", put_pick)):
+            if _leg_sold[_col]:
+                continue
             if (_pick.opening_premium or 0) > 0 and _pick.occ:
                 try:
                     _bid = downloader.option_quote(_pick.occ, date, _exit_ts).get("bid")

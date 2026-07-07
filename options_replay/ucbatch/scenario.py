@@ -95,10 +95,17 @@ def map_scenario(seed: Seed, sc: Scenario) -> MappedScenario:
     cut_weak = _yes(g("Cerrar si confirmación débil")) if confirm else True
     min_body = _num(g("Cuerpo mínimo anti-doji (%)"), 0.0) if confirm else 0.0
 
+    # «Stop por pierna (%) (escenario)» — columna OPCIONAL (estudio refuerzo-vs-contra):
+    # vende la pierna que toca −X% de SU capital y congela su valor; la posición sigue.
+    # Vacía/ausente/0 → None (comportamiento de siempre). Condición POR TICKER → mismo
+    # gate de «Alcance de salida» que umbral/stop del ticker.
+    leg_stop = _num(g("Stop por pierna (%) (escenario)"), 0.0) if tk_on else 0.0
+
     run_kwargs = dict(
         inversion=float(seed.inversion),
         umbral_pct=float(umbral),
         stop_pct=float(stop),
+        leg_stop_pct=(-abs(leg_stop) if leg_stop else None),
         call_pct=float(seed.call_pct),
         selection_criterion=_selection(seed.criterio),
         entry_at_ask=e_ask, exit_at_bid=e_bid, nbbo_timeline=nbbo,

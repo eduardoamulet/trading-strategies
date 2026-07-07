@@ -54,3 +54,6 @@ desktop.ini
 *.log
 *.tmp
 *.bak
+
+# Exports de backtesting (regenerables; los cubre el backup semanal)
+resultados/*.xlsx

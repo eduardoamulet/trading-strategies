@@ -53,6 +53,7 @@ REASON = {
     "weak_confirmation": "Confirmación débil (vela doji, sin convicción)",
     "collective_roi": "ROI colectivo (cartera)",
     "collective_stop": "Stop colectivo (cartera)",
+    "leg_stop_loss": "Stop por pierna",
 }
 
 
@@ -95,10 +96,14 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             confirm_min_body_pct: float = 0.0,
             flip_on_wrong_direction: bool = False,
             cut_weak_confirmation: bool = True,
-            apply_refuerzo: bool = False) -> dict:
+            apply_refuerzo: bool = False,
+            leg_stop_pct: float | None = None) -> dict:
     """Corre 1 iteración. `spec` admite 'ticker' o 'symbol', más 'fecha', 'hora', 'tipo'.
     `selection_criterion` = criterio de selección de contrato ('spread' = Opción 1 menor
     spread; 'itm_first' = Opción 2 primer contrato cerca de ITM, ignora spread y rango).
+    `leg_stop_pct` = STOP POR PIERNA en % (ej. -50 o 50, tolerante al signo; None = off):
+    en tipos de dos piernas vende la pierna que toca -X% de SU capital y congela su valor;
+    la posición sigue hasta su salida normal (ver engine.leg_stop_loss_pct).
     NO usa st.* → seguro en hilos. Devuelve dict con status/iteration/error + datos base."""
     ticker = str(spec.get("ticker") or spec.get("symbol") or "").upper().strip()
     fecha = str(spec.get("fecha") or "").strip()
@@ -237,6 +242,8 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             put_exit_threshold_pct=_umb, put_stop_loss_pct=_stp,
             exit_plus_threshold_pct=_umb, exit_plus_time=_plus_time,
             option_expiry=_intraday_expiry,
+            leg_stop_loss_pct=(float(leg_stop_pct) / 100.0
+                               if leg_stop_pct is not None else None),
         )
         if _cut_reason and not _flip and it is not None:
             it.exit_reason = _cut_reason

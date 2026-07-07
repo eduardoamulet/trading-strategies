@@ -34,7 +34,8 @@ DB_PATH = HERE / "data" / "bt_results.db"
 
 # Bump manual cuando cambie la LÓGICA del motor de backtest (ucbatch/engine): las filas nuevas
 # quedan marcadas y la mezcla de versiones es detectable.
-ENGINE_VERSION = "2026-07-03"
+# 2026-07-06: stop por pierna opcional (leg_stop_loss_pct + «Stop por pierna (%) (escenario)»).
+ENGINE_VERSION = "2026-07-06"
 
 # Combinación de las filas históricas (pre-Combinaciones): el template estático de 480.
 LEGACY_COMBINATION = "tpl480"
