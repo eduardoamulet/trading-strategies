@@ -713,7 +713,14 @@ def launch_reevaluation(fecha_ini: str, fecha_fin: str, tickers: list[str],
 
     import bt_store
 
+    # run_id único al SEGUNDO — dos lanzamientos en el mismo segundo colisionaban (INSERT OR
+    # IGNORE dejaba al segundo batch sin registro propio; pasó el 2026-07-08 relanzando dos
+    # combinaciones seguidas). Si el id ya existe, se le suma un sufijo.
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _sfx = 0
+    while bt_store.get_run(job_id):
+        _sfx += 1
+        job_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{_sfx}"
     seed = _comb.seed_for(combination, fecha_inicial=str(fecha_ini), fecha_final=str(fecha_fin),
                           tickers=list(tickers))
     n_days = len(_ucrun.trading_days(seed.fecha_inicial, seed.fecha_final))

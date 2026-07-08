@@ -1436,32 +1436,66 @@ def _run_one_iteration(
     elif mode == "call_or_put_until_roi":
         # ----- CALL o PUT (Until reach ROI(%)): piernas INDEPENDIENTES -----
         # Se compran ambas; CADA pierna se vende sola cuando SU ROI alcanza el Umbral de
-        # ROI (%) del ticker (exit_threshold_pct); la que no llega, se vende al cierre del
-        # día. Sin Stop loss y sin salida combinada: las piernas no se esperan entre sí.
+        # ROI (%) del ticker (exit_threshold_pct) O cae a su Stop loss (stop_loss_pct —
+        # 2026-07-08: antes el stop se IGNORABA en este modo y una pierna podía sangrar
+        # hasta el cierre con el stop armado; QQQ·PUT −98% con stop en −40 fue el caso).
+        # La que no dispara nada se vende al cierre. Sin salida combinada: las piernas no
+        # se esperan entre sí. Empate exacto (umbral y stop el mismo minuto) → gana el
+        # umbral. Con stop en el centinela (off), el comportamiento es BIT-EXACTO al
+        # anterior (verify-safe para el almacén sin stop armado).
         TARGET_U = float(exit_threshold_pct)
+        STOP_U = float(stop_loss_pct)
+        # Stop ARMADO solo si es un stop real (> −100%): el default del panel con el checkbox
+        # apagado es −1.0 y el centinela del batch −1000.0 — ambos deben dejar el modo
+        # BIT-EXACTO al comportamiento previo (una long no puede perder más del 100%; un
+        # “stop” a −100% solo re-etiquetaría el ride a cero y rompería el verify).
+        _stop_armado = STOP_U > -0.999999
         _last = len(merged) - 1
-        call_hit = _first_pos(pct_call >= TARGET_U) if invest_call else None
-        put_hit = _first_pos(pct_put >= TARGET_U) if invest_put else None
-        if invest_call:
-            call_exit_idx = call_hit if call_hit is not None else _last
-            call_exit_reason = "100%_threshold" if call_hit is not None else "session_end"
-        if invest_put:
-            put_exit_idx = put_hit if put_hit is not None else _last
-            put_exit_reason = "100%_threshold" if put_hit is not None else "session_end"
+
+        def _leg_exit(_pct, _inv):
+            if not _inv:
+                return None, None
+            _up = _first_pos(_pct >= TARGET_U)
+            _dn = _first_pos(_pct <= STOP_U) if _stop_armado else None
+            if _up is None and _dn is None:
+                return _last, "session_end"
+            if _dn is None or (_up is not None and _up <= _dn):
+                return _up, "100%_threshold"
+            return _dn, "stop_loss"
+
+        call_exit_idx, call_exit_reason = _leg_exit(pct_call, invest_call)
+        put_exit_idx, put_exit_reason = _leg_exit(pct_put, invest_put)
         # La iteración termina cuando sale la ÚLTIMA pierna viva.
         _ends = [i for i in (call_exit_idx, put_exit_idx) if i is not None]
         end_pos = max(_ends) if _ends else _last
         merged = merged.iloc[: end_pos + 1].copy()
         # CONGELAR cada pierna desde su venta (mismo patrón que el plus): su valor ya está
-        # bancado y no debe seguir la curva del mercado en el display/ROI total.
-        if call_hit is not None and call_hit < end_pos:
-            merged.loc[call_hit + 1:, "call_px"] = float(merged.loc[call_hit, "call_px"])
-        if put_hit is not None and put_hit < end_pos:
-            merged.loc[put_hit + 1:, "put_px"] = float(merged.loc[put_hit, "put_px"])
+        # bancado y no debe seguir la curva del mercado en el display/ROI total. La venta
+        # por STOP en Fase 1 (sin timeline) usa el BID puntual del minuto — mismo patrón
+        # que el stop por pierna de los modos combinados; en Fase 2 la serie YA es bid.
+        for _col, _pick, _xi, _xr in (
+                ("call_px", call_pick, call_exit_idx, call_exit_reason),
+                ("put_px", put_pick, put_exit_idx, put_exit_reason)):
+            if _xi is None or _xr == "session_end":
+                continue
+            _sell = float(merged.loc[_xi, _col])
+            if (_xr == "stop_loss" and exit_at_bid and not nbbo_timeline
+                    and getattr(_pick, "occ", None)):
+                try:
+                    _b = downloader.option_quote(
+                        _pick.occ, date, merged["timestamp"].iloc[_xi]).get("bid")
+                except Exception:  # noqa: BLE001 — sin quote puntual, queda el mark de barra
+                    _b = None
+                if _b is not None and _b >= 0:
+                    _sell = float(_b)
+                    merged.loc[_xi, _col] = _sell
+            if _xi < end_pos:
+                merged.loc[_xi + 1:, _col] = _sell
         merged["total"] = merged["call_px"] + merged["put_px"]
         merged = merged.reset_index(drop=True)
-        exit_reason = ("100%_threshold" if (call_hit is not None or put_hit is not None)
-                       else "session_end")
+        _reasons = {call_exit_reason, put_exit_reason}
+        exit_reason = ("100%_threshold" if "100%_threshold" in _reasons
+                       else "stop_loss" if "stop_loss" in _reasons else "session_end")
     elif mode == "call_or_put_plus":
         # ----- CALL o PUT (plus): umbral de salida + recuperar inversión total -----
         # 1) La PRIMERA pierna (A) que alcanza `exit_plus_threshold_pct` se vende y

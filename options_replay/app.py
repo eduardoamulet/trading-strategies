@@ -2963,9 +2963,10 @@ with st.sidebar.container():
                                    "para un EOD puro elegí «Aplicar solo a tickers».",
         "CALL o PUT (Until reach ROI(%))": "🎯 **CALL o PUT (Until reach ROI(%))** — se compran ambas "
                                            "piernas (50/50) y **cada una se vende SOLA** cuando alcanza "
-                                           "el **Umbral ROI (%) del ticker**; la que no llega, se vende "
-                                           "**al cierre del día**. Las piernas no se esperan entre sí. "
-                                           "Sin Stop loss (el colectivo, si está activado, sí aplica).",
+                                           "el **Umbral ROI (%) del ticker** o cae a su **Stop loss (%) "
+                                           "del ticker** (si está activado); la que no dispara nada se "
+                                           "vende **al cierre del día**. Las piernas no se esperan "
+                                           "entre sí. El colectivo, si está activado, también aplica.",
     }
     # La descripción de la estrategia se muestra DIRECTAMENTE debajo del dropdown (caption, no
     # expander) → al elegir una estrategia, su info aparece enseguida.

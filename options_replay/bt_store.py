@@ -35,7 +35,10 @@ DB_PATH = HERE / "data" / "bt_results.db"
 # Bump manual cuando cambie la LÓGICA del motor de backtest (ucbatch/engine): las filas nuevas
 # quedan marcadas y la mezcla de versiones es detectable.
 # 2026-07-06: stop por pierna opcional (leg_stop_loss_pct + «Stop por pierna (%) (escenario)»).
-ENGINE_VERSION = "2026-07-06"
+# 2026-07-08: Until-ROI honra el Stop loss del ticker POR PIERNA (antes se ignoraba en ese
+#             modo; con stop off es bit-exacto → solo re-backtestear combinaciones con
+#             escenarios Until-ROI + stop armado).
+ENGINE_VERSION = "2026-07-08"
 
 # Combinación de las filas históricas (pre-Combinaciones): el template estático de 480.
 LEGACY_COMBINATION = "tpl480"
