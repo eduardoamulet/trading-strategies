@@ -74,6 +74,13 @@ def test_rango_prima_fallback(monkeypatch):
     assert (lo, hi) == (0.30, 0.50)
 
 
+def test_norm_occ():
+    # El backtest guarda estilo Polygon («O:…»), el shadow guarda el OCC plano de Alpaca.
+    assert sh._norm_occ("O:QQQ260707C00715000") == "QQQ260707C00715000"
+    assert sh._norm_occ("qqq260707c00715000") == "QQQ260707C00715000"
+    assert sh._norm_occ(None) == ""
+
+
 def test_usar_playbook_default_false(tmp_path, monkeypatch):
     # Sin config → False (entra todos los días hábiles); el checkbox de Operar lo persiste.
     monkeypatch.setattr(sh, "CONFIG_PATH", tmp_path / "shadow_config.json")

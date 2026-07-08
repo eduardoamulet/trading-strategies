@@ -272,14 +272,84 @@ def reporte(n_dias: int = 10) -> int:
     return 0
 
 
+def _norm_occ(occ) -> str:
+    """OCC comparable entre mundos: el backtest guarda estilo Polygon («O:QQQ…»),
+    el shadow guarda el OCC plano de Alpaca."""
+    s = str(occ or "").strip().upper()
+    return s[2:] if s.startswith("O:") else s
+
+
+# ── Fase 1.5: comparar el shadow (vivo) contra el backtest del MISMO día ─────
+def comparar(n_dias: int = 10) -> int:
+    """Para cada entrada shadow: ¿el backtest eligió el MISMO contrato ese día/ticker?
+    ¿cuánto difiere el ask VIVO del ask cacheado (slippage de datos)? Todas las filas de
+    una combinación comparten el contrato por (fecha, ticker) — la selección depende del
+    seed, no de las condiciones de salida — así que basta una fila (MIN id). Preferencia:
+    la combinación registrada en la decisión; si no hay (modo sin playbook), la primera
+    con datos de ese día."""
+    import sqlite3
+    con = _connect()
+    filas = con.execute(
+        "SELECT fecha, hora, ticker, combination, call_occ, call_ask, put_occ, put_ask "
+        "FROM shadow_decisions WHERE decision='entrar' AND fecha >= (SELECT MIN(f) FROM ("
+        "SELECT DISTINCT fecha AS f FROM shadow_decisions ORDER BY fecha DESC LIMIT ?)) "
+        "ORDER BY fecha DESC, ticker", (n_dias,)).fetchall()
+    if not filas:
+        print("[shadow] sin entradas registradas para comparar (decision='entrar').")
+        return 0
+    bt = sqlite3.connect(str(HERE / "data" / "bt_results.db"))
+    bt.execute("PRAGMA busy_timeout=60000")
+    print(f"{'fecha':<11} {'hora':<6} {'tk':<4} {'CALL':<5} {'Δask C':>8} "
+          f"{'PUT':<5} {'Δask P':>8}  referencia")
+    d_c, d_p, m_c, m_p, n_cmp = [], [], 0, 0, 0
+    for f, hora, tk, comb, cocc, cask, pocc, pask in filas:
+        row = bt.execute(
+            "SELECT call_occ, call_entry_prem, put_occ, put_entry_prem, combination "
+            "FROM bt_results WHERE fecha=? AND ticker=? "
+            "ORDER BY CASE WHEN combination=? THEN 0 ELSE 1 END, combination, id LIMIT 1",
+            (f, tk, comb or "")).fetchone()
+        if not row:
+            print(f"{f:<11} {hora:<6} {tk:<4} backtest pendiente (llega con el job de las 05:00)")
+            continue
+        b_cocc, b_cprem, b_pocc, b_pprem, b_comb = row
+        ok_c = _norm_occ(cocc) == _norm_occ(b_cocc)
+        ok_p = _norm_occ(pocc) == _norm_occ(b_pocc)
+        n_cmp += 1
+        m_c += ok_c
+        m_p += ok_p
+        dc = ((cask - b_cprem) / b_cprem * 100.0) if (cask and b_cprem) else None
+        dp = ((pask - b_pprem) / b_pprem * 100.0) if (pask and b_pprem) else None
+        if ok_c and dc is not None:
+            d_c.append(dc)
+        if ok_p and dp is not None:
+            d_p.append(dp)
+        _w = "" if str(hora).startswith("09:3") else " ⚠hora≠apertura"
+        print(f"{f:<11} {hora:<6} {tk:<4} {'✓' if ok_c else '✗':<5} "
+              f"{(f'{dc:+.1f}%' if dc is not None else '—'):>8} "
+              f"{'✓' if ok_p else '✗':<5} "
+              f"{(f'{dp:+.1f}%' if dp is not None else '—'):>8}  "
+              f"{(b_comb or '')[-18:]}{_w}")
+    if n_cmp:
+        print(f"\ncontratos iguales: CALL {m_c}/{n_cmp} · PUT {m_p}/{n_cmp}"
+              + (f" · Δask medio mismo contrato: CALL {sum(d_c) / len(d_c):+.1f}%" if d_c else "")
+              + (f" · PUT {sum(d_p) / len(d_p):+.1f}%" if d_p else ""))
+        print("Δask = (ask vivo del shadow − prima de entrada del backtest) ÷ backtest. "
+              "✗ = eligieron contratos distintos (mirar hora del shadow vs 09:30).")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Shadow trader — decide sin operar (Fase 1)")
     ap.add_argument("--eod", action="store_true", help="capturar bids de cierre del día")
     ap.add_argument("--reporte", type=int, nargs="?", const=10, default=None,
                     metavar="N", help="mostrar las decisiones de los últimos N días")
+    ap.add_argument("--comparar", type=int, nargs="?", const=10, default=None,
+                    metavar="N", help="Fase 1.5: shadow vs backtest de los últimos N días")
     args = ap.parse_args()
     if args.reporte is not None:
         return reporte(args.reporte)
+    if args.comparar is not None:
+        return comparar(args.comparar)
     if args.eod:
         return correr_eod()
     return correr_decision()
