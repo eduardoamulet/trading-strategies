@@ -358,10 +358,17 @@ def compute_churn(history: list, per_day: dict, *, lookback: int = 20,
     return out
 
 
-def _load_history_snapshots(path: Path = HISTORY_PATH, *, solo_incremental: bool = True) -> list:
+def _load_history_snapshots(path: Path = HISTORY_PATH, *, solo_incremental: bool = True,
+                            combination: str | None = None) -> list:
     """Snapshots del history (JSONL) para el churn. Filtra los del modo incremental (una
     reevaluación manual con otro rango elige otro escenario legítimamente y contaminaría la
-    tasa) y deduplica por día de generación quedándose con el último."""
+    tasa) y deduplica por día de generación quedándose con el último.
+
+    `combination`: filtra los snapshots de ESA combinación. Bug 2026-07-08: la historia era
+    global sin atribución y la ACTIVA fue rotando → el churn comparaba campeones de universos
+    DISTINTOS (C0575 del 480 vs C05575 del 12.288…) → 83% de «cambios» falsos → suspensiones
+    masivas injustas. Los snapshots legacy sin campo `combination` se EXCLUYEN al filtrar (no
+    son atribuibles); el churn de cada combinación arranca limpio y junta muestra en días."""
     try:
         lines = Path(path).read_text(encoding="utf-8").splitlines()
     except Exception:  # noqa: BLE001 — sin history todavía
@@ -373,6 +380,8 @@ def _load_history_snapshots(path: Path = HISTORY_PATH, *, solo_incremental: bool
         except Exception:  # noqa: BLE001 — línea corrupta: se salta
             continue
         if solo_incremental and "incremental" not in str(s.get("modo", "")):
+            continue
+        if combination is not None and s.get("combination") != combination:
             continue
         dedup[str(s.get("generado_en", ""))[:10]] = s
     return [dedup[k] for k in sorted(dedup)]
@@ -618,7 +627,8 @@ def build_from_store(*, window_days: int = 120, half_life: int = 35, min_n: int 
         regimen = []
 
     # Monitor churn de veredicto: fragilidad de la selección a lo largo de las re-agregaciones.
-    churn = compute_churn(_load_history_snapshots(), per_day)
+    # SOLO snapshots de ESTA combinación — mezclar universos inventa churn (bug 2026-07-08).
+    churn = compute_churn(_load_history_snapshots(combination=combination), per_day)
     for wd, ch in churn.items():
         i = per_day.get(wd)
         if not i:
@@ -670,6 +680,7 @@ def append_history(pb: dict, path: Path = HISTORY_PATH) -> None:
     """Snapshot COMPACTO del veredicto a un JSONL (auditoría: cómo evolucionan los veredictos
     día a día — el dato que antes se perdía en cada reevaluación)."""
     snap = {"generado_en": pb.get("generado_en"),
+            "combination": pb.get("combination"),   # segrega el churn por combinación
             "evaluado": [pb.get("evaluado_desde"), pb.get("evaluado_hasta")],
             "modo": pb.get("modo", "manual"),
             "per_day": {d: {k: i.get(k) for k in ("scenario", "recommendation", "win_rate",

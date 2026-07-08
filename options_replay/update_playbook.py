@@ -241,9 +241,9 @@ def main() -> None:
         pb = pbs.build_from_store(window_days=args.window, half_life=args.half_life,
                                   min_n=args.min_n, combination=combination)
         pbs.save_playbook(pb, path=pbs.playbook_path_for(combination))   # json por combinación
+        pbs.append_history(pb)                 # historia SEGREGADA por combinación → churn justo
         if _es_activa:
             pbs.save_playbook(pb)              # el vigente de la página
-            pbs.append_history(pb)
         print(f"playbook: {pb['evaluado_desde']} → {pb['evaluado_hasta']} · {pb['modo']}"
               + ("" if _es_activa else " · (json propio; el vigente es el de la activa)"))
         for d, i in pb["per_day"].items():
