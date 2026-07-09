@@ -101,11 +101,17 @@ def map_scenario(seed: Seed, sc: Scenario) -> MappedScenario:
     # gate de «Alcance de salida» que umbral/stop del ticker.
     leg_stop = _num(g("Stop por pierna (%) (escenario)"), 0.0) if tk_on else 0.0
 
+    # «Time-stop hora (escenario)» — columna OPCIONAL (protocolo GEX 2026-07-09): a esa hora,
+    # si el ROI combinado va ≤ −20% (umbral por defecto de run_one), la posición corta ahí.
+    # Vacía/ausente → off. Mismo gate de «Alcance de salida» que las condiciones por ticker.
+    _ts_hora = (str(g("Time-stop hora (escenario)") or "").strip() or None) if tk_on else None
+
     run_kwargs = dict(
         inversion=float(seed.inversion),
         umbral_pct=float(umbral),
         stop_pct=float(stop),
         leg_stop_pct=(-abs(leg_stop) if leg_stop else None),
+        time_stop_hora=_ts_hora,
         call_pct=float(seed.call_pct),
         selection_criterion=_selection(seed.criterio),
         entry_at_ask=e_ask, exit_at_bid=e_bid, nbbo_timeline=nbbo,

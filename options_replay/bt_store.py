@@ -38,7 +38,9 @@ DB_PATH = HERE / "data" / "bt_results.db"
 # 2026-07-08: Until-ROI honra el Stop loss del ticker POR PIERNA (antes se ignoraba en ese
 #             modo; con stop off es bit-exacto → solo re-backtestear combinaciones con
 #             escenarios Until-ROI + stop armado).
-ENGINE_VERSION = "2026-07-08"
+# 2026-07-09: TIME-STOP opcional (protocolo GEX): corta la posición a la hora límite si el
+#             ROI combinado va ≤ umbral (default −20%). Off → bit-exacto (verify-safe).
+ENGINE_VERSION = "2026-07-09"
 
 # Combinación de las filas históricas (pre-Combinaciones): el template estático de 480.
 LEGACY_COMBINATION = "tpl480"

@@ -48,6 +48,7 @@ REASON = {
     "100%_threshold": "Umbral de profit",
     "stop_loss": "Stop loss",
     "session_end": "Cierre (sin trigger)",
+    "time_stop": "Time-stop (pérdida a la hora límite)",
     "overnight_1dte": "Overnight 1DTE",
     "wrong_direction": "Señal en sentido del movimiento equivocado",
     "weak_confirmation": "Confirmación débil (vela doji, sin convicción)",
@@ -97,7 +98,9 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             flip_on_wrong_direction: bool = False,
             cut_weak_confirmation: bool = True,
             apply_refuerzo: bool = False,
-            leg_stop_pct: float | None = None) -> dict:
+            leg_stop_pct: float | None = None,
+            time_stop_hora: str | None = None,
+            time_stop_pct: float = -20.0) -> dict:
     """Corre 1 iteración. `spec` admite 'ticker' o 'symbol', más 'fecha', 'hora', 'tipo'.
     `selection_criterion` = criterio de selección de contrato ('spread' = Opción 1 menor
     spread; 'itm_first' = Opción 2 primer contrato cerca de ITM, ignora spread y rango).
@@ -244,6 +247,8 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             option_expiry=_intraday_expiry,
             leg_stop_loss_pct=(float(leg_stop_pct) / 100.0
                                if leg_stop_pct is not None else None),
+            time_stop_hora=time_stop_hora,
+            time_stop_roi_pct=float(time_stop_pct) / 100.0,
         )
         if _cut_reason and not _flip and it is not None:
             it.exit_reason = _cut_reason

@@ -62,7 +62,10 @@ COND_COLS = ["Alcance de salida", "Aplicar refuerzo", "Umbral pérdida refuerzo 
 # usa el «Tipo de operacion» global del seed, como siempre.
 # «Stop por pierna (%) (escenario)»: stop POR PIERNA del estudio refuerzo-vs-contra (vende la
 # pierna que toca −X% de su capital y congela su valor; la posición sigue). Vacía o 0 → off.
-COND_COLS_OPT = ["Tipo de operación (escenario)", "Stop por pierna (%) (escenario)"]
+# «Time-stop hora (escenario)»: corta la posición a esa hora si el ROI combinado va ≤ −20%
+# (protocolo GEX: el theta de la tarde cobra más de lo que una reversión paga). Vacía → off.
+COND_COLS_OPT = ["Tipo de operación (escenario)", "Stop por pierna (%) (escenario)",
+                 "Time-stop hora (escenario)"]
 
 
 # ── Infraestructura ───────────────────────────────────────────────────────────

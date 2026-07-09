@@ -938,6 +938,8 @@ def run_next_iteration(
     search_window_min: float = 0.0,
     option_expiry: Optional[str] = None,
     leg_stop_loss_pct: Optional[float] = None,
+    time_stop_hora: Optional[str] = None,
+    time_stop_roi_pct: float = -0.20,
 ) -> IterationResult:
     """Run a single iteration starting at `start_ts`. Public wrapper that loads
     underlying + chain from the downloader cache and then invokes the iteration
@@ -1028,6 +1030,8 @@ def run_next_iteration(
         nbbo_timeline=nbbo_timeline,
         search_window_min=search_window_min,
         leg_stop_loss_pct=leg_stop_loss_pct,
+        time_stop_hora=time_stop_hora,
+        time_stop_roi_pct=time_stop_roi_pct,
     )
 
 
@@ -1274,6 +1278,8 @@ def _run_one_iteration(
     nbbo_timeline: bool = False,
     search_window_min: float = 0.0,
     leg_stop_loss_pct: Optional[float] = None,
+    time_stop_hora: Optional[str] = None,
+    time_stop_roi_pct: float = -0.20,
 ) -> IterationResult:
     # En single-leg, la inversión del leg no usado debe ser 0 para que el ROI
     # ponderado refleje SOLO la pierna activa (de lo contrario el invest "fantasma"
@@ -1359,6 +1365,28 @@ def _run_one_iteration(
 
     def _first_pos(mask) -> Optional[int]:
         return int(mask.values.argmax()) if bool(mask.any()) else None
+
+    # ----- TIME-STOP (opcional; protocolo GEX 2026-07-09) -----
+    # `time_stop_hora` ("HH:MM") + `time_stop_roi_pct` (fracción, ej. −0.20): a esa hora, si
+    # el ROI combinado va ≤ umbral, la posición se corta AHÍ — el theta 0DTE de la tarde cobra
+    # más rápido de lo que cualquier reversión paga (evidencia: estudio refuerzo-vs-contra +
+    # barrido 2022-25). Implementación: el día se TRUNCA en esa barra ANTES de todo (sin mirar
+    # el futuro: lo que pase después no existe para ningún trigger); si nada más dispara dentro
+    # del tramo, la salida final se re-etiqueta "time_stop" (abajo). Si a esa hora el ROI está
+    # POR ENCIMA del umbral, el día sigue completo — las ganadoras no se tocan. Off → bit-exacto.
+    _time_stop_at: Optional[int] = None
+    if time_stop_hora and not merged.empty:
+        try:
+            _tsh, _tsm = str(time_stop_hora).split(":")
+            _mins = merged["timestamp"].dt.hour * 60 + merged["timestamp"].dt.minute
+            _idx_ts = _first_pos(_mins >= int(_tsh) * 60 + int(_tsm))
+        except Exception:  # noqa: BLE001 — hora ilegible = time-stop apagado
+            _idx_ts = None
+        if _idx_ts is not None and _idx_ts > 0:
+            if float(pct_total.iloc[_idx_ts]) <= -abs(float(time_stop_roi_pct)):
+                merged = merged.iloc[:_idx_ts + 1].copy()
+                pct_call, pct_put, pct_total = _pct_series()
+                _time_stop_at = _idx_ts
 
     # ----- STOP POR PIERNA (opcional; mecánica del estudio refuerzo-vs-contra 2026-07) -----
     # `leg_stop_loss_pct` (fracción, ej. -0.50): en modos de DOS piernas con salida conjunta,
@@ -1625,6 +1653,17 @@ def _run_one_iteration(
         call_exit_idx, call_exit_reason = None, ""
     if put_exit_reason == "leg_stop_loss" and put_exit_idx >= len(merged):
         put_exit_idx, put_exit_reason = None, ""
+
+    # TIME-STOP: si el día quedó truncado a la hora límite y la posición (o una pierna) llegó
+    # VIVA a esa última barra sin otro trigger, la salida es del time-stop — etiquetarla
+    # "session_end" sería mentira: eran las 11:30, no el cierre.
+    if _time_stop_at is not None:
+        if exit_reason == "session_end":
+            exit_reason = "time_stop"
+        if call_exit_reason == "session_end":
+            call_exit_reason = "time_stop"
+        if put_exit_reason == "session_end":
+            put_exit_reason = "time_stop"
 
     # exit_at_bid (Fase 1): la venta se realiza al BID del NBBO al minuto de salida (lo que
     # REALMENTE cobrás), no al precio del bar. Ajusta SOLO la última fila (la salida); el resto

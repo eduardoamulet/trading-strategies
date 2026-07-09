@@ -214,8 +214,14 @@ def scenario_run_overrides(cfg: dict) -> dict:
         if profit is not None or cstop is not None:
             collective = {"profit_frac": profit, "stop_frac": cstop}
 
+    # Columnas OPCIONALES de combinación (mismo gate por ticker que umbral/stop):
+    _leg = _fnum(cfg.get("Stop por pierna (%) (escenario)"))
+    _tsh = str(cfg.get("Time-stop hora (escenario)") or "").strip() or None
+
     return {
         "umbral_pct": umbral, "stop_pct": stop,
+        "leg_stop_pct": (-abs(float(_leg)) if (tk_on and _leg) else None),
+        "time_stop_hora": (_tsh if tk_on else None),
         "apply_refuerzo": bool(flag_on(cfg.get("refuerzo"), default=False)),
         "refuerzo_loss_pct": float(_fnum(cfg.get("refuerzo_umbral")) or 50.0) / 100.0,
         "refuerzo_max": int(_fnum(cfg.get("refuerzo_n")) or 2),

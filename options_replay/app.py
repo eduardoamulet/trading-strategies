@@ -43,6 +43,7 @@ _REASON_LABELS = {
     "100%_threshold": "Exit por umbral de profit",
     "stop_loss": "Exit por STOP LOSS",
     "session_end": "Sin trigger — corre hasta cierre",
+    "time_stop": "Time-stop (pérdida a la hora límite)",
     "overnight_1dte": "Venta overnight (1 DTE, día hábil siguiente)",
     "wrong_direction": "Señal en sentido del movimiento equivocado",
     "weak_confirmation": "Confirmación débil (vela doji, sin convicción)",
@@ -102,6 +103,7 @@ _REASON_ICONS = {
     "100%_threshold": "🎯",
     "stop_loss": "🛑",
     "session_end": "🕓",
+    "time_stop": "⏲",
     "overnight_1dte": "🌙",
     "wrong_direction": "🧭",
     "weak_confirmation": "〰️",
@@ -1824,6 +1826,24 @@ def _render_iters_panel(_iters_seed):
                          "la pérdida (por contrato del ticker). Ej: −40 = corta al perder 40%; −100 = sin stop efectivo."))
                 if not _sig_apply_stop:
                     _sig_stop = -100000.0   # check OFF → el stop nunca se alcanza
+            # ── Time-stop (protocolo GEX): cortar a la hora límite si la posición va perdiendo ──
+            _ts1, _ts2, _ts3 = st.columns([1.8, 1, 1])
+            _sig_apply_tstop = _ts1.checkbox(
+                "Cerrar por Time-stop (pérdida a la hora límite)", value=False,
+                key="sig_apply_tstop", disabled=not _tk_on,
+                help="A la hora límite, si el ROI combinado de la posición va POR DEBAJO del "
+                     "umbral, se corta AHÍ: el theta 0DTE de la tarde cobra más rápido de lo "
+                     "que una reversión suele pagar (evidencia del barrido 2022-2025). Si a "
+                     "esa hora va por encima del umbral, la posición sigue su curso normal.")
+            _sig_tstop_hora = _ts2.selectbox(
+                "Hora límite", ["11:00", "11:30", "12:00", "12:30"], index=1,
+                key="sig_tstop_hora", disabled=not _sig_apply_tstop or not _tk_on,
+                help="La hora del chequeo (hora de NY).")
+            _sig_tstop_pct = float(_ts3.number_input(
+                "Umbral ROI (%) del time-stop", value=-20.0, step=5.0, max_value=0.0,
+                key="sig_tstop_pct", disabled=not _sig_apply_tstop or not _tk_on,
+                help="Corta a la hora límite solo si el ROI combinado va ≤ este valor."))
+            _sig_tstop = _sig_tstop_hora if (_sig_apply_tstop and _tk_on) else None
             # ── Filtro de confirmación de la 1ª vela (gestión POR TICKER: cierra / da vuelta la pierna) ──
             _cf_left, _cf_right = st.columns(2)
             with _cf_left:
@@ -2002,7 +2022,10 @@ def _render_iters_panel(_iters_seed):
                     confirm_min_body_pct=(_ov["confirm_min_body_pct"] if _ov else _sig_min_body),
                     flip_on_wrong_direction=(_ov["flip_on_wrong_direction"] if _ov else _sig_flip),
                     apply_refuerzo=(_ov["apply_refuerzo"] if _ov else _sig_apply_ref),
-                    cut_weak_confirmation=(_ov["cut_weak_confirmation"] if _ov else _sig_cut_weak)))
+                    cut_weak_confirmation=(_ov["cut_weak_confirmation"] if _ov else _sig_cut_weak),
+                    leg_stop_pct=(_ov.get("leg_stop_pct") if _ov else None),
+                    time_stop_hora=(_ov.get("time_stop_hora") if _ov else _sig_tstop),
+                    time_stop_pct=(_sig_tstop_pct if not _ov else -20.0)))
             _dn = 0
             for _f in as_completed(_futs):
                 try:
@@ -4827,8 +4850,8 @@ def _render_signals_session(rs):
     # umbral/stop/cierre van SIEMPRE (aunque tengan 0); wrong_direction/overnight solo si aparecen.
     _reason_opts = []
     for _rk, _always in (("100%_threshold", True), ("stop_loss", True), ("session_end", True),
-                         ("wrong_direction", False), ("weak_confirmation", False),
-                         ("overnight_1dte", False)):
+                         ("time_stop", False), ("wrong_direction", False),
+                         ("weak_confirmation", False), ("overnight_1dte", False)):
         _cell = f"{_REASON_ICONS.get(_rk, '•')} {_REASON_LABELS.get(_rk, _rk)}"
         if _always or _reason_counts.get(_cell, 0) > 0:
             _reason_opts.append(_cell)
@@ -5200,6 +5223,7 @@ if _mode == "range":
             for _rk, _tag, _always in (("100%_threshold", "umbral", True),
                                        ("stop_loss", "stop", True),
                                        ("session_end", "cierre", True),
+                                       ("time_stop", "time-stop", False),
                                        ("overnight_1dte", "overnight", False)):
                 _cell = f"{_REASON_ICONS.get(_rk, '•')} {_REASON_LABELS.get(_rk, _rk)}"
                 if _always or _reason_counts.get(_cell, 0) > 0:
