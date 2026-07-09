@@ -115,6 +115,35 @@ class _UnTick:
         yield start
 
 
+def _pdt_guard(broker) -> tuple:
+    """(ok, msg) — regla Pattern Day Trader ANTES de abrir posiciones: con equity < $25k en
+    cuenta margin, máx 3 day-trades por 5 días hábiles (un 0DTE comprado y vendido el mismo
+    día = 1 day-trade). Lee la VERDAD del broker (Alpaca expone daytrade_count y
+    pattern_day_trader en la cuenta); fuentes sin ese dato (Replay/Tradier sandbox) pasan
+    con nota. Solo bloquea COMPRAS — cerrar posiciones no se bloquea jamás (atrapar un 0DTE
+    abierto sería peor que la multa)."""
+    tc = getattr(broker, "_trade", None)
+    if tc is None or not hasattr(tc, "get_account"):
+        return True, "PDT: esta fuente no expone datos de cuenta (replay/sandbox) — sin límite."
+    try:
+        a = tc.get_account()
+        eq = float(getattr(a, "equity", 0) or 0)
+        dt = getattr(a, "daytrade_count", None)
+        dt = int(dt) if dt is not None else None
+        if eq >= 25000:
+            return True, (f"PDT: equity ${eq:,.0f} ≥ $25k — sin límite de day-trades"
+                          + (f" (usados 5d: {dt})" if dt is not None else "") + ".")
+        if dt is not None and dt >= 3:
+            return False, (f"PDT: equity ${eq:,.0f} < $25k y ya hay {dt} day-trades en la "
+                           "ventana de 5 días hábiles — una compra 0DTE más (con su venta "
+                           "hoy) violaría la regla. Compra bloqueada por seguridad.")
+        return True, (f"PDT: equity ${eq:,.0f} < $25k — quedan {max(0, 3 - (dt or 0))} "
+                      "day-trade(s) en 5 días hábiles; cada ticker 0DTE comprado y vendido "
+                      "hoy consume uno.")
+    except Exception as e:  # noqa: BLE001 — el guard nunca rompe la página
+        return True, f"PDT: no se pudo leer la cuenta ({type(e).__name__}) — sin chequeo."
+
+
 def _alerts_handoff_view() -> None:
     """🔔 Alertas traídas de «Investep Academy IA» (botón «Operar → Live»): previsualiza el
     contrato por alerta con la selección de la casa (menor spread en rango óptimo) contra la
@@ -192,8 +221,10 @@ def _alerts_handoff_view() -> None:
         _n_ok = sum(1 for r in _pv if r["Estado"] == "✅ lista")
         st.caption(f"{_n_ok} de {len(_pv)} lista(s). Si cambiás la inversión o la fuente, "
                    "volvé a previsualizar (la compra usa exactamente esta vista).")
+        _ok_pdt, _msg_pdt = _pdt_guard(broker)
+        st.caption(("🛡 " if _ok_pdt else "⛔ ") + _msg_pdt)
         if st.button(f"✅ Comprar {_n_ok} (paper) — LIMIT al ask", type="primary",
-                     disabled=_n_ok == 0, key="live_ho_buy"):
+                     disabled=(_n_ok == 0) or not _ok_pdt, key="live_ho_buy"):
             _res = []
             for r in _pv:
                 if r["Estado"] != "✅ lista":
@@ -325,18 +356,22 @@ def live_view():
         if ok and prop:
             st.success(f"🎯 Propuesta del sistema: **{prop}**")
             if st.button("▶ Comprar propuesta (paper)", type="primary", use_container_width=True):
-                try:
-                    st.session_state["live_pos"] = lc.buy_proposal(broker, market, now, p["ticker"], expiry, p, cand)
-                    st.session_state["live_marks"] = []
-                    st.session_state["live_fills"] = [
-                        {"hora": str(now)[11:16], "occ": l["occ"], "lado": "BUY",
-                         "qty": l["qty"], "precio": l["entry_price"]}
-                        for l in st.session_state["live_pos"]["legs"]]
-                    st.session_state["live_fetch_once"] = True
-                    st.session_state.pop("live_m", None)
-                    st.rerun()
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"No se pudo comprar: {e}")
+                _ok_pdt, _msg_pdt = _pdt_guard(broker)
+                if not _ok_pdt:
+                    st.error("⛔ " + _msg_pdt)
+                else:
+                    try:
+                        st.session_state["live_pos"] = lc.buy_proposal(broker, market, now, p["ticker"], expiry, p, cand)
+                        st.session_state["live_marks"] = []
+                        st.session_state["live_fills"] = [
+                            {"hora": str(now)[11:16], "occ": l["occ"], "lado": "BUY",
+                             "qty": l["qty"], "precio": l["entry_price"]}
+                            for l in st.session_state["live_pos"]["legs"]]
+                        st.session_state["live_fetch_once"] = True
+                        st.session_state.pop("live_m", None)
+                        st.rerun()
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"No se pudo comprar: {e}")
         else:
             st.info("Esperando un contrato candidato que pase Opción 1 (prima en rango + spread). "
                     "Prendé **🔴 Captura en vivo** o tocá **🔄 Actualizar ahora**.")
