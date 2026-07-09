@@ -1812,13 +1812,16 @@ def _render_iters_panel(_iters_seed):
                     disabled=not _tk_on,
                     help="Si está activo, cada iteración/pierna CORTA la pérdida al tocar el Stop loss de "
                          "abajo. Si NO, no hay stop (aguanta hasta cierre / otra condición).")
-                if float(st.session_state.get("sig_stop", -80.0)) > 0:   # el stop SIEMPRE es ≤ 0
+                if float(st.session_state.get("sig_stop", -40.0)) > 0:   # el stop SIEMPRE es ≤ 0
                     st.session_state["sig_stop"] = -abs(float(st.session_state["sig_stop"]))
+                # Default −40 (antes −80): el barrido 2022-2025 mostró que cortar la pierna
+                # perdedora TEMPRANO es la mejor mecánica (+1.5 pp/día con corte a −40), y a −80
+                # el freno llega cuando ya casi no queda nada que salvar (2026-07-09).
                 _sig_stop = float(st.number_input(
-                    "Stop loss (%) del ticker", value=-80.0, step=10.0, key="sig_stop",
+                    "Stop loss (%) del ticker", value=-40.0, step=10.0, key="sig_stop",
                     max_value=0.0, disabled=not _sig_apply_stop or not _tk_on,
                     help="ROI(%) NEGATIVO (≤ 0; el campo no acepta positivos) al que CADA iteración/pierna CORTA "
-                         "la pérdida (por contrato del ticker). Ej: −80 = corta al perder 80%; −100 = sin stop efectivo."))
+                         "la pérdida (por contrato del ticker). Ej: −40 = corta al perder 40%; −100 = sin stop efectivo."))
                 if not _sig_apply_stop:
                     _sig_stop = -100000.0   # check OFF → el stop nunca se alcanza
             # ── Filtro de confirmación de la 1ª vela (gestión POR TICKER: cierra / da vuelta la pierna) ──
