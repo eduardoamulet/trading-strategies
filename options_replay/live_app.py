@@ -472,6 +472,44 @@ def live_view():
 live_view()
 
 
+# ── 🧲 GEX del día: el clasificador de régimen (dealers largos/cortos gamma) ──
+st.divider()
+with st.expander("🧲 GEX del día — régimen de dealers (rango vs tendencia)", expanded=False):
+    try:
+        import gex as _gexm
+        from datetime import date as _date
+        _hoy_gx = _date.today().isoformat()
+        _rows_gx = []
+        for _tk_gx in ("QQQ", "SPY", "IWM"):
+            _g = _gexm.gex_mas_reciente(_tk_gx, _hoy_gx)
+            if not _g:
+                _rows_gx.append({"Ticker": _tk_gx, "Referencia": "sin snapshot",
+                                 "Régimen": "—", "GEX (M$/1%)": None, "Flip": None,
+                                 "Spot": None, "Δ vs flip %": None,
+                                 "Call wall": None, "Put wall": None})
+                continue
+            _rows_gx.append({"Ticker": _tk_gx,
+                             "Referencia": f"{_g['fecha']} {_g['momento']}",
+                             "Régimen": _g["regimen"],
+                             "GEX (M$/1%)": _g["gex_total_musd"],
+                             "Flip": _g["flip"], "Spot": _g["spot"],
+                             "Δ vs flip %": _g["spot_vs_flip_pct"],
+                             "Call wall": _g["call_wall"], "Put wall": _g["put_wall"]})
+        st.dataframe(pd.DataFrame(_rows_gx).style.map(
+            lambda v: ("color:#16a34a;font-weight:700" if "GEX+" in str(v)
+                       else "color:#dc2626;font-weight:700" if "GEX-" in str(v) else ""),
+            subset=["Régimen"]), hide_index=True, use_container_width=True)
+        st.caption("**Cómo leerlo** — 🟢 rango (GEX+): dealers largos gamma amortiguan el "
+                   "movimiento → pinning/lateral: el enemigo del straddle comprado es el "
+                   "theta (time-stop, no girar). 🔴 tendencia (GEX−): sus coberturas "
+                   "ACELERAN el movimiento → dejá correr la ganadora y cortá rápido la "
+                   "perdedora; girar solo acá. **Flip** = nivel zero-gamma (cruzarlo cambia "
+                   "el régimen) · **walls** = strikes imán/freno por gamma×OI. Convención "
+                   "naive con OI D-1 y universo DTE≤5 ±10% — clasificador de régimen, no "
+                   "oráculo. Fuente: snapshots 09:35/15:45 · `py gex.py`.")
+    except Exception as _ge:  # noqa: BLE001 — el GEX nunca rompe la página
+        st.caption(f"GEX no disponible: {_ge}")
+
 # ── 🕶 Shadow trader (Fase 1): decisión diaria SIN operar ─────────────────────
 st.divider()
 with st.expander("🕶 Shadow trader — decisión diaria sin operar (Fase 1)", expanded=False):
@@ -501,16 +539,19 @@ with st.expander("🕶 Shadow trader — decisión diaria sin operar (Fase 1)", 
                                   if _sh_pb else "entrará todos los días hábiles"))
     try:
         _con_sh = _sq.connect(str(DATA_DIR / "shadow_trader.db"))
+        _tiene_gx = {r[1] for r in _con_sh.execute("PRAGMA table_info(shadow_decisions)")}
+        _col_gx = ("COALESCE(gex_regimen,'')" if "gex_regimen" in _tiene_gx else "''")
         _rows_sh = _con_sh.execute(
             "SELECT fecha, weekday, ticker, decision, COALESCE(call_occ,''), "
             "COALESCE(call_ask,''), COALESCE(put_occ,''), COALESCE(put_ask,''), "
-            "COALESCE(costo_estimado,''), COALESCE(motivo,'') FROM shadow_decisions "
-            "ORDER BY fecha DESC, ticker LIMIT 15").fetchall()
+            f"COALESCE(costo_estimado,''), {_col_gx}, COALESCE(motivo,'') "
+            "FROM shadow_decisions ORDER BY fecha DESC, ticker LIMIT 15").fetchall()
         _con_sh.close()
         if _rows_sh:
             st.dataframe(pd.DataFrame(_rows_sh, columns=[
                 "Fecha", "Día", "Ticker", "Decisión", "CALL", "ask C", "PUT", "ask P",
-                "Costo $", "Motivo"]), hide_index=True, use_container_width=True)
+                "Costo $", "Régimen GEX", "Motivo"]), hide_index=True,
+                use_container_width=True)
         else:
             st.caption("Todavía sin decisiones registradas — la primera cae el próximo "
                        "día hábil a las 09:31.")

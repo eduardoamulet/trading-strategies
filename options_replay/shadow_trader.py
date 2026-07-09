@@ -61,9 +61,30 @@ def _connect() -> sqlite3.Connection:
         put_occ TEXT,  put_bid REAL,  put_ask REAL,  put_qty INTEGER,
         costo_estimado REAL,
         eod_call_bid REAL, eod_put_bid REAL, eod_ts TEXT,
+        gex_regimen TEXT, gex_flip REAL, gex_ref TEXT,
         creado_en TEXT,
         PRIMARY KEY (fecha, ticker))""")
+    # Migración de bases anteriores al GEX (ALTER idempotente por columna).
+    _tiene = {r[1] for r in con.execute("PRAGMA table_info(shadow_decisions)")}
+    for _c, _t in (("gex_regimen", "TEXT"), ("gex_flip", "REAL"), ("gex_ref", "TEXT")):
+        if _c not in _tiene:
+            con.execute(f"ALTER TABLE shadow_decisions ADD COLUMN {_c} {_t}")
     return con
+
+
+def _gex_de(ticker: str, fecha: str) -> dict:
+    """Régimen GEX más fresco disponible para estampar en la decisión (a las 09:31 el
+    snapshot de 09:35 aún no existe → cae al cierre/apertura previo; la referencia usada
+    queda registrada en gex_ref). Nunca tumba la decisión."""
+    try:
+        import gex
+        g = gex.gex_mas_reciente(ticker, fecha)
+        if g:
+            return {"gex_regimen": g.get("regimen"), "gex_flip": g.get("flip"),
+                    "gex_ref": f"{g.get('fecha')} {g.get('momento')}"}
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
 
 
 def _grabar(con: sqlite3.Connection, fila: dict) -> None:
@@ -158,7 +179,8 @@ def correr_decision() -> int:
 
     if decision != "entrar":
         for tk in TICKERS:
-            _grabar(con, {**base, "ticker": tk, "decision": "saltear", "motivo": motivo})
+            _grabar(con, {**base, "ticker": tk, "decision": "saltear", "motivo": motivo,
+                          **_gex_de(tk, fecha)})
         print(f"[shadow] {fecha} ({wd}): SALTEAR los {len(TICKERS)} tickers — {motivo}")
         return 0
 
@@ -177,6 +199,7 @@ def correr_decision() -> int:
 
     rc = 0
     for tk in TICKERS:
+        base_tk = {**base, **_gex_de(tk, fecha)}
         try:
             expiry = market.nearest_expiry(tk, fecha) or fecha
             lo, hi = _rango_prima(tk)
@@ -189,7 +212,7 @@ def correr_decision() -> int:
                                                params, gate)
             spot = market.underlying_price(tk, None)
             if call is None or put is None:
-                _grabar(con, {**base, "ticker": tk, "decision": "error", "spot": spot,
+                _grabar(con, {**base_tk, "ticker": tk, "decision": "error", "spot": spot,
                               "motivo": f"sin contrato en rango ${lo:.2f}-${hi:.2f} "
                                         f"(ventana {WINDOW_MIN:.0f} min)"})
                 print(f"[shadow] {tk}: sin contrato en rango — registrado.")
@@ -197,7 +220,7 @@ def correr_decision() -> int:
             cq, pq = call.quote, put.quote
             c_qty, p_qty = _qty(INVERSION / 2, cq.ask), _qty(INVERSION / 2, pq.ask)
             costo = (c_qty * cq.ask + p_qty * pq.ask) * 100.0
-            _grabar(con, {**base, "ticker": tk, "decision": "entrar", "motivo": motivo,
+            _grabar(con, {**base_tk, "ticker": tk, "decision": "entrar", "motivo": motivo,
                           "spot": spot,
                           "call_occ": call.occ, "call_bid": cq.bid, "call_ask": cq.ask,
                           "call_qty": c_qty,
@@ -207,7 +230,7 @@ def correr_decision() -> int:
                   f"PUT {put.occ} ask {pq.ask:.2f} ×{p_qty} | costo ~${costo:,.0f}")
         except Exception as e:  # noqa: BLE001 — un ticker no tumba a los demás
             rc = 1
-            _grabar(con, {**base, "ticker": tk, "decision": "error",
+            _grabar(con, {**base_tk, "ticker": tk, "decision": "error",
                           "motivo": f"{type(e).__name__}: {e}"})
             print(f"[shadow] {tk}: ERROR {e}")
     return rc
