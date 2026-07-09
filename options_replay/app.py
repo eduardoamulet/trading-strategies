@@ -80,6 +80,19 @@ def _max_leg_rois(it) -> str:
     return ("  ·  máx " + " / ".join(_parts)) if _parts else ""
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _gex_regimen_cacheado(fecha, ticker) -> str | None:
+    """Régimen GEX del día (snapshot de apertura) para enriquecer los resultados del
+    backtest — disponible desde que existen los snapshots (2026-07-05); fechas anteriores
+    devuelven None (no hay griegas/OI históricos comprables). Cacheado 10 min."""
+    try:
+        import gex as _gx
+        g = _gx.leer_gex(str(fecha), str(ticker).upper(), "apertura")
+        return (g or {}).get("regimen")
+    except Exception:  # noqa: BLE001 — el GEX nunca rompe el render
+        return None
+
+
 def _colectivo_tag(it) -> str:
     """Ícono al FINAL del título cuando a la iteración la cerró la salida COLECTIVA (cartera):
     🧺✅ = cruzó el Umbral de ROI colectivo · 🧺🛑 = disparó el Stop loss colectivo. El motivo
@@ -4653,7 +4666,14 @@ def render_roi_heatmap(records: list, key_prefix: str = "roi_hm", coll_exit_thr:
                 _roi_txt_d = f"ROI: {_roi_d:+.1f}% / ${_g_d:+,.2f}"
                 _roi_col_d = (f":green[**{_roi_txt_d}**]" if _roi_d > 0
                               else f":red[**{_roi_txt_d}**]")
-                st.markdown(f"##### 📅 {_f_hm}{_wd_hm} · {_roi_col_d}{_mx_txt}")
+                # 🧲 Régimen GEX del día (si hay snapshot de esa fecha): uniforme o mixto.
+                _regs_d = {_gex_regimen_cacheado(_f_hm, _r.get("ticker"))
+                           for _r in _recs_hm} - {None}
+                _gx_txt = ""
+                if _regs_d:
+                    _gx_txt = " · 🧲 " + (next(iter(_regs_d)) if len(_regs_d) == 1
+                                          else "mixto: " + " / ".join(sorted(_regs_d)))
+                st.markdown(f"##### 📅 {_f_hm}{_wd_hm} · {_roi_col_d}{_mx_txt}{_gx_txt}")
             # Resumen de cierres SIEMPRE visible; la grilla minuto a minuto, a demanda (botón).
             _df_rc = _resumen_cierres(_hs_hm)
             if not _df_rc.empty:
@@ -4914,6 +4934,7 @@ def _render_signals_session(rs):
             "Máx CALL %": (round(_mx_call, 1) if _mx_call is not None else None),
             "Máx PUT %": (round(_mx_put, 1) if _mx_put is not None else None),
             "Refuerzos": int(it.refuerzo["n"]) if getattr(it, "refuerzo", None) else 0,
+            "GEX del día": _gex_regimen_cacheado(r["fecha"], r["ticker"]) or "—",
         })
 
     # ── Tabla ordenable de señales (pedido UX 2026-07-05): las columnas del header de cada
@@ -4933,7 +4954,16 @@ def _render_signals_session(rs):
                 "Máx PUT %": st.column_config.NumberColumn(
                     format="%.1f%%", help="ROI máximo que alcanzó la pierna PUT mientras "
                                           "la posición estuvo abierta."),
+                "GEX del día": st.column_config.TextColumn(
+                    help="Régimen de dealers del snapshot de apertura (09:35): rango (GEX+) "
+                         "= amortiguan el movimiento · tendencia (GEX−) = lo aceleran. "
+                         "Disponible desde 2026-07-05 (cuando empezaron los snapshots); "
+                         "fechas anteriores muestran —."),
             })
+        st.caption("🧲 **GEX del día**: ordená por esta columna para cruzar P&L × régimen "
+                   "(la hipótesis del protocolo: en GEX+ el straddle comprado sufre por "
+                   "theta; en GEX− la pierna ganadora corre). La columna se llena solo para "
+                   "fechas con snapshot — crece a diario.")
     if errs:
         with st.expander(f"❌ Señales sin resultado ({len(errs)})", expanded=False):
             for r in errs:
