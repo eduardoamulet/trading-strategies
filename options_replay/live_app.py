@@ -480,13 +480,16 @@ with st.expander("🧲 GEX del día — régimen de dealers (rango vs tendencia)
         from datetime import date as _date
         _hoy_gx = _date.today().isoformat()
         _rows_gx = []
+        import skew as _skewm
         for _tk_gx in ("QQQ", "SPY", "IWM"):
             _g = _gexm.gex_mas_reciente(_tk_gx, _hoy_gx)
+            _s = _skewm.skew_mas_reciente(_tk_gx, _hoy_gx)
             if not _g:
                 _rows_gx.append({"Ticker": _tk_gx, "Referencia": "sin snapshot",
                                  "Régimen": "—", "GEX (M$/1%)": None, "Flip": None,
                                  "Spot": None, "Δ vs flip %": None,
-                                 "Call wall": None, "Put wall": None})
+                                 "Call wall": None, "Put wall": None,
+                                 "Skew 25Δ (pts)": None})
                 continue
             _rows_gx.append({"Ticker": _tk_gx,
                              "Referencia": f"{_g['fecha']} {_g['momento']}",
@@ -494,7 +497,8 @@ with st.expander("🧲 GEX del día — régimen de dealers (rango vs tendencia)
                              "GEX (M$/1%)": _g["gex_total_musd"],
                              "Flip": _g["flip"], "Spot": _g["spot"],
                              "Δ vs flip %": _g["spot_vs_flip_pct"],
-                             "Call wall": _g["call_wall"], "Put wall": _g["put_wall"]})
+                             "Call wall": _g["call_wall"], "Put wall": _g["put_wall"],
+                             "Skew 25Δ (pts)": (_s or {}).get("skew_pts")})
         st.dataframe(pd.DataFrame(_rows_gx).style.map(
             lambda v: ("color:#16a34a;font-weight:700" if "GEX+" in str(v)
                        else "color:#dc2626;font-weight:700" if "GEX-" in str(v) else ""),
@@ -506,7 +510,10 @@ with st.expander("🧲 GEX del día — régimen de dealers (rango vs tendencia)
                    "perdedora; girar solo acá. **Flip** = nivel zero-gamma (cruzarlo cambia "
                    "el régimen) · **walls** = strikes imán/freno por gamma×OI. Convención "
                    "naive con OI D-1 y universo DTE≤5 ±10% — clasificador de régimen, no "
-                   "oráculo. Fuente: snapshots 09:35/15:45 · `py gex.py`.")
+                   "oráculo. **Skew 25Δ** = IV(put) − IV(call) del vencimiento más cercano: "
+                   "alto/subiendo = pagan caro el seguro a la baja (sesgo bajista de fondo); "
+                   "aplanándose = risk-on. Fuente: snapshots 09:35/15:45 · `py gex.py` · "
+                   "`py skew.py`.")
     except Exception as _ge:  # noqa: BLE001 — el GEX nunca rompe la página
         st.caption(f"GEX no disponible: {_ge}")
 
