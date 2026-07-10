@@ -80,6 +80,37 @@ def _max_leg_rois(it) -> str:
     return ("  ·  máx " + " / ".join(_parts)) if _parts else ""
 
 
+def _leyenda_iconos() -> None:
+    """ℹ️ Leyenda compacta de TODOS los íconos/marcadores de los resultados (títulos de
+    señal, tabla y heatmap) — pedido UX 2026-07-10."""
+    with st.expander("ℹ️ Leyenda de íconos y marcadores", expanded=False):
+        st.markdown(
+            "**En el título de cada señal**  \n"
+            "· :green[▲] / :red[▼] — resultado de la señal (ganó / perdió)  \n"
+            "· **🧺✅** — la cerró el **Umbral de ROI colectivo** (la CARTERA cruzó su meta; "
+            "la señal se liquidó con el valor que tuviera en ese minuto)  \n"
+            "· **🧺🛑** — la cerró el **Stop loss colectivo** (la cartera tocó su stop)  \n"
+            "· **➕ n refuerzo(s)** — la martingala compró n veces más de la pierna perdedora  \n"
+            "· **⚠ fallback** — el contrato salió por el criterio de respaldo (1-ITM), no por "
+            "«menor spread en rango óptimo»\n\n"
+            "**Motivos de salida** (tabla y filtros)  \n"
+            "· 🎯 umbral de profit · 🛑 stop loss · ⏲ time-stop (pérdida a la hora límite) · "
+            "🕓 cierre de sesión (sin trigger) · 🟰 ROI colectivo · 🟥 stop colectivo · "
+            "🧭 dirección equivocada (1ª vela) · 〰️ confirmación débil (doji) · 🌙 overnight\n\n"
+            "**En el heatmap minuto a minuto**  \n"
+            "· **✔HH:MM** (en el nombre de la fila de una pierna) — esa pierna se **vendió "
+            "sola** a esa hora por SU umbral/stop; la celda del minuto de venta lleva ✔ con su "
+            "resultado final bancado y después pasa a CLOSED  \n"
+            "· **⟳n** (en las celdas del combinado) — refuerzos acumulados hasta ese minuto "
+            "(la base invertida crece; las filas · CALL/· PUT muestran solo el contrato "
+            "original)  \n"
+            "· **celda amarilla** (fila TOTAL) — el minuto donde el corte colectivo disparó\n\n"
+            "**Contexto del día**  \n"
+            "· **🧲 rango (GEX+)** — dealers largos gamma: día de vaivén/pinning (enemigo: "
+            "theta; no girar) · **🧲 tendencia (GEX−)** — sus coberturas aceleran el "
+            "movimiento (cortar rápido la perdedora, dejar correr la ganadora)")
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def _gex_regimen_cacheado(fecha, ticker) -> str | None:
     """Régimen GEX del día (snapshot de apertura) para enriquecer los resultados del
@@ -4878,6 +4909,7 @@ def _render_signals_session(rs):
     _filter_options = ["Todas", "ROI ≥ 0", "ROI < 0"] + _reason_opts
     if st.session_state.get("sig_roi_filter") not in _filter_options:
         st.session_state.pop("sig_roi_filter", None)
+    _leyenda_iconos()
     _sig_filter = st.radio(
         "Filtrar filas", options=_filter_options, index=0, horizontal=True, key="sig_roi_filter",
         format_func=lambda o: {
@@ -5261,6 +5293,7 @@ if _mode == "range":
                     _reason_tag[_cell] = _tag
 
             _filter_options = ["Todas", "ROI ≥ 0", "ROI < 0"] + _reason_opts
+            _leyenda_iconos()
             # Si la selección guardada ya no figura entre las opciones (otro backtest
             # con distintos motivos), borrarla → el radio cae a "Todas" (index=0).
             if st.session_state.get("batch_roi_filter") not in _filter_options:
