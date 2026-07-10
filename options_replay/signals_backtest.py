@@ -250,11 +250,17 @@ def run_one(dl, spec: dict, inversion: float = 1000.0, umbral_pct: float = 1000.
             time_stop_hora=time_stop_hora,
             time_stop_roi_pct=float(time_stop_pct) / 100.0,
         )
-        if _cut_reason and not _flip and it is not None:
+        # El corte por confirmación (doji/en contra) TRUNCA el día a entrada+15m, pero un
+        # trigger propio DENTRO de esos 15 min (umbral/stop) es una salida legítima anterior:
+        # solo re-etiquetar si la posición llegó VIVA al minuto del corte (session_end del
+        # tramo truncado). Antes se forzaba siempre y un umbral cobrado a las 09:32 aparecía
+        # como «Confirmación débil» (mislabel detectado 2026-07-10; los números no cambian).
+        if (_cut_reason and not _flip and it is not None
+                and it.exit_reason == "session_end"):
             it.exit_reason = _cut_reason
-            if getattr(it, "call_exit_reason", ""):
+            if getattr(it, "call_exit_reason", "") in ("", "session_end"):
                 it.call_exit_reason = _cut_reason
-            if getattr(it, "put_exit_reason", ""):
+            if getattr(it, "put_exit_reason", "") in ("", "session_end"):
                 it.put_exit_reason = _cut_reason
         return {**base, "status": "ok", "iteration": it, "error": None}
     except NoMatchError as e:
