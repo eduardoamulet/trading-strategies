@@ -91,12 +91,28 @@ class Downloader:
         with self._pq_cache_lock:
             self._pq_cache.pop(str(path), None)
 
+    def _cache_confiable(self, path, date: str) -> bool:
+        """Un parquet de un día es CONFIABLE solo si se escribió DESPUÉS del cierre de esa
+        sesión (16:05 ET). Un fetch intradía/pre-market cachea un día PARCIAL (barras a
+        medias) o VACÍO, y ese archivo envenena todo recompute futuro — la deriva del verify
+        del 2026-07-08/09 fue exactamente esto (quotes 0/0 y barras parciales cacheadas en
+        caliente). mtime < cierre → stale → se refetchea y sobreescribe (auto-sana el
+        histórico envenenado sin borrar nada a mano; los históricos legítimos, descargados
+        siempre después de su cierre, pasan intactos)."""
+        try:
+            fin = pd.Timestamp(f"{date} 16:05", tz="America/New_York")
+            mt = (pd.Timestamp(path.stat().st_mtime, unit="s", tz="UTC")
+                  .tz_convert("America/New_York"))
+            return mt >= fin
+        except Exception:  # noqa: BLE001 — ante la duda, el cache vale (comportamiento previo)
+            return True
+
     def underlying(self, ticker: str, date: str, force: bool = False,
                    resolution: Optional[str] = None) -> pd.DataFrame:
         _sfx, _mult, _span = self.RES.get(resolution or self.resolution, ("", 1, "minute"))
         path = self.data_dir / "underlying" / f"{ticker}_{date}{_sfx}.parquet"
         with self._lock_for(path):
-            if path.exists() and not force:
+            if path.exists() and not force and self._cache_confiable(path, date):
                 return self._read_pq(path).copy()
             if getattr(self, "offline", False):
                 return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -108,7 +124,7 @@ class Downloader:
     def chain(self, ticker: str, expiry: str, force: bool = False) -> pd.DataFrame:
         path = self.data_dir / "chain" / f"{ticker}_{expiry}.parquet"
         with self._lock_for(path):
-            if path.exists() and not force:
+            if path.exists() and not force and self._cache_confiable(path, expiry):
                 return self._read_pq(path).copy()
             if getattr(self, "offline", False):
                 return pd.DataFrame()
@@ -123,7 +139,7 @@ class Downloader:
         safe = occ_symbol.replace(":", "_")
         path = self.data_dir / "options" / f"{safe}_{date}{_sfx}.parquet"
         with self._lock_for(path):
-            if path.exists() and not force:
+            if path.exists() and not force and self._cache_confiable(path, date):
                 return self._read_pq(path).copy()
             if getattr(self, "offline", False):
                 return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -141,17 +157,22 @@ class Downloader:
         safe = occ_symbol.replace(":", "_")
         path = self.data_dir / "quotes" / f"{safe}_{date}_{hhmm}.parquet"
         with self._lock_for(path):
-            if path.exists() and not force:
+            if path.exists() and not force and self._cache_confiable(path, date):
                 df = self._read_pq(path)
                 if not df.empty:
                     r = df.iloc[0]
-                    return {
+                    q = {
                         "bid": None if pd.isna(r["bid"]) else float(r["bid"]),
                         "ask": None if pd.isna(r["ask"]) else float(r["ask"]),
                         "bid_size": None if pd.isna(r["bid_size"]) else float(r["bid_size"]),
                         "ask_size": None if pd.isna(r["ask_size"]) else float(r["ask_size"]),
                         "spread": None if pd.isna(r["spread"]) else float(r["spread"]),
                     }
+                    # Un 0/0 cacheado = fallo TRANSITORIO de la API en su momento, no un NBBO
+                    # real (envenenó QQQ 2026-07-08: 480 escenarios con «Sin contrato» falsos).
+                    # Se trata como cache-miss → refetch y sobreescritura.
+                    if q["bid"] or q["ask"]:
+                        return q
             # Fallback OFFLINE (opt-in): servir el NBBO de entrada desde quotes_minute (que ya
             # tenemos cacheado 4 años) en vez de pegar a Polygon. Default OFF → ni el live ni el
             # flujo normal cambian; solo el walk-forward histórico activa entry_from_timeline.
@@ -167,8 +188,11 @@ class Downloader:
                     self._write_parquet(pd.DataFrame([q]), path)
                 return q
             q = self.adapter.option_quote_at(occ_symbol, ts)
-            # Persistir aunque sea vacío (None) para no re-intentar contratos sin quote.
-            self._write_parquet(pd.DataFrame([q]), path)
+            # Persistir SOLO si hay NBBO usable: un 0/0-None (fallo transitorio de la API o
+            # pedido prematuro) cacheado «para siempre» fue el veneno del 2026-07-08. Sin
+            # quote usable → NO se persiste y la próxima corrida reintenta.
+            if (q or {}).get("bid") or (q or {}).get("ask"):
+                self._write_parquet(pd.DataFrame([q]), path)
             return q
 
     @staticmethod
@@ -200,7 +224,7 @@ class Downloader:
         safe = occ_symbol.replace(":", "_")
         path = self.data_dir / "quotes_minute" / f"{safe}_{date}.parquet"
         with self._lock_for(path):
-            if path.exists() and not force:
+            if path.exists() and not force and self._cache_confiable(path, date):
                 return self._read_pq(path).copy()
             if getattr(self, "offline", False):
                 return pd.DataFrame(columns=["timestamp", "bid", "ask"])
@@ -214,7 +238,13 @@ class Downloader:
                 raw["timestamp"] = raw["timestamp"].dt.floor("min")
                 out = (raw.groupby("timestamp", as_index=False)
                           .agg(bid=("bid", "last"), ask=("ask", "last")))
-            # Persistir aunque sea vacío para no re-pegar a la API en contratos sin quotes.
+            # Persistir vacío SOLO si la sesión de ese día YA CERRÓ (contrato genuinamente
+            # sin quotes → no re-pegar a la API). Un vacío pedido pre-market/intradía es
+            # PREMATURO y cachearlo envenena el histórico → se devuelve sin persistir.
+            if out.empty:
+                fin = pd.Timestamp(f"{date} 16:05", tz="America/New_York")
+                if pd.Timestamp.now(tz="America/New_York") < fin:
+                    return out
             self._write_parquet(out, path)
             return out
 
